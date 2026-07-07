@@ -1,4 +1,4 @@
-import { LocalModelManager } from './LocalModelManager.js';
+import { LocalModelManager } from '../components/LocalModelManager.js';
 import { isLocalAIAvailable } from '../lib/localInferenceClient.js';
 import { t } from '../lib/i18n.js';
 

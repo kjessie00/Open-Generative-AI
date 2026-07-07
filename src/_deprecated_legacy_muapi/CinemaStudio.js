@@ -1,6 +1,6 @@
 
 import { muapi } from '../lib/muapi.js';
-import { CameraControls } from './CameraControls.js';
+import { CameraControls } from '../components/CameraControls.js';
 import { buildNanoBananaPrompt, CAMERA_MAP, LENS_MAP, FOCAL_PERSPECTIVE, APERTURE_EFFECT } from '../lib/promptUtils.js';
 import { AuthModal } from './AuthModal.js';
 import { t } from '../lib/i18n.js';
