@@ -51,14 +51,7 @@ function dictFor(lang) {
 const translations = {
     en: {
         // Navigation
-        'nav.image': 'Image',
         'nav.pipeline': 'Pipeline Studio',
-        'nav.video': 'Video',
-        'nav.lipsync': 'Lip Sync',
-        'nav.cinema': 'Cinema Studio',
-        'nav.workflows': 'Workflows',
-        'nav.agents': 'Agents',
-        'nav.mcpcli': 'MCP & CLI',
         'nav.settings': 'Settings',
 
         // Sidebar
@@ -253,14 +246,7 @@ const translations = {
     },
     zh: {
         // Navigation
-        'nav.image': '图像',
         'nav.pipeline': '流水线工作室',
-        'nav.video': '视频',
-        'nav.lipsync': '唇语同步',
-        'nav.cinema': '电影工作室',
-        'nav.workflows': '工作流',
-        'nav.agents': '智能体',
-        'nav.mcpcli': 'MCP & CLI',
         'nav.settings': '设置',
 
         // Sidebar

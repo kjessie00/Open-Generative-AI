@@ -30,13 +30,6 @@ export function Header(navigate) {
     menu.className = 'hidden lg:flex items-center gap-6 text-[13px] font-bold text-secondary';
     const items = [
         { label: t('nav.pipeline'), page: 'pipeline' },
-        { label: t('nav.image'),   page: 'image' },
-        { label: t('nav.video'),   page: 'video' },
-        { label: t('nav.lipsync'), page: 'lipsync' },
-        { label: t('nav.cinema'),  page: 'cinema' },
-        { label: t('nav.workflows'), page: 'workflows' },
-        { label: t('nav.agents'),  page: 'agents' },
-        { label: t('nav.mcpcli'),  page: 'mcp-cli' },
     ];
 
     items.forEach(({ label, page }, idx) => {
