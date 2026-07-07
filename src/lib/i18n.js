@@ -52,6 +52,7 @@ const translations = {
     en: {
         // Navigation
         'nav.image': 'Image',
+        'nav.pipeline': 'Pipeline Studio',
         'nav.video': 'Video',
         'nav.lipsync': 'Lip Sync',
         'nav.cinema': 'Cinema Studio',
@@ -253,6 +254,7 @@ const translations = {
     zh: {
         // Navigation
         'nav.image': '图像',
+        'nav.pipeline': '流水线工作室',
         'nav.video': '视频',
         'nav.lipsync': '唇语同步',
         'nav.cinema': '电影工作室',

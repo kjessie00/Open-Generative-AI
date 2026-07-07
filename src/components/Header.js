@@ -29,6 +29,7 @@ export function Header(navigate) {
     const menu = document.createElement('nav');
     menu.className = 'hidden lg:flex items-center gap-6 text-[13px] font-bold text-secondary';
     const items = [
+        { label: t('nav.pipeline'), page: 'pipeline' },
         { label: t('nav.image'),   page: 'image' },
         { label: t('nav.video'),   page: 'video' },
         { label: t('nav.lipsync'), page: 'lipsync' },

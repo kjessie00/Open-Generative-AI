@@ -185,16 +185,25 @@ export function PipelineStudio() {
     render();
 
     (async () => {
-        const loadedConfig = await pipelineClient.getConfig().catch(() => config);
+        let loadedConfig = config;
+        try {
+            const result = await pipelineClient.getConfig();
+            loadedConfig = result?.config || result || loadedConfig;
+        } catch {}
         config = {
             ...config,
-            ...(loadedConfig?.config || loadedConfig || {}),
+            ...loadedConfig,
+            productionRoot: typeof loadedConfig.productionRoot === 'string' ? loadedConfig.productionRoot : '',
             dryRunMode: true,
             allowSafeCommandExecution: false,
         };
-        const rootPath = config.productionRoot || samplePipelineState.project.root_path;
-        const loadedState = await pipelineClient.readProductionState(rootPath).catch(() => ({ state: samplePipelineState }));
-        state = normalizeState(loadedState?.state);
+        if (config.productionRoot) {
+            const loadedState = await pipelineClient.readProductionState(config.productionRoot)
+                .catch(() => ({ state: samplePipelineState }));
+            state = normalizeState(loadedState?.state);
+        } else {
+            state = samplePipelineState;
+        }
         render();
     })();
 
