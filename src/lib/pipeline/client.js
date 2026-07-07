@@ -57,6 +57,12 @@ export async function selectProductionRoot(rootPath) {
     return { ok: true, source: 'mock', rootPath: rootPath || samplePipelineState.project.root_path, config: mockConfig };
 }
 
+export async function listProductionChildren(parentPath) {
+    const bridge = getBridge();
+    if (bridge) return bridge.listProductionChildren(parentPath);
+    return Promise.resolve({ ok: false, source: 'mock', reason: 'mock-fallback', rootPath: parentPath || '', entries: [] });
+}
+
 export async function readProductionState(rootPath) {
     const bridge = getBridge();
     if (bridge) return bridge.readProductionState(rootPath);
@@ -128,6 +134,7 @@ export const pipelineClient = Object.freeze({
     getConfig,
     setConfig,
     selectProductionRoot,
+    listProductionChildren,
     readProductionState,
     writePlanningFile,
     listAssets,

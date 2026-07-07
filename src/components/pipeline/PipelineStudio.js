@@ -116,9 +116,14 @@ export function PipelineStudio() {
     let state = samplePipelineState;
     let config = {
         productionRoot: samplePipelineState.project.root_path,
+        productionParentRoot: '',
         dryRunMode: true,
         allowSafeCommandExecution: false,
     };
+    let productions = [];
+    let productionsState = { status: 'idle', reason: '' };
+
+    const KNOWN_PRODUCTION_PARENT = '/Users/jessiek/StudioProjects/happyVideoFactory/production';
 
     const render = () => {
         container.innerHTML = '';
@@ -138,6 +143,65 @@ export function PipelineStudio() {
             render();
         };
 
+        const refreshProductions = async () => {
+            const parentPath = config.productionParentRoot;
+            if (!parentPath) {
+                productionsState = { status: 'idle', reason: '' };
+                productions = [];
+                render();
+                return;
+            }
+            productionsState = { status: 'scanning', reason: '' };
+            render();
+            const result = await pipelineClient.listProductionChildren(parentPath);
+            if (result?.ok) {
+                productions = Array.isArray(result.entries) ? result.entries : [];
+                productionsState = { status: 'ok', reason: '' };
+            } else {
+                productions = [];
+                productionsState = { status: 'error', reason: result?.reason || result?.error || 'unknown' };
+            }
+            render();
+        };
+
+        const pickParentFolder = async () => {
+            const selected = await pipelineClient.selectProductionRoot();
+            if (!selected?.ok || selected.canceled) return;
+            config = {
+                ...config,
+                ...(selected.config || {}),
+                productionParentRoot: selected.rootPath || config.productionParentRoot,
+                dryRunMode: true,
+                allowSafeCommandExecution: false,
+            };
+            // Persist to disk via the same bridge
+            try {
+                await pipelineClient.setConfig(config);
+            } catch {}
+            await refreshProductions();
+        };
+
+        const selectProduction = async (path) => {
+            if (!path) return;
+            try {
+                const loaded = await pipelineClient.readProductionState(path);
+                state = normalizeState(loaded?.state);
+            } catch {}
+            config = {
+                ...config,
+                productionRoot: path,
+            };
+            try {
+                await pipelineClient.setConfig(config);
+            } catch {}
+            render();
+        };
+
+        const switchTab = (tabId) => {
+            activeTab = tabId;
+            render();
+        };
+
         const header = el('header', { className: 'shrink-0 border-b border-white/10 bg-black/30 p-5' }, [
             el('div', { className: 'flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between' }, [
                 el('div', {}, [
@@ -146,6 +210,7 @@ export function PipelineStudio() {
                 ]),
                 el('div', { className: 'flex flex-wrap gap-2' }, [
                     actionButton('Open Production Folder', { onClick: openProductionFolder }),
+                    actionButton('Refresh productions', { onClick: refreshProductions, variant: 'muted' }),
                     statusBadge('No live generation', 'BLOCK'),
                     statusBadge('Validators active', 'PASS'),
                     statusBadge(config.dryRunMode !== false ? 'Dry-run locked' : 'Dry-run disabled', config.dryRunMode !== false ? 'PREVIEW' : 'BLOCK'),
@@ -164,6 +229,8 @@ export function PipelineStudio() {
                     window.alert(result.ok ? `Planning file saved: ${result.relativePath}` : `Save blocked: ${result.error || result.reason}`);
                 },
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),
+                onPickParent: pickParentFolder,
+                onRefresh: refreshProductions,
             }),
         ]);
 
@@ -171,10 +238,12 @@ export function PipelineStudio() {
         body.appendChild(PipelineSidebar({
             tabs: TABS,
             activeTab,
-            onSelect: (tabId) => {
-                activeTab = tabId;
-                render();
-            },
+            productions,
+            productionsState,
+            onSelect: switchTab,
+            onSelectProduction: selectProduction,
+            onOpenSettings: () => switchTab('settings'),
+            onRefreshProductions: refreshProductions,
         }));
         body.appendChild(panelHost);
 
@@ -194,9 +263,26 @@ export function PipelineStudio() {
             ...config,
             ...loadedConfig,
             productionRoot: typeof loadedConfig.productionRoot === 'string' ? loadedConfig.productionRoot : '',
+            productionParentRoot: typeof loadedConfig.productionParentRoot === 'string' ? loadedConfig.productionParentRoot : '',
             dryRunMode: true,
             allowSafeCommandExecution: false,
         };
+
+        // Default-guess: if productionParentRoot is empty and we are in Electron, try
+        // the canonical happyVideoFactory path. Silently skip if it does not exist.
+        if (!config.productionParentRoot && pipelineClient.hasFilmPipelineBridge()) {
+            try {
+                const probe = await pipelineClient.listProductionChildren(KNOWN_PRODUCTION_PARENT);
+                if (probe?.ok) {
+                    config = { ...config, productionParentRoot: KNOWN_PRODUCTION_PARENT };
+                    productions = Array.isArray(probe.entries) ? probe.entries : [];
+                    productionsState = { status: 'ok', reason: '' };
+                }
+            } catch {
+                // silently ignore — parent path may not exist on this machine
+            }
+        }
+
         if (config.productionRoot) {
             const loadedState = await pipelineClient.readProductionState(config.productionRoot)
                 .catch(() => ({ state: samplePipelineState }));

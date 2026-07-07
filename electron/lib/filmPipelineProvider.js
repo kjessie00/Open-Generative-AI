@@ -113,6 +113,7 @@ function getConfigPath() {
 function defaultConfig() {
     return {
         productionRoot: '',
+        productionParentRoot: '',
         recentProductionRoots: [],
         dryRunMode: true,
         allowSafeCommandExecution: false,
@@ -143,6 +144,7 @@ function sanitizeConfig(config = {}) {
         ...base,
         ...config,
         productionRoot: typeof config.productionRoot === 'string' ? config.productionRoot : base.productionRoot,
+        productionParentRoot: typeof config.productionParentRoot === 'string' ? config.productionParentRoot : base.productionParentRoot,
         recentProductionRoots: recent,
         dryRunMode: config.dryRunMode !== false,
         allowSafeCommandExecution: false,
@@ -289,6 +291,68 @@ function readProductionState(rootPath) {
         ok: true,
         rootPath: readerState.rootPath,
         state: readerState,
+    };
+}
+
+const BRIEF_FILE_NAMES = new Set(['brief.md', 'master_plan.md']);
+const LEDGER_FILE_SUFFIXES = ['.jsonl'];
+const LEDGER_FILE_NAMES = new Set(['ledger.csv']);
+
+function isMarkdownBrief(name) {
+    return BRIEF_FILE_NAMES.has(name);
+}
+
+function isJsonlLedger(name) {
+    if (LEDGER_FILE_NAMES.has(name)) return true;
+    return LEDGER_FILE_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+function listProductionChildren(parentPath) {
+    const root = assertDirectory(parentPath);
+    const dirents = fs.readdirSync(root, { withFileTypes: true });
+    const entries = [];
+
+    for (const dirent of dirents) {
+        if (!dirent.isDirectory()) continue;
+        // Skip dotfiles / hidden directories (e.g. .DS_Store, .git)
+        if (dirent.name.startsWith('.')) continue;
+
+        const childPath = path.join(root, dirent.name);
+
+        try {
+            const stats = fs.statSync(childPath);
+            const childDirents = fs.readdirSync(childPath, { withFileTypes: true });
+            let fileCount = 0;
+            let hasMarkdownBrief = false;
+            let hasJsonlLedger = false;
+
+            for (const child of childDirents) {
+                if (!child.isFile()) continue;
+                fileCount += 1;
+                if (isMarkdownBrief(child.name)) hasMarkdownBrief = true;
+                if (isJsonlLedger(child.name)) hasJsonlLedger = true;
+            }
+
+            entries.push({
+                name: dirent.name,
+                path: childPath,
+                mtime: stats.mtime.toISOString(),
+                fileCount,
+                hasMarkdownBrief,
+                hasJsonlLedger,
+            });
+        } catch {
+            // statSync or readdirSync failure on this subdir — skip just this one
+            continue;
+        }
+    }
+
+    entries.sort((a, b) => (a.mtime < b.mtime ? 1 : a.mtime > b.mtime ? -1 : 0));
+
+    return {
+        ok: true,
+        rootPath: root,
+        entries,
     };
 }
 
@@ -454,6 +518,7 @@ function register() {
     ipcMain.handle('film-pipeline:set-config', (_, config) => setConfig(config));
     ipcMain.handle('film-pipeline:select-production-root', (_, rootPath) => selectProductionRoot(rootPath));
     ipcMain.handle('film-pipeline:read-production-state', (_, rootPath) => readProductionState(rootPath));
+    ipcMain.handle('film-pipeline:list-production-children', (_, parentPath) => listProductionChildren(parentPath));
     ipcMain.handle('film-pipeline:write-planning-file', (_, payload) => writePlanningFile(payload));
     ipcMain.handle('film-pipeline:list-assets', (_, rootPath) => listAssets(rootPath));
     ipcMain.handle('film-pipeline:read-jsonl', (_, payload) => readJsonl(payload));
@@ -466,4 +531,5 @@ module.exports = {
     sideEffectClassifier,
     previewCommand,
     runSafeCommand,
+    listProductionChildren,
 };

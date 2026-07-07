@@ -59,6 +59,15 @@ const translations = {
         'sidebar.video': 'Video',
         'sidebar.library': 'Library',
         'sidebar.settings': 'Settings',
+        'sidebar.productions': 'Productions',
+        'sidebar.productions.empty': 'No productions found. Set a production parent in Settings.',
+        'sidebar.productions.scanning': 'Scanning…',
+        'sidebar.productions.scanError': 'Cannot read parent: {reason}',
+
+        // Pipeline UI
+        'pipeline.productionParent': 'Production parent',
+        'pipeline.browseParent': 'Browse parent',
+        'pipeline.refreshProductions': 'Refresh productions',
 
         // Common
         'common.generate': 'Generate ✨',
@@ -254,6 +263,15 @@ const translations = {
         'sidebar.video': '视频',
         'sidebar.library': '素材库',
         'sidebar.settings': '设置',
+        'sidebar.productions': '制作列表',
+        'sidebar.productions.empty': '未找到制作列表。请在设置中配置制作父目录。',
+        'sidebar.productions.scanning': '扫描中…',
+        'sidebar.productions.scanError': '无法读取父目录: {reason}',
+
+        // Pipeline UI
+        'pipeline.productionParent': '制作父目录',
+        'pipeline.browseParent': '选择父目录',
+        'pipeline.refreshProductions': '刷新制作列表',
 
         // Common
         'common.generate': '生成 ✨',

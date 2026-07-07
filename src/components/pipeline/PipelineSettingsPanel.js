@@ -1,10 +1,38 @@
 import { card, el, infoGrid, panelShell, statusBadge } from './ui.js';
 
-export function PipelineSettingsPanel({ state, config }) {
+export function PipelineSettingsPanel({ state, config, onPickParent, onRefresh }) {
     const settings = state.settings || {};
     const productionRoot = config?.productionRoot || state.project?.root_path;
+    const productionParentRoot = config?.productionParentRoot || '';
 
     return panelShell('Settings', 'Local pipeline paths and dry-run controls. Dry-run mode is locked on by default.', [
+        card([
+            el('div', { className: 'flex flex-wrap items-end justify-between gap-3' }, [
+                el('div', { className: 'flex-1' }, [
+                    el('div', { text: 'Production parent', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+                    el('input', {
+                        type: 'text',
+                        value: productionParentRoot,
+                        readOnly: true,
+                        attrs: { placeholder: '/Users/jessiek/StudioProjects/happyVideoFactory/production', tabindex: '-1' },
+                        className: 'mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-secondary focus:outline-none',
+                    }),
+                    el('p', { text: 'The folder that contains all productions (immediate subdirs are listed in the sidebar).', className: 'mt-2 text-xs leading-6 text-secondary' }),
+                ]),
+                el('div', { className: 'flex flex-wrap gap-2' }, [
+                    el('button', {
+                        text: 'Browse parent',
+                        onClick: () => onPickParent && onPickParent(),
+                        className: 'rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-xs font-bold uppercase tracking-widest text-cyan-100 hover:bg-white/10',
+                    }),
+                    el('button', {
+                        text: 'Refresh',
+                        onClick: () => onRefresh && onRefresh(),
+                        className: 'rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-bold uppercase tracking-widest text-secondary hover:bg-white/[0.07] hover:text-white',
+                    }),
+                ]),
+            ]),
+        ]),
         infoGrid([
             { label: 'Production root', value: productionRoot },
             { label: 'Shorts harness doc', value: settings.harnessDocs?.shorts || 'docs/harness/shorts-SKILL.md' },

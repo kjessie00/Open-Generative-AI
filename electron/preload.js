@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     getConfig: () => ipcRenderer.invoke('film-pipeline:get-config'),
     setConfig: (config) => ipcRenderer.invoke('film-pipeline:set-config', config),
     selectProductionRoot: (rootPath) => ipcRenderer.invoke('film-pipeline:select-production-root', rootPath),
+    listProductionChildren: (parentPath) => ipcRenderer.invoke('film-pipeline:list-production-children', parentPath),
     readProductionState: (rootPath) => ipcRenderer.invoke('film-pipeline:read-production-state', rootPath),
     writePlanningFile: (payload) => ipcRenderer.invoke('film-pipeline:write-planning-file', payload),
     listAssets: (rootPath) => ipcRenderer.invoke('film-pipeline:list-assets', rootPath),
