@@ -1,0 +1,21 @@
+{
+  "clips": [
+    {
+      "scene_id": "scene_01",
+      "clip_id": "clip_001",
+      "duration": 5,
+      "dramatic_beat": "Operator reviews the imported folder.",
+      "characters": ["operator"],
+      "location": "local studio desk",
+      "first_frame": "operator facing a dark local UI",
+      "action": "opens production folder",
+      "camera": "slow push-in",
+      "lighting": "cool monitor glow",
+      "audio_sfx_dialogue": "keyboard tap, no dialogue",
+      "reference_dependencies": ["asset_fixture_001"],
+      "risk": "UI text should not be generated as readable copy",
+      "dominant_action": "folder import",
+      "dominant_camera_strategy": "slow push-in"
+    }
+  ]
+}

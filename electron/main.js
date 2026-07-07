@@ -2,6 +2,7 @@ const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { register: registerLocalInference } = require('./lib/localInference');
 const { register: registerWan2gp } = require('./lib/wan2gpProvider');
+const { register: registerFilmPipeline } = require('./lib/filmPipelineProvider');
 
 // Ubuntu 24.04+ sets kernel.apparmor_restrict_unprivileged_userns=1 which
 // blocks Chromium's user namespace sandbox. The .deb package ships an AppArmor
@@ -62,6 +63,7 @@ app.whenReady().then(() => {
     createWindow();
     registerLocalInference();
     registerWan2gp();
+    registerFilmPipeline();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {

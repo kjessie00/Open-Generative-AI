@@ -36,3 +36,7 @@ out/
 .env
 .env.*
 !.env.example
+
+# mavis session runtime artifacts
+.mavis/
+.mavis_decision/

@@ -1,0 +1,13 @@
+{
+  "shots": [
+    {
+      "clip_id": "clip_001",
+      "shot_size": "medium",
+      "camera_movement": "slow push-in",
+      "movement_risk": "low",
+      "identity_risk": "low",
+      "continuity_notes": "Keep operator silhouette and monitor angle stable.",
+      "duration_lock": true
+    }
+  ]
+}
