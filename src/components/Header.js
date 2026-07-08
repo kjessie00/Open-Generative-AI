@@ -1,4 +1,3 @@
-import { SettingsModal } from './SettingsModal.js';
 import { t, getLang, setLang } from '../lib/i18n.js';
 
 export function Header(navigate) {
@@ -69,7 +68,9 @@ export function Header(navigate) {
         <span>${t('nav.settings')}</span>
     `;
     settingsBtn.onclick = () => {
-        document.body.appendChild(SettingsModal());
+        import('./SettingsModal.js').then(({ SettingsModal }) => {
+            document.body.appendChild(SettingsModal());
+        });
     };
 
     // Language toggle button
