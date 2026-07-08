@@ -1,4 +1,4 @@
-import { SettingsModal } from '../_deprecated_legacy_muapi/SettingsModal.js';
+import { SettingsModal } from './SettingsModal.js';
 import { t, getLang, setLang } from '../lib/i18n.js';
 
 export function Header(navigate) {

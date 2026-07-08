@@ -31,7 +31,7 @@ navigate('pipeline');
 // Event Listener for Navigation
 window.addEventListener('navigate', (e) => {
   if (e.detail.page === 'settings') {
-    import('./_deprecated_legacy_muapi/SettingsModal.js').then(({ SettingsModal }) => {
+    import('./components/SettingsModal.js').then(({ SettingsModal }) => {
       document.body.appendChild(SettingsModal());
     });
   } else {
