@@ -1,5 +1,6 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
+const { installNavigationPolicy } = require('./lib/navigationPolicy');
 const { register: registerLocalInference } = require('./lib/localInference');
 const { register: registerWan2gp } = require('./lib/wan2gpProvider');
 const { register: registerFilmPipeline } = require('./lib/filmPipelineProvider');
@@ -24,9 +25,9 @@ function createWindow() {
         minWidth: 1024,
         minHeight: 640,
         webPreferences: {
-            webSecurity: false,
             contextIsolation: true,
             nodeIntegration: false,
+            sandbox: true,
             preload: path.join(__dirname, 'preload.js'),
         },
         ...(isMac ? { titleBarStyle: 'hiddenInset' } : {}),
@@ -45,10 +46,7 @@ function createWindow() {
         console.error('did-fail-load:', code, desc);
     });
 
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        shell.openExternal(url);
-        return { action: 'deny' };
-    });
+    installNavigationPolicy(mainWindow.webContents);
 
     mainWindow.once('ready-to-show', () => {
         mainWindow.show();

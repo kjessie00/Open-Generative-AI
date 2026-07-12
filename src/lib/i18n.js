@@ -92,21 +92,10 @@ const translations = {
 
         // Settings Modal
         'settings.title': 'Settings',
-        'settings.apiKey': 'API Key',
+        'settings.pipeline': 'Pipeline',
+        'settings.pipelineTitle': 'Local pipeline settings',
+        'settings.pipelineNote': 'Production folders and dry-run command previews are managed in the Pipeline Settings panel. This app does not store hosted service credentials.',
         'settings.localModels': 'Local Models',
-        'settings.muapiKeyLabel': 'Muapi API Key',
-        'settings.keyPlaceholder': 'Enter your Muapi API key...',
-        'settings.keyNote': 'Your API key is stored locally and never sent anywhere except api.muapi.ai.',
-        'settings.invalidKey': 'Please enter a valid API key.',
-
-        // Auth Modal
-        'auth.title': 'Muapi API Key Required',
-        'auth.subtitle': 'Create a Muapi access key, then paste the key value here to start creating high-aesthetic images.',
-        'auth.keyLabel': 'Muapi Access Key',
-        'auth.keyPlaceholder': 'Paste your access key value...',
-        'auth.keyNote': 'Do not enter the key name or label; paste the generated key value from Muapi.',
-        'auth.initBtn': 'Initialize Studio',
-        'auth.createKey': 'Create or copy a Muapi access key →',
 
         // Image Studio
         'image.title': 'Image Studio',
@@ -243,7 +232,7 @@ const translations = {
         'localModels.deleteConfirm': (name) => `Delete "${name}"? You'll need to re-download it to use it again.`,
 
         // Web shell
-        'web.settingsTitle': 'Settings — API key, local models, preferences',
+        'web.settingsTitle': 'Local pipeline and model settings',
         'web.switchToEn': 'Switch to English',
         'web.switchToZh': '切换为中文',
 
@@ -296,21 +285,10 @@ const translations = {
 
         // Settings Modal
         'settings.title': '设置',
-        'settings.apiKey': 'API 密钥',
+        'settings.pipeline': '流水线',
+        'settings.pipelineTitle': '本地流水线设置',
+        'settings.pipelineNote': '制作目录和试运行命令预览由“流水线设置”面板管理。本应用不存储托管服务凭据。',
         'settings.localModels': '本地模型',
-        'settings.muapiKeyLabel': 'Muapi API 密钥',
-        'settings.keyPlaceholder': '输入您的 Muapi API 密钥...',
-        'settings.keyNote': '您的 API 密钥仅存储在本地，除 api.muapi.ai 外不会发送到任何地方。',
-        'settings.invalidKey': '请输入有效的 API 密钥。',
-
-        // Auth Modal
-        'auth.title': '需要 Muapi API 密钥',
-        'auth.subtitle': '创建一个 Muapi 访问密钥，然后将密钥值粘贴到这里开始创建高质量图像。',
-        'auth.keyLabel': 'Muapi 访问密钥',
-        'auth.keyPlaceholder': '粘贴您的访问密钥值...',
-        'auth.keyNote': '请不要输入密钥名称或标签；粘贴从 Muapi 生成的密钥值。',
-        'auth.initBtn': '初始化工作室',
-        'auth.createKey': '创建或复制 Muapi 访问密钥 →',
 
         // Image Studio
         'image.title': '图像工作室',
@@ -447,7 +425,7 @@ const translations = {
         'localModels.deleteConfirm': (name) => `删除"${name}"？您需要重新下载才能再次使用。`,
 
         // Web shell
-        'web.settingsTitle': '设置 — API 密钥、本地模型、偏好',
+        'web.settingsTitle': '本地流水线和模型设置',
         'web.switchToEn': 'Switch to English',
         'web.switchToZh': '切换为中文',
 
