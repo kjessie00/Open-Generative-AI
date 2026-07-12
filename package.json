@@ -12,10 +12,10 @@
     "packages/Open-AI-Design-Agent/packages/design-agent"
   ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "dev": "vite",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "lint": "node --check electron/main.js && node --check electron/preload.js && node --check electron/lib/createMainWindow.js && node --check electron/lib/navigationPolicy.js",
     "build:studio": "npm run build -w studio",
     "build:workflow": "npm run build -w workflow-builder",
     "build:agent": "npm run build -w ai-agent",

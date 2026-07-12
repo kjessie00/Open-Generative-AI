@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'muapi_uploads';
+const STORAGE_KEY = 'local_pipeline_uploads';
 const MAX_UPLOADS = 20;
 
 export function getUploadHistory() {
