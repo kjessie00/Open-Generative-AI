@@ -196,14 +196,19 @@ test('not-ready final fixture reports missing final stitch', () => {
     assert.equal(deriveFinalCondition(state, validation), 'missing final stitch');
 });
 
-test('final stitch preview commands remain non-executing previews', async () => {
+test('unfinished final stitch and ffprobe contracts remain blocked and uncopyable', async () => {
     const { buildFfmpegConcatPreviewCommand, buildFfprobeValidationCommands } = await import('../src/lib/pipeline/commandBuilders.js');
     const state = finalReadyState();
     const ffprobe = buildFfprobeValidationCommands(state)[0];
     const concat = buildFfmpegConcatPreviewCommand(state);
 
-    assert.equal(classifySideEffect(ffprobe).mode, 'preview_only');
+    assert.equal(classifySideEffect(ffprobe).mode, 'blocked');
     assert.equal(classifySideEffect(ffprobe).type, SIDE_EFFECT_TYPES.NON_CONSUMING_STATUS);
+    assert.equal(classifySideEffect(ffprobe).copyAllowed, false);
+    assert.equal(ffprobe.disabled_reason, 'FFPROBE_EVIDENCE_COMMAND_UNVERIFIED');
+    assert.equal(ffprobe.evidence_output_path, '');
     assert.equal(classifySideEffect(concat).mode, 'blocked');
-    assert.equal(concat.disabled_reason, 'PREVIEW_ONLY_REQUIRED');
+    assert.equal(classifySideEffect(concat).copyAllowed, false);
+    assert.equal(concat.disabled_reason, 'SELECTED_RANGE_RENDER_PLAN_NOT_IMPLEMENTED');
+    assert.equal(concat.evidence_output_path, '');
 });

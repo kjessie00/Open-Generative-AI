@@ -2,6 +2,12 @@
 
 기준일: 2026-07-13 (Asia/Seoul)
 
+> 후속 현재 상태: canonical finishing state v1이 exact-root
+> `shot_manifest.json`, `selected_takes.json`, `qc_report.json`과 QA/최종 상태를
+> 추가했다. ffprobe/concat command는 더 이상 copy-only가 아니라 명령·증거·복사가
+> 모두 disabled다. 현재 계약은
+> `docs/ui_integration/32_canonical_finishing_state.md`를 함께 따른다.
+
 ## 결과
 
 기존 generic `ai_video_pipeline` plan/run preview를 제거하고

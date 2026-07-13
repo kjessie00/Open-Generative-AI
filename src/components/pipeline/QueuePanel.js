@@ -184,7 +184,7 @@ export function QueuePanel({ state, config, harnessStatus }) {
                 statusBadge(p(heartbeatBlocked ? '20m gate blocked' : '20m gate clear'), heartbeatBlocked ? 'BLOCK' : 'PREVIEW'),
             ]),
             el('p', { text: p('Retry, faster queue, VIP/fallback model, and duplicate job paths are never suggested by this UI. Blocker: {blocker}.', { blocker: BLOCKERS.DREAMINA_PREFLIGHT_BLOCKED }), className: 'mb-4 text-sm leading-6 text-secondary' }),
-            el('p', { text: p('Dreamina submit execution is not exposed. The cards below are shell-safe previews for planning, preflight/status, ffprobe, and concat review only.'), className: 'text-sm leading-6 text-secondary' }),
+            el('p', { text: p('Dreamina submit execution is not exposed. Planning and status previews remain non-executing; unfinished ffprobe and selected-range rendering commands are blocked.'), className: 'text-sm leading-6 text-secondary' }),
         ]),
         el('section', { className: 'flex flex-col gap-4' }, [
             el('div', {}, [
@@ -196,7 +196,7 @@ export function QueuePanel({ state, config, harnessStatus }) {
         el('section', { className: 'flex flex-col gap-4' }, [
             el('div', {}, [
                 el('h3', { text: p('Other Command Previews'), className: 'text-lg font-bold text-white' }),
-                el('p', { text: p('Planning, Dreamina help/user_credit, ffprobe, and concat cards are still copy-only; no hidden execution path is attached.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
+                el('p', { text: p('Planning and Dreamina help/user_credit remain preview-only. ffprobe evidence and selected-range rendering cards are disabled and cannot be copied.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
             ]),
             el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, otherCommandSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec }))),
         ]),

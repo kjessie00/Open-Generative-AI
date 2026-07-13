@@ -51,7 +51,9 @@ function downloadedFileForClip(state, clipId) {
 }
 
 function acceptedSecondsText(record) {
-    if (!record?.source_file || !(record.out_time > record.in_time)) return p('not recorded');
+    const canonicalReady = record?.canonical_provenance !== 'selected_takes.json'
+        || (record.accepted === true && record.source_exists === true && Boolean(record.canonical_alias_source));
+    if (!record?.source_file || !(record.out_time > record.in_time) || !canonicalReady) return p('not recorded');
     return `${record.in_time}-${record.out_time}s · ${record.reviewer_confidence || p('confidence not recorded')}`;
 }
 
@@ -125,6 +127,7 @@ export function deriveFinalCondition(state = {}, validation = validateFinalReady
 
 export function FinalReportPanel({ state }) {
     const finalReport = state.finalReport || {};
+    const canonicalHandoff = state.canonicalHandoff || {};
     const validation = validateFinalReady(state);
     const allClipIds = plannedClipIds(state);
     const downloadedClipIds = new Set([
@@ -132,7 +135,12 @@ export function FinalReportPanel({ state }) {
         ...(state.submitRecords || []).filter((record) => record.downloaded === true).map((record) => record.clip_id),
     ]);
     const qaClipIds = new Set((state.qaRecords || []).filter((record) => ['PASS', 'EXCEPTION'].includes(record.verdict)).map((record) => record.clip_id));
-    const acceptedClipIds = new Set((state.acceptedSeconds || []).filter((record) => record.source_file && record.out_time > record.in_time).map((record) => record.clip_id));
+    const acceptedClipIds = new Set((state.acceptedSeconds || []).filter((record) => (
+        record.source_file
+        && record.out_time > record.in_time
+        && (record.canonical_provenance !== 'selected_takes.json'
+            || (record.accepted === true && record.source_exists === true && Boolean(record.canonical_alias_source)))
+    )).map((record) => record.clip_id));
     const finalVideoPath = finalReport.final_video_path;
     const concatListPath = finalReport.concat_list_path;
     const reportPath = finalReport.report_path;
@@ -161,7 +169,7 @@ export function FinalReportPanel({ state }) {
             el('div', { className: 'mb-3 flex flex-wrap gap-2' }, [
                 statusBadge(validation.ok ? p('final ready') : conditionLabel, validation.ok ? 'PASS' : 'BLOCK'),
                 statusBadge(p('evidence-only credits'), 'PREVIEW'),
-                statusBadge(p('ffmpeg/ffprobe preview only'), 'PREVIEW'),
+                statusBadge(p('ffmpeg/ffprobe commands blocked'), 'BLOCK'),
             ]),
             el('p', {
                 text: finalVideoExists
@@ -180,7 +188,19 @@ export function FinalReportPanel({ state }) {
             { label: p('Known credits'), value: `${creditEvidence.total} (${creditEvidence.source})` },
             { label: p('Completion time'), value: completionTime(state) || p('not complete') },
             { label: p('Residual risks'), value: (finalReport.residual_risks || []).join(', ') },
+            { label: p('Canonical selected takes'), value: canonicalHandoff.selected_takes_path || p('not loaded') },
+            { label: p('Canonical QC report'), value: canonicalHandoff.qc_report_path || p('not loaded') },
+            { label: p('Ready selected ranges'), value: `${canonicalHandoff.selected_range_ready_count || 0}/${canonicalHandoff.selected_range_count || 0}` },
+            { label: p('Canonical QC records'), value: canonicalHandoff.qc_record_count || 0 },
         ]),
+        card([
+            el('div', { className: 'mb-3 flex flex-wrap gap-2' }, [
+                statusBadge(canonicalHandoff.identifier_alias_ready ? p('Canonical clip alias proven') : p('Canonical clip alias blocked'), canonicalHandoff.identifier_alias_ready ? 'PREVIEW' : 'BLOCK'),
+                statusBadge(canonicalHandoff.final_ready === true ? p('final ready') : p('Canonical final readiness not proven'), canonicalHandoff.final_ready === true ? 'PASS' : 'BLOCK'),
+            ]),
+            el('p', { text: p('Selected ranges and canonical QC are finishing inputs, not a rendered final. Final readiness still requires matching planned clip identities, passed QA or an explicit exception, final.mp4, report, concat evidence, and real ffprobe evidence.'), className: 'text-sm leading-6 text-secondary' }),
+            canonicalHandoff.finishing_inconsistencies?.length ? el('div', { className: 'mt-3 flex flex-wrap gap-2' }, canonicalHandoff.finishing_inconsistencies.map((reason) => statusBadge(reason, 'BLOCK'))) : null,
+        ], canonicalHandoff.final_ready === true ? 'border-emerald-400/20' : 'border-red-400/20'),
         dataTable([
             { label: p('Clip'), key: 'clip_id' },
             { label: p('First-frame image'), render: (row) => firstFrameCell(row.firstFrameAsset) },
@@ -205,8 +225,8 @@ export function FinalReportPanel({ state }) {
         el('div', { className: 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3' }, checklist),
         el('section', { className: 'flex flex-col gap-4' }, [
             el('div', {}, [
-                el('h3', { text: p('Final Stitch Command Previews'), className: 'text-lg font-bold text-white' }),
-                el('p', { text: p('Copy-only previews for ffmpeg concat and ffprobe validation. These commands are not executed by the UI.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
+                el('h3', { text: p('Final command safety status'), className: 'text-lg font-bold text-white' }),
+                el('p', { text: p('ffprobe evidence persistence and selected-range rendering are not implemented, so both command cards are disabled and cannot be copied.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
             ]),
             el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, [
                 ...ffprobeSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec })),

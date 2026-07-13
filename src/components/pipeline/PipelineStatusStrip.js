@@ -13,7 +13,9 @@ function deriveFileStatus(state) {
         ].filter(Boolean).length,
         review_passed: (state.reviewGates || []).filter((gate) => gate.status === 'PASS').length,
         quality_accepted: (state.acceptedSeconds || []).filter((record) => (
-            record.source_file && record.out_time > record.in_time
+            record.canonical_provenance === 'selected_takes.json'
+                ? record.accepted === true && record.source_exists === true && Boolean(record.clip_id)
+                : record.accepted === true || (record.source_file && record.out_time > record.in_time)
         )).length,
     };
 }

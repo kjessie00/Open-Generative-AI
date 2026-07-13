@@ -98,6 +98,25 @@ function fileHasEvidence(path, projectState = {}) {
     return projectState.files?.includes(path) === true;
 }
 
+function acceptedRangeHasEvidence(record, projectState = {}) {
+    const inTime = record?.in_time;
+    const outTime = record?.out_time;
+    const basicRange = hasText(record?.source_file)
+        && typeof inTime === 'number'
+        && Number.isFinite(inTime)
+        && inTime >= 0
+        && typeof outTime === 'number'
+        && Number.isFinite(outTime)
+        && outTime > inTime;
+    if (!basicRange) return false;
+    if (record.canonical_provenance !== 'selected_takes.json') return true;
+    return record.accepted === true
+        && record.source_exists === true
+        && hasText(record.canonical_shot_id)
+        && hasText(record.canonical_alias_source)
+        && fileHasEvidence(record.source_file, projectState);
+}
+
 function timeValues(values = []) {
     return values.map(toTime).filter(Boolean);
 }
@@ -678,11 +697,20 @@ export function validateFinalReady(projectState) {
         details.qaNotPassedOrException = qaNotPassed;
     }
 
-    const acceptedClipIds = new Set(acceptedSeconds.filter((record) => hasText(record.source_file) && record.out_time > record.in_time).map((record) => record.clip_id));
+    const provenAcceptedRanges = acceptedSeconds.filter((record) => acceptedRangeHasEvidence(record, projectState));
+    const acceptedClipIds = new Set(provenAcceptedRanges.map((record) => record.clip_id));
     const missingAcceptedSeconds = expectedClipIds.filter((clipId) => !acceptedClipIds.has(clipId));
     if (missingAcceptedSeconds.length) {
         blockers.push(BLOCKERS.MISSING_ACCEPTED_SECONDS);
         details.missingAcceptedSeconds = missingAcceptedSeconds;
+    }
+    const canonicalIdentifierMismatches = acceptedSeconds
+        .filter((record) => record.canonical_provenance === 'selected_takes.json')
+        .filter((record) => !record.clip_id || !expectedClipIds.includes(record.clip_id) || !acceptedRangeHasEvidence(record, projectState))
+        .map((record) => record.canonical_shot_id || 'unknown_shot');
+    if (canonicalIdentifierMismatches.length) {
+        blockers.push(BLOCKERS.MISSING_ACCEPTED_SECONDS);
+        details.canonicalIdentifierMismatches = Array.from(new Set(canonicalIdentifierMismatches));
     }
 
     const concatListPath = finalReport.concat_list_path;
@@ -715,6 +743,16 @@ export function validateFinalReady(projectState) {
     if (activeBlockers.length) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
         details.activeBlockers = activeBlockers;
+    }
+
+    const canonicalHandoff = projectState?.canonicalHandoff;
+    if (canonicalHandoff && canonicalHandoff.final_ready !== true) {
+        blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+        details.canonicalFinalReady = 'not_proven';
+    }
+    if (canonicalHandoff?.finishing_inconsistencies?.length) {
+        blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+        details.canonicalFinishingInconsistencies = canonicalHandoff.finishing_inconsistencies;
     }
 
     return result(blockers, details);

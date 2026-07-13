@@ -267,11 +267,48 @@ function safeBoolean(value) {
     return typeof value === 'boolean' ? value : null;
 }
 
+function safeFiniteNumber(value, minimum = -Infinity, maximum = Infinity) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum
+        ? value
+        : null;
+}
+
 function safeCanonicalPath(root, value) {
-    if (typeof value !== 'string' || value.length === 0 || value.includes('\0')
+    if (typeof value !== 'string' || value.length === 0 || value.length > 2048 || value.includes('\0')
         || value.split(/[\\/]/).some((component) => isSensitiveName(component))) return '';
     const candidate = path.isAbsolute(value) ? path.normalize(value) : path.resolve(root, value);
     return isWithinRoot(root, candidate) ? candidate : '';
+}
+
+function canonicalSourceFileEvidence(root, value) {
+    const candidate = safeCanonicalPath(root, value);
+    if (!candidate || candidate === root) {
+        return { path: '', exists: false, reason: 'unsafe_source_path' };
+    }
+
+    const relative = safeRelative(root, candidate);
+    let cursor = root;
+    const components = relative.split(path.sep).filter(Boolean);
+    for (let index = 0; index < components.length; index += 1) {
+        cursor = path.join(cursor, components[index]);
+        let stats;
+        try {
+            stats = fs.lstatSync(cursor);
+        } catch {
+            return { path: candidate, exists: false, reason: 'missing_source_file' };
+        }
+        if (stats.isSymbolicLink()) {
+            return { path: '', exists: false, reason: 'symlink_source_path' };
+        }
+        if (index < components.length - 1 && !stats.isDirectory()) {
+            return { path: candidate, exists: false, reason: 'non_directory_source_parent' };
+        }
+        if (index === components.length - 1 && !stats.isFile()) {
+            return { path: candidate, exists: false, reason: 'non_regular_source_file' };
+        }
+    }
+
+    return { path: candidate, exists: true, reason: '' };
 }
 
 function parseCanonicalJson(root, relativePath, label, sanitize) {
@@ -397,6 +434,205 @@ function sanitizeDownloadManifest(root, value) {
                 downloaded_paths: rawPaths.slice(0, 20).map((candidate) => safeCanonicalPath(root, candidate)).filter(Boolean),
             };
         }),
+    };
+}
+
+function sanitizeShotManifest(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('shot manifest must be an object');
+    if (!Array.isArray(value.shots)) throw new Error('shot manifest shots must be an array');
+    if (value.shots.length > MAX_CANONICAL_RECORDS) throw new Error(`shot manifest exceeds ${MAX_CANONICAL_RECORDS} records`);
+
+    const issues = [];
+    const seen = new Set();
+    const records = value.shots.map((shot, index) => {
+        if (!shot || typeof shot !== 'object' || Array.isArray(shot)) throw new Error('shot manifest entry must be an object');
+        const shotId = safeToken(shot.shot_id);
+        if (!shotId) issues.push(`shot_manifest:invalid_shot_id:${index}`);
+        if (shotId && seen.has(shotId)) issues.push(`shot_manifest:duplicate_shot_id:${shotId}`);
+        if (shotId) seen.add(shotId);
+        return { shot_id: shotId };
+    });
+    const schemaVersion = safeToken(value.schema_version);
+    const projectId = safeToken(value.project_id);
+    const episodeId = safeToken(value.episode_id);
+    if (schemaVersion !== 'short-drama-room-shot-manifest-v1' || !projectId || !episodeId) {
+        issues.push('shot_manifest:required_metadata_invalid');
+    }
+    if (!records.length) issues.push('shot_manifest:empty');
+    return {
+        value: {
+            schema_version: schemaVersion,
+            project_id: projectId,
+            episode_id: episodeId,
+            shot_count: records.length,
+        },
+        records,
+        issues,
+    };
+}
+
+function sanitizeSelectedTakes(root, value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('selected takes must be an object');
+    if (!Array.isArray(value.takes)) throw new Error('selected takes must contain a takes array');
+    if (value.takes.length > MAX_CANONICAL_RECORDS) throw new Error(`selected takes exceeds ${MAX_CANONICAL_RECORDS} records`);
+
+    const issues = [];
+    if (!Object.keys(value).every((key) => ['schema_version', 'project_id', 'episode_id', 'takes'].includes(key))) {
+        issues.push('selected_takes:unexpected_top_level_fields');
+    }
+    const seen = new Set();
+    const records = value.takes.map((take, index) => {
+        if (!take || typeof take !== 'object' || Array.isArray(take)) throw new Error('selected take entry must be an object');
+        const allowedFields = new Set([
+            'shot_id', 'chosen_provider', 'video_path', 'dialogue_source', 'qc_report_ref', 'selected_at',
+            'beat_id', 'take_id', 'source_in_sec', 'source_out_sec', 'transition_in',
+        ]);
+        const shotId = safeToken(take.shot_id);
+        const beatId = safeToken(take.beat_id);
+        const takeId = safeToken(take.take_id);
+        const provider = ['seedance', 'flow'].includes(take.chosen_provider) ? take.chosen_provider : '';
+        const sourceIn = safeFiniteNumber(take.source_in_sec, 0);
+        const sourceOut = safeFiniteNumber(take.source_out_sec, 0);
+        const source = canonicalSourceFileEvidence(root, take.video_path);
+        const transition = take.transition_in;
+        const transitionObject = transition === null || transition === undefined
+            ? null
+            : (!transition || typeof transition !== 'object' || Array.isArray(transition) ? undefined : transition);
+        const transitionType = transitionObject === null ? '' : ['cut', 'crossfade', 'dip_black'].includes(transitionObject?.type) ? transitionObject.type : '';
+        const transitionDuration = transitionObject === null ? null : safeFiniteNumber(transitionObject?.dur, 0);
+        const transitionValid = transitionObject !== undefined
+            && (transitionObject === null
+                || (transitionType && transitionDuration !== null
+                    && Object.keys(transitionObject).every((key) => ['type', 'dur'].includes(key))));
+        const rangeValid = sourceIn !== null && sourceOut !== null && sourceOut > sourceIn;
+        const hiddenContractFieldsValid = ['native_video_lipsync', 'tts_adr_overlay'].includes(take.dialogue_source)
+            && Boolean(safeToken(take.qc_report_ref))
+            && Boolean(safeToken(take.selected_at));
+
+        if (!Object.keys(take).every((key) => allowedFields.has(key))) issues.push(`selected_takes:unexpected_fields:${index}`);
+        if (!shotId || !beatId || !takeId) issues.push(`selected_takes:invalid_identifiers:${index}`);
+        if (shotId && seen.has(shotId)) issues.push(`selected_takes:duplicate_shot_id:${shotId}`);
+        if (shotId) seen.add(shotId);
+        if (!provider) issues.push(`selected_takes:invalid_provider:${index}`);
+        if (!rangeValid) issues.push(`selected_takes:invalid_range:${index}`);
+        if (!transitionValid) issues.push(`selected_takes:invalid_transition:${index}`);
+        if (!hiddenContractFieldsValid) issues.push(`selected_takes:invalid_hidden_contract_fields:${index}`);
+        if (source.reason) issues.push(`selected_takes:${source.reason}:${index}`);
+
+        return {
+            shot_id: shotId,
+            beat_id: beatId,
+            take_id: takeId,
+            provider,
+            video_path: source.path,
+            source_in_sec: sourceIn,
+            source_out_sec: sourceOut,
+            transition_type: transitionType,
+            transition_duration_sec: transitionDuration,
+            source_exists: source.exists,
+            source_reason: source.reason,
+            range_valid: rangeValid,
+            record_ready: Boolean(shotId && beatId && takeId && provider && rangeValid && transitionValid
+                && hiddenContractFieldsValid && source.exists),
+            provenance: 'selected_takes.json',
+        };
+    });
+    const schemaVersion = safeToken(value.schema_version);
+    const projectId = safeToken(value.project_id);
+    const episodeId = safeToken(value.episode_id);
+    if (schemaVersion !== 'short-drama-room-selected-takes-v1' || !projectId || !episodeId) {
+        issues.push('selected_takes:required_metadata_invalid');
+    }
+    if (!records.length) issues.push('selected_takes:empty');
+    return {
+        value: {
+            schema_version: schemaVersion,
+            project_id: projectId,
+            episode_id: episodeId,
+            take_count: records.length,
+            source_ready_count: records.filter((record) => record.record_ready).length,
+        },
+        records,
+        issues,
+    };
+}
+
+function sanitizeQcReport(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('qc report must be an object');
+    if (!Array.isArray(value.shot_qc)) throw new Error('qc report must contain a shot_qc array');
+    if (value.shot_qc.length > MAX_CANONICAL_RECORDS) throw new Error(`qc report exceeds ${MAX_CANONICAL_RECORDS} records`);
+
+    const issues = [];
+    if (!Object.keys(value).every((key) => ['schema_version', 'project_id', 'episode_id', 'shot_qc', 'subtitle_audio_drift_s'].includes(key))) {
+        issues.push('qc_report:unexpected_top_level_fields');
+    }
+    const seen = new Set();
+    const records = value.shot_qc.map((entry, index) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('qc report entry must be an object');
+        const allowedFields = new Set([
+            'shot_id', 'provider', 'deterministic_checks_passed', 'gemini_findings',
+            'dialogue_intelligibility_score', 'pronunciation_risk_flag', 'decision',
+        ]);
+        const shotId = safeToken(entry.shot_id);
+        const provider = ['seedance', 'flow'].includes(entry.provider) ? entry.provider : '';
+        const deterministicPassed = safeBoolean(entry.deterministic_checks_passed);
+        const score = safeFiniteNumber(entry.dialogue_intelligibility_score, 0, 1);
+        const pronunciationRisk = safeBoolean(entry.pronunciation_risk_flag);
+        const decision = ['accept', 'retry', 'abandon'].includes(entry.decision) ? entry.decision : '';
+        const findings = entry.gemini_findings;
+        const findingsValid = Array.isArray(findings)
+            && findings.length <= MAX_CANONICAL_RECORDS
+            && findings.every((finding) => typeof finding === 'string' && finding.length <= 512);
+
+        if (!Object.keys(entry).every((key) => allowedFields.has(key))) issues.push(`qc_report:unexpected_fields:${index}`);
+        if (!shotId) issues.push(`qc_report:invalid_shot_id:${index}`);
+        if (shotId && seen.has(shotId)) issues.push(`qc_report:duplicate_shot_id:${shotId}`);
+        if (shotId) seen.add(shotId);
+        if (!provider) issues.push(`qc_report:invalid_provider:${index}`);
+        if (deterministicPassed === null) issues.push(`qc_report:invalid_deterministic_state:${index}`);
+        if (score === null) issues.push(`qc_report:invalid_dialogue_score:${index}`);
+        if (pronunciationRisk === null) issues.push(`qc_report:invalid_pronunciation_risk:${index}`);
+        if (!decision) issues.push(`qc_report:invalid_decision:${index}`);
+        if (!findingsValid) issues.push(`qc_report:invalid_external_review_metadata:${index}`);
+
+        return {
+            shot_id: shotId,
+            provider,
+            deterministic_checks_passed: deterministicPassed,
+            dialogue_intelligibility_score: score,
+            pronunciation_risk_flag: pronunciationRisk,
+            decision,
+            external_review_state: findingsValid ? 'recorded_without_verdict' : 'missing_or_invalid',
+            external_finding_count: findingsValid ? findings.length : 0,
+            record_ready: Boolean(shotId && provider && deterministicPassed !== null && score !== null
+                && pronunciationRisk !== null && decision && findingsValid),
+            provenance: 'qc_report.json',
+        };
+    });
+    const schemaVersion = safeToken(value.schema_version);
+    const projectId = safeToken(value.project_id);
+    const episodeId = safeToken(value.episode_id);
+    const subtitleAudioDrift = safeFiniteNumber(value.subtitle_audio_drift_s, -3600, 3600);
+    if (schemaVersion !== 'short-drama-room-qc-report-v1' || !projectId || !episodeId) {
+        issues.push('qc_report:required_metadata_invalid');
+    }
+    if (subtitleAudioDrift === null) issues.push('qc_report:invalid_subtitle_audio_drift');
+    if (!records.length) issues.push('qc_report:empty');
+    return {
+        value: {
+            schema_version: schemaVersion,
+            project_id: projectId,
+            episode_id: episodeId,
+            shot_count: records.length,
+            deterministic_passed_count: records.filter((record) => record.deterministic_checks_passed === true).length,
+            accepted_count: records.filter((record) => record.decision === 'accept').length,
+            retry_count: records.filter((record) => record.decision === 'retry').length,
+            abandoned_count: records.filter((record) => record.decision === 'abandon').length,
+            pronunciation_risk_count: records.filter((record) => record.pronunciation_risk_flag === true).length,
+            subtitle_audio_drift_s: subtitleAudioDrift,
+        },
+        records,
+        issues,
     };
 }
 
@@ -789,6 +1025,9 @@ function readProductionFolder(rootPath, options = {}) {
     const submissionManifest = parseCanonicalJson(root, 'submission_manifest.json', 'submission_manifest.json', sanitizeSubmissionManifest);
     const jimengState = parseCanonicalJson(root, 'jimeng_state.json', 'jimeng_state.json', sanitizeJimengState);
     const downloadManifest = parseCanonicalJson(root, 'download_manifest.json', 'download_manifest.json', (value) => sanitizeDownloadManifest(root, value));
+    const shotManifest = parseCanonicalJson(root, 'shot_manifest.json', 'shot_manifest.json', sanitizeShotManifest);
+    const selectedTakes = parseCanonicalJson(root, 'selected_takes.json', 'selected_takes.json', (value) => sanitizeSelectedTakes(root, value));
+    const qcReport = parseCanonicalJson(root, 'qc_report.json', 'qc_report.json', sanitizeQcReport);
 
     const storyboardParsed = storyboardJson.parsed || storySceneBundle.parsed || storyboardMarkdown.parsed;
     const motionBoardParsed = motionBoardJson.parsed || motionBoardMarkdown.parsed;
@@ -832,6 +1071,47 @@ function readProductionFolder(rootPath, options = {}) {
     if (canonicalInconsistencies.length && !blockers.includes(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN)) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
     }
+    const finishingInconsistencies = [];
+    for (const record of [shotManifest, selectedTakes, qcReport]) {
+        if (!record.exists) finishingInconsistencies.push(`${record.relative_path}:missing`);
+        else if (!record.parsed) finishingInconsistencies.push(`${record.relative_path}:malformed_or_oversized`);
+        finishingInconsistencies.push(...(record.issues || []));
+    }
+    const selectedMetadata = selectedTakes.value || {};
+    const qcMetadata = qcReport.value || {};
+    const manifestMetadata = shotManifest.value || {};
+    if (selectedTakes.parsed && qcReport.parsed) {
+        if (selectedMetadata.project_id !== qcMetadata.project_id) finishingInconsistencies.push('canonical_finishing_project_id_mismatch');
+        if (selectedMetadata.episode_id !== qcMetadata.episode_id) finishingInconsistencies.push('canonical_finishing_episode_id_mismatch');
+        const selectedByShot = new Map(selectedTakes.records.map((record) => [record.shot_id, record]));
+        const qcByShot = new Map(qcReport.records.map((record) => [record.shot_id, record]));
+        for (const [shotId, take] of selectedByShot) {
+            const qc = qcByShot.get(shotId);
+            if (!qc) finishingInconsistencies.push(`qc_report:missing_for_shot:${shotId}`);
+            else if (take.provider && qc.provider && take.provider !== qc.provider) {
+                finishingInconsistencies.push(`canonical_finishing_provider_mismatch:${shotId}`);
+            }
+        }
+        for (const shotId of qcByShot.keys()) {
+            if (!selectedByShot.has(shotId)) finishingInconsistencies.push(`qc_report:unknown_selected_shot:${shotId}`);
+        }
+        const selectedUpdatedAt = Date.parse(selectedTakes.updated_at || '');
+        const qcUpdatedAt = Date.parse(qcReport.updated_at || '');
+        if (Number.isFinite(selectedUpdatedAt) && Number.isFinite(qcUpdatedAt) && qcUpdatedAt < selectedUpdatedAt) {
+            finishingInconsistencies.push('qc_report:stale_for_selected_takes');
+        }
+    }
+    if (shotManifest.parsed && selectedTakes.parsed) {
+        if (manifestMetadata.project_id !== selectedMetadata.project_id) finishingInconsistencies.push('shot_manifest:selected_takes_project_id_mismatch');
+        if (manifestMetadata.episode_id !== selectedMetadata.episode_id) finishingInconsistencies.push('shot_manifest:selected_takes_episode_id_mismatch');
+        const knownShotIds = new Set(shotManifest.records.map((record) => record.shot_id).filter(Boolean));
+        for (const take of selectedTakes.records) {
+            if (take.shot_id && !knownShotIds.has(take.shot_id)) finishingInconsistencies.push(`selected_takes:unknown_manifest_shot:${take.shot_id}`);
+        }
+    }
+    if (finishingInconsistencies.length && !blockers.includes(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN)) {
+        blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+    }
     blockers.push(...(blockersMd.blockers || []));
 
     return {
@@ -863,10 +1143,14 @@ function readProductionFolder(rootPath, options = {}) {
             submissionManifest,
             jimengState,
             downloadManifest,
+            shotManifest,
+            selectedTakes,
+            qcReport,
         },
         canonical: {
             contract: 'happyVideoFactory_short_drama_pipeline_pack',
             inconsistencies: canonicalInconsistencies,
+            finishing_inconsistencies: Array.from(new Set(finishingInconsistencies)),
             final_ready: false,
         },
         blockers: Array.from(new Set(blockers)),

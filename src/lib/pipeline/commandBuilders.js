@@ -244,12 +244,15 @@ export function buildFfprobeValidationCommands(state) {
     return (uniqueFiles.length ? uniqueFiles : [state.finalReport?.final_video_path || absOutput(state, 'final/final.mp4')]).map((filePath, index) => spec({
         id: `ffprobe_${index + 1}`,
         label: index === 0 ? 'ffprobe validation' : `ffprobe validation ${index + 1}`,
-        command: 'ffprobe',
-        args: [filePath],
+        command: '',
+        args: [],
         cwd: rootPath(state),
         side_effect_type: SIDE_EFFECT_TYPES.NON_CONSUMING_STATUS,
-        evidence_output_path: `${filePath}.ffprobe.json`,
-        disabled_reason: filePath ? '' : 'MISSING_VIDEO_FILE',
+        evidence_output_path: '',
+        copy_allowed: false,
+        disabled_reason: 'FFPROBE_EVIDENCE_COMMAND_UNVERIFIED',
+        disabled_detail: '현재 ffprobe 미리보기는 검증 JSON을 실제로 저장하는 명령 계약이 아니므로 복사할 수 없습니다.',
+        target_media_path: filePath,
     }));
 }
 
@@ -259,12 +262,16 @@ export function buildFfmpegConcatPreviewCommand(state) {
     return spec({
         id: 'ffmpeg_concat_preview',
         label: 'ffmpeg concat preview',
-        command: 'ffmpeg',
-        args: ['-y', '-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', finalPath],
+        command: '',
+        args: [],
         cwd: rootPath(state),
         side_effect_type: SIDE_EFFECT_TYPES.LOCAL_WRITE,
-        evidence_output_path: finalPath,
-        disabled_reason: 'PREVIEW_ONLY_REQUIRED',
+        evidence_output_path: '',
+        copy_allowed: false,
+        disabled_reason: 'SELECTED_RANGE_RENDER_PLAN_NOT_IMPLEMENTED',
+        disabled_detail: '현재 concat 방식은 selected_takes.json의 in/out 구간을 반영하지 않으므로 최종 편집 명령으로 사용할 수 없습니다.',
+        concat_list_path: concatList,
+        target_final_path: finalPath,
     });
 }
 

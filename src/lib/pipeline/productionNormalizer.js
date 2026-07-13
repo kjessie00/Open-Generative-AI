@@ -185,15 +185,77 @@ function normalizePromptPacks(rawReader) {
 
 function normalizeAcceptedSeconds(rawReader) {
     const rows = rawReader.parsed?.acceptedSeconds?.records || [];
-    return rows.map((row) => ({
-        clip_id: pickValue(row, ['clip_id', 'clip', 'Clip', 'Clip ID', 'clip id']),
-        source_file: absolutePath(rawReader.rootPath, pickValue(row, ['source_file', 'file', 'Source', 'Source file', 'source file'])),
-        in_time: Number(pickValue(row, ['in_time', 'in', 'In', 'In time', 'in time']) || 0),
-        out_time: Number(pickValue(row, ['out_time', 'out', 'Out', 'Out time', 'out time']) || 0),
-        reason: pickValue(row, ['reason', 'Reason']),
-        reviewer_confidence: pickValue(row, ['reviewer_confidence', 'confidence', 'Confidence', 'Reviewer confidence', 'reviewer confidence']),
-        whole_clip_accepted: false,
-    }));
+    return rows.map((row) => {
+        const sourceFile = absolutePath(rawReader.rootPath, pickValue(row, ['source_file', 'file', 'Source', 'Source file', 'source file']));
+        const inTime = Number(pickValue(row, ['in_time', 'in', 'In', 'In time', 'in time']) || 0);
+        const outTime = Number(pickValue(row, ['out_time', 'out', 'Out', 'Out time', 'out time']) || 0);
+        const sourceExists = Boolean(fileMetaForPath(rawReader, sourceFile));
+        return {
+            clip_id: pickValue(row, ['clip_id', 'clip', 'Clip', 'Clip ID', 'clip id']),
+            source_file: sourceFile,
+            in_time: inTime,
+            out_time: outTime,
+            reason: pickValue(row, ['reason', 'Reason']),
+            reviewer_confidence: pickValue(row, ['reviewer_confidence', 'confidence', 'Confidence', 'Reviewer confidence', 'reviewer confidence']),
+            source_exists: sourceExists,
+            accepted: Boolean(sourceFile && Number.isFinite(inTime) && Number.isFinite(outTime) && inTime >= 0 && outTime > inTime),
+            whole_clip_accepted: false,
+            provenance: 'accepted_seconds.md',
+        };
+    });
+}
+
+function canonicalAliasContext(rawReader) {
+    const shotManifest = rawReader.parsed?.shotManifest;
+    const manifestIssues = shotManifest?.issues || [];
+    const ready = shotManifest?.parsed === true && manifestIssues.length === 0;
+    return {
+        ready,
+        shotIds: new Set(ready ? shotManifest.records.map((record) => record.shot_id).filter(Boolean) : []),
+    };
+}
+
+function canonicalClipAlias(shotId, aliasContext) {
+    return aliasContext.ready && shotId && aliasContext.shotIds.has(shotId) ? `clip_${shotId}` : '';
+}
+
+function normalizeCanonicalSelectedRanges(rawReader) {
+    const selected = rawReader.parsed?.selectedTakes;
+    if (!selected?.exists) return null;
+    if (!selected.parsed) return [];
+    const aliasContext = canonicalAliasContext(rawReader);
+    const selectedIssues = (selected.issues || []).filter((issue) => issue.startsWith('selected_takes:'));
+    const crossIssues = (rawReader.canonical?.finishing_inconsistencies || []).filter((issue) => (
+        issue.startsWith('shot_manifest:selected_takes_') || issue.startsWith('selected_takes:unknown_manifest_shot:')
+    ));
+    const documentReady = selectedIssues.length === 0 && crossIssues.length === 0;
+
+    return (selected.records || []).map((record) => {
+        const clipId = canonicalClipAlias(record.shot_id, aliasContext);
+        const accepted = Boolean(documentReady && clipId && record.record_ready === true && record.source_exists === true);
+        return {
+            clip_id: clipId,
+            source_file: record.video_path || '',
+            in_time: record.source_in_sec,
+            out_time: record.source_out_sec,
+            reason: accepted
+                ? 'canonical_selected_take'
+                : record.source_reason || (!clipId ? 'canonical_identifier_unproven' : 'canonical_selected_take_invalid'),
+            reviewer_confidence: 'canonical_selection_only',
+            source_exists: record.source_exists === true,
+            accepted,
+            whole_clip_accepted: false,
+            canonical_shot_id: record.shot_id,
+            canonical_beat_id: record.beat_id,
+            canonical_take_id: record.take_id,
+            canonical_provider: record.provider,
+            transition_type: record.transition_type,
+            transition_duration_sec: record.transition_duration_sec,
+            canonical_alias_source: clipId ? 'shot_manifest.json+timeline_builder.clip_<shot_id>' : '',
+            canonical_provenance: 'selected_takes.json',
+            source_evidence: record.source_exists ? 'non_symlink_regular_file' : record.source_reason,
+        };
+    });
 }
 
 function normalizeSubmitRecords(rawReader) {
@@ -257,7 +319,55 @@ function normalizeHeartbeatRecords(rawReader) {
     }));
 }
 
-function normalizeQaRecords(rawReader, storyboard) {
+function normalizeCanonicalQaRecords(rawReader, acceptedSeconds) {
+    const qcReport = rawReader.parsed?.qcReport;
+    if (!qcReport?.exists) return null;
+    if (!qcReport.parsed) return [];
+    const aliasContext = canonicalAliasContext(rawReader);
+    return (qcReport.records || []).map((record) => {
+        const clipId = canonicalClipAlias(record.shot_id, aliasContext);
+        const selected = acceptedSeconds.find((candidate) => candidate.canonical_shot_id === record.shot_id) || {};
+        const canonicalBlocked = record.record_ready !== true
+            || !clipId
+            || record.deterministic_checks_passed !== true
+            || record.pronunciation_risk_flag === true
+            || record.decision !== 'accept';
+        return {
+            clip_id: clipId,
+            file_path: selected.source_file || '',
+            valid_video: false,
+            duration_ok: false,
+            aspect_ratio_ok: false,
+            identity_ok: false,
+            first_frame_respected: false,
+            camera_ok: false,
+            no_subtitles_or_watermarks: false,
+            no_background_music: false,
+            dialogue_ok: false,
+            continuity_ok: false,
+            no_ui_text: false,
+            gemini_frame_review_path: '',
+            video_review_path: '',
+            verdict: 'UNREVIEWED',
+            canonical_shot_id: record.shot_id,
+            canonical_provider: record.provider,
+            deterministic_checks_passed: record.deterministic_checks_passed,
+            dialogue_intelligibility_score: record.dialogue_intelligibility_score,
+            pronunciation_risk_flag: record.pronunciation_risk_flag,
+            canonical_decision: record.decision,
+            external_review_state: record.external_review_state,
+            external_finding_count: record.external_finding_count,
+            human_decision: 'UNREVIEWED',
+            canonical_qc_state: canonicalBlocked ? 'BLOCK' : 'UNREVIEWED',
+            canonical_alias_source: clipId ? 'shot_manifest.json+timeline_builder.clip_<shot_id>' : '',
+            canonical_provenance: 'qc_report.json',
+        };
+    });
+}
+
+function normalizeQaRecords(rawReader, storyboard, acceptedSeconds) {
+    const canonical = normalizeCanonicalQaRecords(rawReader, acceptedSeconds);
+    if (canonical !== null) return canonical;
     const qaFiles = (rawReader.files || []).filter((file) => /(^|\/)qa\//.test(file.relative_path));
     const frameReviewPaths = filesMatching(rawReader, (file) => /(^|\/)reviews?\//.test(file.relative_path) && /frame|gemini/i.test(file.name));
     const videoReviewPaths = filesMatching(rawReader, (file) => /(^|\/)reviews?\//.test(file.relative_path) && /video|clip|qa/i.test(file.name));
@@ -291,10 +401,12 @@ function normalizeCost(rawReader) {
     }, 0);
 }
 
-function buildReviewGates(rawReader, blockers, imageDashboard, promptPacks, acceptedSeconds) {
+function buildReviewGates(rawReader, blockers, imageDashboard, promptPacks, acceptedSeconds, storyboard) {
     const dashboardParsed = imageDashboard?.parsed === true;
     const promptReviewed = promptPacks.some((pack) => pack.review_status === 'PASS');
-    const accepted = acceptedSeconds.some((record) => record.source_file && record.out_time > record.in_time);
+    const expectedClipIds = Array.from(new Set((storyboard || []).map((clip) => clip.clip_id).filter(Boolean)));
+    const acceptedClipIds = new Set(acceptedSeconds.filter((record) => record.accepted === true).map((record) => record.clip_id));
+    const accepted = expectedClipIds.length > 0 && expectedClipIds.every((clipId) => acceptedClipIds.has(clipId));
     const gate = (type, status, blocker = '', evidence_path = '', notes = '') => ({
         gate_id: `reader_${type}`,
         clip_id: '',
@@ -313,26 +425,20 @@ function buildReviewGates(rawReader, blockers, imageDashboard, promptPacks, acce
         gate('preflight', blockers.length ? 'BLOCK' : 'UNREVIEWED', blockers[0] || '', '', 'Reader import does not authorize submit.'),
         gate('submit_confirmation', 'BLOCK', BLOCKERS.CREDIT_CONFIRMATION_REQUIRED, '', 'Credit confirmation is never inferred from imported files.'),
         gate('frame_qa', 'UNREVIEWED', BLOCKERS.FRAME_EXTRACTION_BLOCKED, '', 'Frame QA must be recorded explicitly.'),
-        gate('accepted_seconds', accepted ? 'PASS' : 'BLOCK', accepted ? '' : BLOCKERS.MISSING_ACCEPTED_SECONDS, rawReader.parsed?.acceptedSeconds?.path || '', 'Accepted seconds must be parsed from markdown.'),
+        gate('accepted_seconds', accepted ? 'PASS' : 'BLOCK', accepted ? '' : BLOCKERS.MISSING_ACCEPTED_SECONDS, rawReader.parsed?.selectedTakes?.path || rawReader.parsed?.acceptedSeconds?.path || '', 'Accepted seconds require complete planned-clip coverage and file evidence.'),
     ];
 }
 
-function fileStatus(rawReader) {
+function fileStatus(rawReader, acceptedSeconds = []) {
     const parsedRecords = Object.values(rawReader.parsed || {}).filter((record) => record?.parsed === true).length;
     const markdownExists = Object.values(rawReader.markdown || {}).filter((record) => record?.exists === true).length;
     const dashboardAssets = arrayFromMaybe(rawReader.parsed?.imageDashboard?.value?.assets || rawReader.parsed?.imageDashboard?.value);
-    const acceptedRows = rawReader.parsed?.acceptedSeconds?.records || [];
     return {
         files_found: rawReader.files?.length || 0,
         markdown_exists: markdownExists,
         content_parsed: parsedRecords,
         review_passed: dashboardAssets.filter((asset) => ['PASS', 'pass'].includes(asset.review_verdict || asset.verdict)).length,
-        quality_accepted: acceptedRows.filter((row) => {
-            const sourceFile = row.source_file || row.file || row.Source || '';
-            const inTime = Number(row.in_time || row.in || row.In || 0);
-            const outTime = Number(row.out_time || row.out || row.Out || 0);
-            return sourceFile && outTime > inTime;
-        }).length,
+        quality_accepted: acceptedSeconds.filter((record) => record.accepted === true).length,
     };
 }
 
@@ -353,7 +459,8 @@ export function normalizeProductionReaderState(rawReader) {
     const motionBoard = normalizeMotionBoard(motionBoardSource);
     const assets = normalizeDashboardAssets(rawReader, rootPath);
     const promptPacks = normalizePromptPacks(rawReader);
-    const acceptedSeconds = normalizeAcceptedSeconds(rawReader);
+    const canonicalAcceptedSeconds = normalizeCanonicalSelectedRanges(rawReader);
+    const acceptedSeconds = canonicalAcceptedSeconds === null ? normalizeAcceptedSeconds(rawReader) : canonicalAcceptedSeconds;
     const submitRecords = normalizeSubmitRecords(rawReader);
     const heartbeatRecords = normalizeHeartbeatRecords(rawReader);
     const blockers = Array.from(new Set(rawReader.blockers || []));
@@ -377,7 +484,10 @@ export function normalizeProductionReaderState(rawReader) {
         geminiFrameReviewPaths: filesMatching(rawReader, (file) => /(^|\/)reviews?\//.test(file.relative_path) && /frame|gemini/i.test(file.name)),
         videoReviewPaths: filesMatching(rawReader, (file) => /(^|\/)reviews?\//.test(file.relative_path) && /video|clip|qa/i.test(file.name)),
         ffprobePaths: filesMatching(rawReader, (file) => /ffprobe/i.test(file.name)),
-        acceptedSecondsPath: rawReader.parsed?.acceptedSeconds?.path || '',
+        acceptedSecondsPath: rawReader.parsed?.selectedTakes?.path || rawReader.parsed?.acceptedSeconds?.path || '',
+        selectedTakesPath: rawReader.parsed?.selectedTakes?.path || '',
+        qcReportPath: rawReader.parsed?.qcReport?.path || '',
+        shotManifestPath: rawReader.parsed?.shotManifest?.path || '',
     };
     const ffprobePath = qaArtifacts.ffprobePaths[0] || `${finalVideoPath}.ffprobe.json`;
     const ffprobeExists = rawReader.files?.some((file) => file.path === ffprobePath) === true;
@@ -399,8 +509,17 @@ export function normalizeProductionReaderState(rawReader) {
         error: rawReader.parsed?.imageDashboard?.error || '',
         assets,
     };
-    const qaRecords = normalizeQaRecords(rawReader, storyboard);
-    const reviewGates = buildReviewGates(rawReader, stateBlockers, rawReader.parsed?.imageDashboard, promptPacks, acceptedSeconds);
+    const qaRecords = normalizeQaRecords(rawReader, storyboard, acceptedSeconds);
+    const reviewGates = buildReviewGates(rawReader, stateBlockers, rawReader.parsed?.imageDashboard, promptPacks, acceptedSeconds, storyboard);
+    const canonicalSelectedRanges = acceptedSeconds.filter((record) => record.canonical_provenance === 'selected_takes.json');
+    const selectedRangesReady = canonicalSelectedRanges.filter((record) => record.accepted === true);
+    const canonicalQcRecords = qaRecords.filter((record) => record.canonical_provenance === 'qc_report.json');
+    const aliasReady = canonicalSelectedRanges.length > 0
+        && canonicalSelectedRanges.every((record) => Boolean(record.clip_id && record.canonical_alias_source));
+    const acceptedByClip = new Map();
+    for (const record of acceptedSeconds.filter((candidate) => candidate.accepted === true)) {
+        acceptedByClip.set(record.clip_id, (acceptedByClip.get(record.clip_id) || 0) + (record.out_time - record.in_time));
+    }
 
     return {
         project: {
@@ -444,7 +563,11 @@ export function normalizeProductionReaderState(rawReader) {
             ffprobe_verified: ffprobeExists,
             ffprobe_path: ffprobePath,
             report_path: reportPath,
-            clip_table: storyboard.map((clip) => ({ clip_id: clip.clip_id, status: 'imported', accepted_seconds: 0 })),
+            clip_table: storyboard.map((clip) => ({
+                clip_id: clip.clip_id,
+                status: acceptedByClip.has(clip.clip_id) ? 'range_selected_unrendered' : 'imported',
+                accepted_seconds: acceptedByClip.get(clip.clip_id) || 0,
+            })),
             known_credits: normalizeCost(rawReader),
             heartbeat_history: heartbeatRecords,
             qa_result: qaRecords,
@@ -474,7 +597,15 @@ export function normalizeProductionReaderState(rawReader) {
             submission_manifest_path: rawReader.parsed?.submissionManifest?.path || '',
             jimeng_state_path: rawReader.parsed?.jimengState?.path || '',
             download_manifest_path: rawReader.parsed?.downloadManifest?.path || '',
+            shot_manifest_path: rawReader.parsed?.shotManifest?.path || '',
+            selected_takes_path: rawReader.parsed?.selectedTakes?.path || '',
+            qc_report_path: rawReader.parsed?.qcReport?.path || '',
             inconsistencies: rawReader.canonical?.inconsistencies || [],
+            finishing_inconsistencies: rawReader.canonical?.finishing_inconsistencies || [],
+            selected_range_count: canonicalSelectedRanges.length,
+            selected_range_ready_count: selectedRangesReady.length,
+            qc_record_count: canonicalQcRecords.length,
+            identifier_alias_ready: aliasReady,
             validation_input_ready: rawReader.parsed?.pipelinePackReport?.parsed === true
                 && rawReader.markdown?.intake?.exists === true
                 && rawReader.markdown?.script?.exists === true
@@ -486,9 +617,12 @@ export function normalizeProductionReaderState(rawReader) {
             [concatListPath]: concatExists,
             [reportPath]: reportExists,
             [ffprobePath]: ffprobeExists,
+            ...Object.fromEntries(acceptedSeconds
+                .filter((record) => record.source_exists === true && record.source_file)
+                .map((record) => [record.source_file, true])),
         },
         files: (rawReader.files || []).map((file) => file.path),
-        fileStatus: fileStatus(rawReader),
+        fileStatus: fileStatus(rawReader, acceptedSeconds),
         reader: rawReader,
         blockers: stateBlockers,
     };

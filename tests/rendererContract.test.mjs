@@ -699,3 +699,97 @@ test('local media source policy is deny-by-default and never permits remote file
     assert.equal(localMediaSource('/private/tmp/frame.png', 'image'), '/private/tmp/frame.png');
     assert.equal(localMediaSource('file:///private/tmp/frame.png', 'image'), 'file:///private/tmp/frame.png');
 });
+
+test('canonical finishing UI stays Korean, separates QC states, and exposes zero false final-command copies', async (t) => {
+    let copyCalls = 0;
+    const { restore } = installDeterministicDom({
+        copyCommandPreview: async () => {
+            copyCalls += 1;
+            return { copied: true, verified: true };
+        },
+    });
+    t.after(restore);
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const { QAPanel } = await import('../src/components/pipeline/QAPanel.js');
+    const { FinalReportPanel } = await import('../src/components/pipeline/FinalReportPanel.js');
+
+    const state = structuredClone(samplePipelineState);
+    state.project.root_path = '/tmp/synthetic-finishing';
+    state.storyboard[0].clip_id = 'clip_SH01';
+    state.promptPacks = [];
+    state.submitRecords = [];
+    state.heartbeatRecords = [];
+    state.acceptedSeconds = [{
+        clip_id: 'clip_SH01',
+        source_file: '/tmp/synthetic-finishing/takes/SH01.mp4',
+        source_exists: true,
+        in_time: 0.5,
+        out_time: 4.5,
+        accepted: true,
+        whole_clip_accepted: false,
+        canonical_shot_id: 'SH01',
+        canonical_beat_id: 'BEAT01',
+        canonical_take_id: 'SH01_take_01',
+        transition_type: 'cut',
+        transition_duration_sec: 0,
+        canonical_alias_source: 'shot_manifest.json+timeline_builder.clip_<shot_id>',
+        canonical_provenance: 'selected_takes.json',
+        reason: 'canonical_selected_take',
+    }];
+    state.qaRecords = [{
+        clip_id: 'clip_SH01',
+        canonical_shot_id: 'SH01',
+        canonical_provider: 'seedance',
+        deterministic_checks_passed: true,
+        dialogue_intelligibility_score: 0.94,
+        pronunciation_risk_flag: false,
+        canonical_decision: 'accept',
+        external_review_state: 'recorded_without_verdict',
+        human_decision: 'UNREVIEWED',
+        verdict: 'UNREVIEWED',
+        canonical_provenance: 'qc_report.json',
+    }];
+    state.qaArtifacts = {
+        shotManifestPath: '/tmp/synthetic-finishing/shot_manifest.json',
+        selectedTakesPath: '/tmp/synthetic-finishing/selected_takes.json',
+        qcReportPath: '/tmp/synthetic-finishing/qc_report.json',
+        acceptedSecondsPath: '/tmp/synthetic-finishing/selected_takes.json',
+    };
+    state.canonicalHandoff = {
+        shot_manifest_path: state.qaArtifacts.shotManifestPath,
+        selected_takes_path: state.qaArtifacts.selectedTakesPath,
+        qc_report_path: state.qaArtifacts.qcReportPath,
+        selected_range_count: 1,
+        selected_range_ready_count: 1,
+        qc_record_count: 1,
+        identifier_alias_ready: true,
+        finishing_inconsistencies: [],
+        final_ready: false,
+    };
+    state.fileEvidence = { '/tmp/synthetic-finishing/takes/SH01.mp4': true };
+    state.files = ['/tmp/synthetic-finishing/takes/SH01.mp4'];
+    state.blockers = ['OUTPUT_QUALITY_NOT_PROVEN'];
+    state.finalReport = {
+        ...state.finalReport,
+        final_video_path: '/tmp/synthetic-finishing/final/final.mp4',
+        concat_list_path: '/tmp/synthetic-finishing/final/concat_list.txt',
+        report_path: '/tmp/synthetic-finishing/final/report.md',
+        ffprobe_verified: false,
+        blockers: ['OUTPUT_QUALITY_NOT_PROVEN'],
+    };
+
+    const qa = QAPanel({ state });
+    const final = FinalReportPanel({ state });
+    assert.match(qa.textContent, /정식 QC는 구조 증거일 뿐임/);
+    assert.match(qa.textContent, /사람의 최종 판정은 미검토/);
+    assert.match(qa.textContent, /원본 증거가 있는 채택 구간: 1/);
+    assert.match(final.textContent, /정식 최종 준비 상태 미입증/);
+    assert.match(final.textContent, /ffprobe 증거 저장과 선택 구간 렌더링이 구현되지 않아/);
+    const buttons = findAll(final, 'button');
+    assert.ok(buttons.length >= 2);
+    assert.equal(buttons.every((button) => button.disabled), true);
+    assert.equal(buttons.every((button) => (button.listeners.get('click') || []).length === 0), true);
+    for (const button of buttons) await button.dispatchEvent({ type: 'click' });
+    assert.equal(copyCalls, 0);
+    assert.equal(buttons.some((button) => /실행|Run/i.test(button.textContent)), false);
+});
