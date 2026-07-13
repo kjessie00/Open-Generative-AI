@@ -20,9 +20,9 @@ production 완료를 선언할 수는 없다. 실제 Electron GUI에서 10개 co
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았고 command preview만 허용 |
 | AC5 실제 GUI | PENDING | 실제 Electron 창에서 panel/folder/state/error/blocked preview 증거 필요 |
 | AC6 production reader | VERIFIED (fixture/fail-safe) | `93f35a3`, focused 8/8 PASS; 실제 후보는 partial/unknown |
-| AC7 자동 검증 | PARTIAL PASS | network-denied 전체 64/64, lint, build 39 modules, diff check PASS; GUI 범위 미완료 |
+| AC7 자동 검증 | PARTIAL PASS | network-denied 전체 65/65, lint, build 39 modules, diff check PASS; 실제 GUI 범위 미완료 |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
-| AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; offline OSV DB 부재는 `SCANNER_GAP` |
+| AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds를 독립 상태로 유지 |
 
 ## 현재 검증 증거
@@ -30,11 +30,13 @@ production 완료를 선언할 수는 없다. 실제 Electron GUI에서 10개 co
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- network-denied 전체 테스트: 64/64 PASS
+- network-denied 전체 테스트: 65/65 PASS
 - lint: PASS
 - Vite build: PASS, 39 modules
 - `git diff --check`: PASS
 - 상세 reader 증거: `docs/ui_integration/20_production_reader_validation.md`
+- renderer 계약 증거: `docs/ui_integration/22_renderer_contract_validation.md`
+- offline dependency 증거: `docs/ui_integration/23_offline_dependency_audit.md`
 
 Jessie가 승인한 `release/`와 `/tmp/open-generative-ai-security-review-20260713-p0` 삭제는 완료되었고 두 경로는 재생성되지 않았다.
 
