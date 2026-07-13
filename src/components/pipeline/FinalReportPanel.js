@@ -144,7 +144,10 @@ export function FinalReportPanel({ state }) {
     const finalVideoPath = finalReport.final_video_path;
     const concatListPath = finalReport.concat_list_path;
     const reportPath = finalReport.report_path;
-    const ffprobePath = finalReport.ffprobe_path || (finalVideoPath ? `${finalVideoPath}.ffprobe.json` : '');
+    const deliveryVerified = finalReport.delivery_verified === true
+        && finalReport.delivery_sha256_verified === true
+        && finalReport.persisted_probe_verified === true;
+    const ffprobePath = finalReport.ffprobe_path || (!deliveryVerified && finalVideoPath ? `${finalVideoPath}.ffprobe.json` : '');
     const finalVideoExists = hasFileEvidence(finalVideoPath, state);
     const condition = deriveFinalCondition(state, validation);
     const creditEvidence = knownCreditEvidence(state);
@@ -156,9 +159,9 @@ export function FinalReportPanel({ state }) {
         checklistItem(p('all clips downloaded'), allClipIds.length > 0 && allClipIds.every((clipId) => downloadedClipIds.has(clipId)), BLOCKERS.FRAME_EXTRACTION_BLOCKED),
         checklistItem(p('all QA passed or exception recorded'), allClipIds.length > 0 && allClipIds.every((clipId) => qaClipIds.has(clipId)), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
         checklistItem(p('accepted seconds recorded'), allClipIds.length > 0 && allClipIds.every((clipId) => acceptedClipIds.has(clipId)), BLOCKERS.MISSING_ACCEPTED_SECONDS),
-        checklistItem(p('concat list exists'), hasFileEvidence(concatListPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
-        checklistItem(p('final.mp4 exists'), hasFileEvidence(finalVideoPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
-        checklistItem(p('ffprobe verification exists'), finalReport.ffprobe_verified === true || hasFileEvidence(ffprobePath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(deliveryVerified ? p('verified delivery stitch evidence') : p('concat list exists'), deliveryVerified || hasFileEvidence(concatListPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(deliveryVerified ? p('verified canonical master exists') : p('final.mp4 exists'), finalVideoExists, BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(deliveryVerified ? p('persisted producer probe verified') : p('ffprobe verification exists'), deliveryVerified || finalReport.ffprobe_verified === true || hasFileEvidence(ffprobePath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
         checklistItem(p('report.md exists'), hasFileEvidence(reportPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
     ];
 
@@ -170,6 +173,7 @@ export function FinalReportPanel({ state }) {
                 statusBadge(validation.ok ? p('final ready') : conditionLabel, validation.ok ? 'PASS' : 'BLOCK'),
                 statusBadge(p('evidence-only credits'), 'PREVIEW'),
                 statusBadge(p('ffmpeg/ffprobe commands blocked'), 'BLOCK'),
+                deliveryVerified ? statusBadge(p('delivery hash verified'), 'PASS') : null,
             ]),
             el('p', {
                 text: finalVideoExists
@@ -184,7 +188,13 @@ export function FinalReportPanel({ state }) {
             { label: p('Production folder'), value: finalReport.production_folder },
             { label: p('Generator route'), value: finalReport.generator_route },
             { label: p('Concat list path'), value: finalReport.concat_list_path },
-            { label: p('ffprobe evidence path'), value: ffprobePath },
+            { label: p('Delivery manifest path'), value: finalReport.delivery_manifest_path || p('not loaded') },
+            { label: p('Delivery SHA-256'), value: finalReport.delivery_sha256_verified ? finalReport.delivery_sha256 : p('not verified') },
+            { label: p('Persisted producer probe'), value: finalReport.persisted_probe_verified
+                ? p('{duration}s · video and audio present', { duration: finalReport.persisted_probe?.duration_seconds })
+                : p('not verified') },
+            { label: p('Fresh ffprobe status'), value: finalReport.fresh_probe_verified ? p('verified') : p('not run') },
+            { label: p('Fresh ffprobe evidence path'), value: ffprobePath || p('not available') },
             { label: p('Known credits'), value: `${creditEvidence.total} (${creditEvidence.source})` },
             { label: p('Completion time'), value: completionTime(state) || p('not complete') },
             { label: p('Residual risks'), value: (finalReport.residual_risks || []).join(', ') },
@@ -196,11 +206,13 @@ export function FinalReportPanel({ state }) {
         card([
             el('div', { className: 'mb-3 flex flex-wrap gap-2' }, [
                 statusBadge(canonicalHandoff.identifier_alias_ready ? p('Canonical clip alias proven') : p('Canonical clip alias blocked'), canonicalHandoff.identifier_alias_ready ? 'PREVIEW' : 'BLOCK'),
-                statusBadge(canonicalHandoff.final_ready === true ? p('final ready') : p('Canonical final readiness not proven'), canonicalHandoff.final_ready === true ? 'PASS' : 'BLOCK'),
+                statusBadge(deliveryVerified ? p('Canonical delivery evidence verified') : p('Canonical delivery evidence not verified'), deliveryVerified ? 'PASS' : 'BLOCK'),
+                statusBadge(finalReport.fresh_probe_verified ? p('Fresh ffprobe verified') : p('Fresh ffprobe not run'), finalReport.fresh_probe_verified ? 'PASS' : 'PREVIEW'),
+                statusBadge(validation.ok ? p('final ready') : p('Canonical final readiness not proven'), validation.ok ? 'PASS' : 'BLOCK'),
             ]),
-            el('p', { text: p('Selected ranges and canonical QC are finishing inputs, not a rendered final. Final readiness still requires matching planned clip identities, passed QA or an explicit exception, final.mp4, report, concat evidence, and real ffprobe evidence.'), className: 'text-sm leading-6 text-secondary' }),
+            el('p', { text: p('A verified delivery manifest proves only the canonical master file, its persisted producer probe, and delivery stitch evidence. It does not prove human QA, selected coverage, submit or download history, report presence, or output quality.'), className: 'text-sm leading-6 text-secondary' }),
             canonicalHandoff.finishing_inconsistencies?.length ? el('div', { className: 'mt-3 flex flex-wrap gap-2' }, canonicalHandoff.finishing_inconsistencies.map((reason) => statusBadge(reason, 'BLOCK'))) : null,
-        ], canonicalHandoff.final_ready === true ? 'border-emerald-400/20' : 'border-red-400/20'),
+        ], validation.ok ? 'border-emerald-400/20' : 'border-red-400/20'),
         dataTable([
             { label: p('Clip'), key: 'clip_id' },
             { label: p('First-frame image'), render: (row) => firstFrameCell(row.firstFrameAsset) },
@@ -226,7 +238,7 @@ export function FinalReportPanel({ state }) {
         el('section', { className: 'flex flex-col gap-4' }, [
             el('div', {}, [
                 el('h3', { text: p('Final command safety status'), className: 'text-lg font-bold text-white' }),
-                el('p', { text: p('ffprobe evidence persistence and selected-range rendering are not implemented, so both command cards are disabled and cannot be copied.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
+                el('p', { text: p('The app does not run a fresh ffprobe or render selected ranges. Both command cards remain disabled and cannot be copied, even when persisted delivery evidence is verified.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
             ]),
             el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, [
                 ...ffprobeSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec })),

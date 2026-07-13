@@ -67,6 +67,18 @@ Vite build 41 modules가 PASS했다. 실제 production, Electron GUI, ffmpeg/ffp
 production write는 사용하지 않았다. 상세:
 `docs/ui_integration/32_canonical_finishing_state.md`.
 
+Canonical delivery evidence v1은 Layout A의 exact
+`final/delivery_manifest.json`만 읽는다. Schema/gate/path/probe/checksum을 제한하고
+선택된 `master.mp4` 또는 `master_sub.mp4`를 최대 16 GiB, no-follow/stable
+identity, bounded streaming SHA-256으로 다시 검증한다. 검증된 delivery는 final
+media, 저장된 producer probe, filter-complex delivery stitch 증거만 충족한다.
+Fresh ffprobe, 사람 QA, 모든 선택 구간, submit/download, report, 활성 blocker와
+output quality는 계속 분리된다. 무관 mp4/ffprobe는 증거로 승격되지 않으며 final
+command card는 command/copy 모두 disabled다. Focused 최종 38/38, network-denied
+전체 123/123, lint, Vite build 41 modules가 PASS했다. 실제 production,
+Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 상세:
+`docs/ui_integration/33_canonical_delivery_evidence.md`.
+
 ## 인수 기준 현황
 
 | 기준 | 상태 | 현재 증거 또는 남은 조건 |
@@ -76,8 +88,8 @@ production write는 사용하지 않았다. 상세:
 | AC3 renderer/main 경계 | EXECUTOR PASS / INDEPENDENT BLOCK | current preload는 `filmPipeline` 12 methods, `setConfig` 없음; 새 method도 renderer path 인자 없는 fixed-root read-only metadata이며 main이 configured root/parent selection과 read/write를 소유; 독립 verifier verdict 없음 |
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았고 검증된 preview만 복사 가능; 불완전한 ffprobe/concat은 command/copy 모두 disabled |
 | AC5 실제 GUI | PARTIAL PASS | 기존 실제 window/preload/11-tab/fixture+첫 root native/state/blocked preview/trusted copy와 한국어 4-viewport/AX/axe/focus PASS; provenance 변경 후 open/parent/sidebar/refresh는 deterministic DOM PASS지만 실제 Electron은 미실행; 두 번째 root native selection, 수정 후 console 및 실제 keyboard-only 증거는 BLOCK |
-| AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant, canonical pack/ledger, selected takes/QC golden·missing·malformed·oversize·symlink·unsafe path·range·ID/QC conflict matrix PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
-| AC7 자동 검증 | VERIFIED (명시된 GUI/독립 gaps 제외) | canonical finishing 후 network-denied 전체 115/115, finishing focused 44/44, lint, build 41 modules PASS; 기존 실제 GUI runtime 증거는 별도 보존 |
+| AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant, canonical pack/ledger, selected takes/QC 및 exact delivery manifest/master SHA golden·missing·malformed·oversize·symlink·unsafe/stale/changed path·range·ID/QC conflict matrix PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
+| AC7 자동 검증 | VERIFIED (명시된 GUI/독립 gaps 제외) | canonical delivery 후 network-denied 전체 123/123, delivery focused 38/38, lint, build 41 modules PASS; 기존 실제 GUI runtime 증거는 별도 보존 |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
 | AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds와 canonical deterministic/external/canonical/human/final 상태를 독립 유지 |
@@ -87,7 +99,8 @@ production write는 사용하지 않았다. 상세:
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- network-denied 전체 테스트: 115/115 PASS
+- network-denied 전체 테스트: 123/123 PASS
+- canonical delivery focused: 첫 실행 35/38, 허용된 1회 국소 self-fix 후 38/38 PASS
 - canonical finishing focused: 첫 실행 44/44 PASS, self-fix 없음
 - canonical handoff focused: targeted self-fix 후 38/38 PASS
 - network-denied provenance/security/renderer focused: 32/32 PASS
@@ -105,6 +118,7 @@ production write는 사용하지 않았다. 상세:
 - planning file 최소권한 쓰기 경계: `docs/ui_integration/29_planning_write_security.md`
 - renderer path provenance 경계: `docs/ui_integration/30_renderer_path_provenance.md`
 - canonical finishing state: `docs/ui_integration/32_canonical_finishing_state.md`
+- canonical delivery evidence: `docs/ui_integration/33_canonical_delivery_evidence.md`
 - native/clipboard focused regression: 12/12 PASS
 - active Electron entrypoint focused security regression: 8/8 PASS
 - historical fresh runtime: `window.localAI === undefined`, 당시 `window.filmPipeline` 12 methods, legacy/unsafe enabled control 0, `file:` 7/external request 0, renderer console warning/error 0
@@ -140,7 +154,9 @@ Jessie가 승인한 `release/`와 `/tmp/open-generative-ai-security-review-20260
 9. 실제 production의 selected takes/QC는 이번 슬라이스에서 읽지 않았다. 실제
    finishing quality를 주장하려면 별도 승인된 read-only production 회차와 GUI
    증거가 필요하다.
-10. selected-range render plan과 persisted ffprobe JSON contract가 구현되기 전까지
-    최종 ffmpeg/ffprobe command card는 disabled 상태를 유지한다.
+10. Canonical delivery의 producer-persisted probe는 지원하지만 fresh ffprobe를
+    실행하거나 증거 JSON을 새로 만들지는 않는다. Selected-range render plan과
+    fresh-probe 실행 계약이 별도 구현·검증되기 전까지 최종 ffmpeg/ffprobe command
+    card는 disabled 상태를 유지한다.
 
 본 회차의 GUI 자동화는 Jessie의 current-turn 승인 아래 외부망 차단으로 수행했다. 외부 계정 접근, generation/upload, deploy/release는 실행하지 않았다.

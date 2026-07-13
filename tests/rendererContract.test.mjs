@@ -763,18 +763,39 @@ test('canonical finishing UI stays Korean, separates QC states, and exposes zero
         selected_range_ready_count: 1,
         qc_record_count: 1,
         identifier_alias_ready: true,
+        delivery_manifest_path: '/tmp/synthetic-finishing/final/delivery_manifest.json',
+        delivery_verified: true,
+        delivery_master_key: 'master_sub',
+        delivery_master_path: '/tmp/synthetic-finishing/final/master_sub.mp4',
+        delivery_sha256_verified: true,
+        persisted_probe_verified: true,
+        fresh_probe_verified: false,
         finishing_inconsistencies: [],
         final_ready: false,
     };
-    state.fileEvidence = { '/tmp/synthetic-finishing/takes/SH01.mp4': true };
-    state.files = ['/tmp/synthetic-finishing/takes/SH01.mp4'];
+    state.fileEvidence = {
+        '/tmp/synthetic-finishing/takes/SH01.mp4': true,
+        '/tmp/synthetic-finishing/final/master_sub.mp4': true,
+        '/tmp/synthetic-finishing/final/delivery_manifest.json': true,
+    };
+    state.files = Object.keys(state.fileEvidence);
     state.blockers = ['OUTPUT_QUALITY_NOT_PROVEN'];
     state.finalReport = {
         ...state.finalReport,
-        final_video_path: '/tmp/synthetic-finishing/final/final.mp4',
+        final_video_path: '/tmp/synthetic-finishing/final/master_sub.mp4',
         concat_list_path: '/tmp/synthetic-finishing/final/concat_list.txt',
         report_path: '/tmp/synthetic-finishing/final/report.md',
         ffprobe_verified: false,
+        ffprobe_path: '',
+        fresh_probe_verified: false,
+        delivery_manifest_path: '/tmp/synthetic-finishing/final/delivery_manifest.json',
+        delivery_verified: true,
+        delivery_master_key: 'master_sub',
+        delivery_sha256: 'a'.repeat(64),
+        delivery_sha256_verified: true,
+        persisted_probe: { duration_seconds: 5.25, has_video: true, has_audio: true },
+        persisted_probe_verified: true,
+        stitch_evidence: 'canonical_delivery_manifest',
         blockers: ['OUTPUT_QUALITY_NOT_PROVEN'],
     };
 
@@ -784,7 +805,11 @@ test('canonical finishing UI stays Korean, separates QC states, and exposes zero
     assert.match(qa.textContent, /사람의 최종 판정은 미검토/);
     assert.match(qa.textContent, /원본 증거가 있는 채택 구간: 1/);
     assert.match(final.textContent, /정식 최종 준비 상태 미입증/);
-    assert.match(final.textContent, /ffprobe 증거 저장과 선택 구간 렌더링이 구현되지 않아/);
+    assert.match(final.textContent, /정식 delivery 증거 검증됨/);
+    assert.match(final.textContent, /저장된 생산자 probe/);
+    assert.match(final.textContent, /새 ffprobe 실행 안 함/);
+    assert.match(final.textContent, /앱은 새 ffprobe를 실행하거나 선택 구간을 렌더링하지 않습니다/);
+    assert.doesNotMatch(final.textContent, /새 ffprobe 검증됨/);
     const buttons = findAll(final, 'button');
     assert.ok(buttons.length >= 2);
     assert.equal(buttons.every((button) => button.disabled), true);

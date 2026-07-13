@@ -2,6 +2,12 @@
 
 기준일: 2026-07-13 (Asia/Seoul)
 
+> 후속 현재 상태: `docs/ui_integration/33_canonical_delivery_evidence.md`가
+> Layout A exact `final/delivery_manifest.json`과 독립 SHA-256 검증을 추가했다.
+> 따라서 아래의 persisted ffprobe 증거 누락 설명은 이 v1 작성 당시 기록이다.
+> 검증된 delivery probe는 producer가 저장한 증거로만 표시되고 fresh ffprobe는
+> 계속 미실행이며, 사람 QA·선택 구간·보고서·활성 blocker와 분리된다.
+
 ## 결과
 
 `happyVideoFactory`의 정식 `selected_takes.json`과 `qc_report.json`을 로컬

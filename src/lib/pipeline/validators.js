@@ -98,6 +98,37 @@ function fileHasEvidence(path, projectState = {}) {
     return projectState.files?.includes(path) === true;
 }
 
+function hasVerifiedCanonicalDelivery(projectState = {}, finalReport = {}) {
+    const canonicalHandoff = projectState.canonicalHandoff || {};
+    const finalVideoPath = finalReport.final_video_path;
+    const manifestPath = finalReport.delivery_manifest_path;
+    const probe = finalReport.persisted_probe;
+    const masterKey = finalReport.delivery_master_key;
+    const finalName = hasText(finalVideoPath) ? finalVideoPath.split(/[\\/]/).pop() : '';
+    const manifestIsExact = hasText(manifestPath)
+        && /(?:^|[\\/])final[\\/]delivery_manifest\.json$/.test(manifestPath);
+    const masterNameIsExact = (masterKey === 'master' && ['master.mp4', 'master_sub.mp4'].includes(finalName))
+        || (masterKey === 'master_sub' && finalName === 'master_sub.mp4');
+
+    return finalReport.delivery_verified === true
+        && canonicalHandoff.delivery_verified === true
+        && canonicalHandoff.delivery_master_path === finalVideoPath
+        && canonicalHandoff.delivery_manifest_path === manifestPath
+        && manifestIsExact
+        && masterNameIsExact
+        && finalReport.delivery_sha256_verified === true
+        && canonicalHandoff.delivery_sha256_verified === true
+        && /^[a-f0-9]{64}$/.test(finalReport.delivery_sha256 || '')
+        && finalReport.stitch_evidence === 'canonical_delivery_manifest'
+        && finalReport.persisted_probe_verified === true
+        && canonicalHandoff.persisted_probe_verified === true
+        && probe?.has_video === true
+        && probe?.has_audio === true
+        && hasPositiveNumber(probe?.duration_seconds)
+        && fileHasEvidence(finalVideoPath, projectState)
+        && fileHasEvidence(manifestPath, projectState);
+}
+
 function acceptedRangeHasEvidence(record, projectState = {}) {
     const inTime = record?.in_time;
     const outTime = record?.out_time;
@@ -626,10 +657,14 @@ export function validateFinalReady(projectState) {
     }
 
     const finalVideoPath = finalReport.final_video_path;
-    const finalVideoExists = finalVideoPath?.endsWith('final.mp4') && fileHasEvidence(finalVideoPath, projectState);
+    const canonicalDeliveryVerified = hasVerifiedCanonicalDelivery(projectState, finalReport);
+    const finalVideoExists = canonicalDeliveryVerified
+        || (finalVideoPath?.endsWith('final.mp4') && fileHasEvidence(finalVideoPath, projectState));
     if (!finalVideoExists) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
         details.finalVideo = 'missing_final_mp4_evidence';
+    } else if (canonicalDeliveryVerified) {
+        details.deliveryEvidence = 'canonical_delivery_manifest_sha256_verified';
     }
 
     const expectedClipIds = plannedClipIds(projectState);
@@ -714,15 +749,20 @@ export function validateFinalReady(projectState) {
     }
 
     const concatListPath = finalReport.concat_list_path;
-    if (!fileHasEvidence(concatListPath, projectState)) {
+    if (!canonicalDeliveryVerified && !fileHasEvidence(concatListPath, projectState)) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
         details.concatList = 'missing_concat_list_evidence';
+    } else if (canonicalDeliveryVerified) {
+        details.stitchEvidence = 'canonical_filter_complex_delivery_manifest';
     }
 
     const ffprobePath = finalReport.ffprobe_path || (hasText(finalVideoPath) ? `${finalVideoPath}.ffprobe.json` : '');
-    if (finalReport.ffprobe_verified !== true && !fileHasEvidence(ffprobePath, projectState)) {
+    if (!canonicalDeliveryVerified && finalReport.ffprobe_verified !== true && !fileHasEvidence(ffprobePath, projectState)) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
         details.ffprobe = 'missing_ffprobe_verification_evidence';
+    } else if (canonicalDeliveryVerified) {
+        details.persistedProbe = 'producer_persisted_probe_verified';
+        details.freshProbe = 'not_run';
     }
 
     const reportPath = finalReport.report_path;
@@ -746,10 +786,6 @@ export function validateFinalReady(projectState) {
     }
 
     const canonicalHandoff = projectState?.canonicalHandoff;
-    if (canonicalHandoff && canonicalHandoff.final_ready !== true) {
-        blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
-        details.canonicalFinalReady = 'not_proven';
-    }
     if (canonicalHandoff?.finishing_inconsistencies?.length) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
         details.canonicalFinishingInconsistencies = canonicalHandoff.finishing_inconsistencies;

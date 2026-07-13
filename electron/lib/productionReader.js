@@ -1,11 +1,23 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_CANONICAL_JSON_BYTES = 512 * 1024;
 const MAX_CANONICAL_RECORDS = 1000;
+const MAX_CANONICAL_MEDIA_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_WALK_FILES = 1200;
 const MAX_WALK_DEPTH = 8;
+const DELIVERY_SCHEMA = 'short_drama_room.delivery.v1';
+const DELIVERY_MANIFEST_RELATIVE_PATH = 'final/delivery_manifest.json';
+const DELIVERY_ASSET_RULES = Object.freeze({
+    master: { names: ['master.mp4', 'master_sub.mp4'], kind: 'video' },
+    master_sub: { names: ['master_sub.mp4'], kind: 'video' },
+    mobile: { names: ['mobile.mp4'], kind: 'video' },
+    square: { names: ['square.mp4'], kind: 'video' },
+    thumbnail_poster: { names: ['thumbnail_poster.jpg'], kind: 'image' },
+    thumbnail_1280x720: { names: ['thumbnail_1280x720.jpg'], kind: 'image' },
+});
 
 const BLOCKERS = Object.freeze({
     MISSING_PRODUCTION_BRIEF: 'MISSING_PRODUCTION_BRIEF',
@@ -340,6 +352,323 @@ function parseCanonicalJson(root, relativePath, label, sanitize) {
     } catch (error) {
         return { ...base, error: error.message };
     }
+}
+
+function sameFileIdentity(left, right) {
+    return Boolean(left && right
+        && left.dev === right.dev
+        && left.ino === right.ino
+        && left.mode === right.mode
+        && left.size === right.size
+        && left.mtimeMs === right.mtimeMs
+        && left.ctimeMs === right.ctimeMs);
+}
+
+function openStableCanonicalFile(root, value, maxBytes) {
+    const evidence = canonicalSourceFileEvidence(root, value);
+    if (!evidence.exists) return { ok: false, reason: evidence.reason || 'unsafe_source_path' };
+
+    let pathStats;
+    try {
+        pathStats = fs.lstatSync(evidence.path);
+    } catch {
+        return { ok: false, reason: 'missing_source_file' };
+    }
+    if (pathStats.size <= 0) return { ok: false, reason: 'source_file_empty' };
+    if (pathStats.size > maxBytes) return { ok: false, reason: 'source_file_too_large' };
+
+    const noFollow = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    let descriptor;
+    try {
+        descriptor = fs.openSync(evidence.path, fs.constants.O_RDONLY | noFollow);
+        const openedStats = fs.fstatSync(descriptor);
+        if (!openedStats.isFile() || !sameFileIdentity(pathStats, openedStats)) {
+            fs.closeSync(descriptor);
+            return { ok: false, reason: 'source_file_changed' };
+        }
+        return { ok: true, descriptor, path: evidence.path, stats: openedStats };
+    } catch {
+        if (descriptor !== undefined) {
+            try { fs.closeSync(descriptor); } catch { /* already closed */ }
+        }
+        return { ok: false, reason: 'source_file_open_failed' };
+    }
+}
+
+function closeAndConfirmStable(opened) {
+    let descriptorStats;
+    let pathStats;
+    try {
+        descriptorStats = fs.fstatSync(opened.descriptor);
+        pathStats = fs.lstatSync(opened.path);
+    } catch {
+        try { fs.closeSync(opened.descriptor); } catch { /* already closed */ }
+        return { ok: false, reason: 'source_file_changed' };
+    }
+    try { fs.closeSync(opened.descriptor); } catch { return { ok: false, reason: 'source_file_close_failed' }; }
+    if (!pathStats.isFile() || pathStats.isSymbolicLink()
+        || !sameFileIdentity(opened.stats, descriptorStats)
+        || !sameFileIdentity(opened.stats, pathStats)) {
+        return { ok: false, reason: 'source_file_changed' };
+    }
+    return { ok: true, stats: descriptorStats };
+}
+
+function readStableCanonicalBuffer(root, relativePath, maxBytes) {
+    const opened = openStableCanonicalFile(root, path.join(root, relativePath), maxBytes);
+    if (!opened.ok) return opened;
+    const chunks = [];
+    let total = 0;
+    try {
+        while (total < opened.stats.size) {
+            const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, opened.stats.size - total));
+            const bytesRead = fs.readSync(opened.descriptor, chunk, 0, chunk.length, null);
+            if (bytesRead === 0) break;
+            chunks.push(bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead));
+            total += bytesRead;
+        }
+    } catch {
+        try { fs.closeSync(opened.descriptor); } catch { /* already closed */ }
+        return { ok: false, reason: 'source_file_read_failed' };
+    }
+    const stable = closeAndConfirmStable(opened);
+    if (!stable.ok) return stable;
+    if (total !== opened.stats.size) return { ok: false, reason: 'source_file_changed' };
+    return {
+        ok: true,
+        path: opened.path,
+        buffer: Buffer.concat(chunks, total),
+        stats: stable.stats,
+    };
+}
+
+function verifyStableCanonicalSha256(root, value, expectedSha256) {
+    const opened = openStableCanonicalFile(root, value, MAX_CANONICAL_MEDIA_BYTES);
+    if (!opened.ok) return opened;
+    const digest = crypto.createHash('sha256');
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    let total = 0;
+    try {
+        while (total < opened.stats.size) {
+            const bytesRead = fs.readSync(opened.descriptor, chunk, 0, Math.min(chunk.length, opened.stats.size - total), null);
+            if (bytesRead === 0) break;
+            digest.update(chunk.subarray(0, bytesRead));
+            total += bytesRead;
+        }
+    } catch {
+        try { fs.closeSync(opened.descriptor); } catch { /* already closed */ }
+        return { ok: false, reason: 'source_file_read_failed' };
+    }
+    const stable = closeAndConfirmStable(opened);
+    if (!stable.ok) return stable;
+    if (total !== opened.stats.size) return { ok: false, reason: 'source_file_changed' };
+    const actualSha256 = digest.digest('hex');
+    if (actualSha256 !== expectedSha256) return { ok: false, reason: 'checksum_mismatch' };
+    return {
+        ok: true,
+        path: opened.path,
+        relative_path: safeRelative(root, opened.path),
+        sha256: actualSha256,
+        size_bytes: stable.stats.size,
+        mtime_ms: stable.stats.mtimeMs,
+    };
+}
+
+function canonicalDeliveryAssetPath(root, value, rule) {
+    const evidence = canonicalSourceFileEvidence(root, value);
+    if (!evidence.exists) return { ok: false, reason: evidence.reason || 'unsafe_source_path' };
+    if (rule.names && !rule.names.includes(path.basename(evidence.path))) {
+        return { ok: false, reason: 'unexpected_asset_name' };
+    }
+    if (rule.extension && path.extname(evidence.path).toLowerCase() !== rule.extension) {
+        return { ok: false, reason: 'unexpected_asset_extension' };
+    }
+    let stats;
+    try {
+        stats = fs.lstatSync(evidence.path);
+    } catch {
+        return { ok: false, reason: 'missing_source_file' };
+    }
+    if (stats.size <= 0) return { ok: false, reason: 'source_file_empty' };
+    if (stats.size > MAX_CANONICAL_MEDIA_BYTES) return { ok: false, reason: 'source_file_too_large' };
+    return { ok: true, path: evidence.path, relative_path: safeRelative(root, evidence.path), stats };
+}
+
+function sanitizedVideoProbe(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const duration = safeFiniteNumber(value.duration, Number.MIN_VALUE, Number.MAX_SAFE_INTEGER);
+    if (duration === null || value.has_video !== true || value.has_audio !== true) return null;
+    return { duration_seconds: duration, has_video: true, has_audio: true };
+}
+
+function sanitizedImageProbe(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const sizeBytes = safeInteger(value.size_bytes);
+    if (value.is_jpeg !== true || sizeBytes === null || sizeBytes <= 0) return null;
+    return { is_jpeg: true, size_bytes: sizeBytes };
+}
+
+function parseCanonicalDeliveryManifest(root) {
+    const label = 'delivery_manifest.json';
+    const relativePath = DELIVERY_MANIFEST_RELATIVE_PATH;
+    const filePath = path.join(root, relativePath);
+    const missing = {
+        label, path: '', relative_path: relativePath, exists: false, parsed: false,
+        verified: false, value: null, records: [], issues: [], error: 'missing',
+    };
+    if (!existsFile(filePath)) {
+        try {
+            const stats = fs.lstatSync(filePath);
+            return {
+                ...missing,
+                path: filePath,
+                exists: true,
+                updated_at: stats.mtime.toISOString(),
+                issues: ['delivery_manifest:not_non_symlink_regular_file'],
+                error: 'not_non_symlink_regular_file',
+            };
+        } catch {
+            return missing;
+        }
+    }
+
+    const read = readStableCanonicalBuffer(root, relativePath, MAX_CANONICAL_JSON_BYTES);
+    if (!read.ok) {
+        return {
+            ...missing,
+            path: filePath,
+            exists: true,
+            issues: [`delivery_manifest:${read.reason}`],
+            error: read.reason,
+        };
+    }
+    const base = {
+        label,
+        path: read.path,
+        relative_path: relativePath,
+        exists: true,
+        parsed: false,
+        verified: false,
+        value: null,
+        records: [],
+        updated_at: read.stats.mtime.toISOString(),
+        issues: [],
+    };
+
+    let raw;
+    try {
+        raw = JSON.parse(read.buffer.toString('utf8'));
+    } catch {
+        return { ...base, issues: ['delivery_manifest:malformed_json'], error: 'malformed_json' };
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return { ...base, issues: ['delivery_manifest:not_object'], error: 'not_object' };
+    }
+    if (raw.schema_version !== DELIVERY_SCHEMA) {
+        return { ...base, issues: ['delivery_manifest:schema_mismatch'], error: 'schema_mismatch' };
+    }
+    if (raw.gate_status !== 'pass') {
+        return { ...base, issues: ['delivery_manifest:gate_not_passed'], error: 'gate_not_passed' };
+    }
+    if (!raw.checksums || typeof raw.checksums !== 'object' || Array.isArray(raw.checksums)
+        || !raw.probe || typeof raw.probe !== 'object' || Array.isArray(raw.probe)) {
+        return { ...base, issues: ['delivery_manifest:missing_evidence_maps'], error: 'missing_evidence_maps' };
+    }
+
+    const assets = {};
+    const checksums = {};
+    const probes = {};
+    const issues = [];
+    for (const [key, rule] of Object.entries(DELIVERY_ASSET_RULES)) {
+        const rawPath = raw[key];
+        if (rawPath === null || rawPath === undefined || rawPath === '') continue;
+        const asset = canonicalDeliveryAssetPath(root, rawPath, rule);
+        if (!asset.ok) {
+            issues.push(`delivery_manifest:${key}:${asset.reason}`);
+            continue;
+        }
+        const checksum = raw.checksums[key];
+        if (typeof checksum !== 'string' || !/^[a-f0-9]{64}$/.test(checksum)) {
+            issues.push(`delivery_manifest:${key}:invalid_checksum`);
+            continue;
+        }
+        const probe = rule.kind === 'video' ? sanitizedVideoProbe(raw.probe[key]) : sanitizedImageProbe(raw.probe[key]);
+        if (!probe) {
+            issues.push(`delivery_manifest:${key}:invalid_persisted_probe`);
+            continue;
+        }
+        assets[key] = { path: asset.path, relative_path: asset.relative_path };
+        checksums[key] = checksum;
+        probes[key] = probe;
+    }
+
+    const rawSubtitles = raw.subtitles;
+    if (rawSubtitles !== null && rawSubtitles !== undefined
+        && (!rawSubtitles || typeof rawSubtitles !== 'object' || Array.isArray(rawSubtitles))) {
+        issues.push('delivery_manifest:subtitles:not_object');
+    } else {
+        const subtitles = {};
+        for (const subKey of ['ass', 'srt']) {
+            const rawPath = rawSubtitles?.[subKey];
+            if (rawPath === null || rawPath === undefined || rawPath === '') continue;
+            const asset = canonicalDeliveryAssetPath(root, rawPath, { extension: `.${subKey}` });
+            const checksumKey = `subtitles.${subKey}`;
+            const checksum = raw.checksums[checksumKey];
+            if (!asset.ok) issues.push(`delivery_manifest:${checksumKey}:${asset.reason}`);
+            else if (typeof checksum !== 'string' || !/^[a-f0-9]{64}$/.test(checksum)) {
+                issues.push(`delivery_manifest:${checksumKey}:invalid_checksum`);
+            } else {
+                subtitles[subKey] = { path: asset.path, relative_path: asset.relative_path };
+                checksums[checksumKey] = checksum;
+            }
+        }
+        if (Object.keys(subtitles).length) assets.subtitles = subtitles;
+    }
+
+    const masterKey = assets.master_sub ? 'master_sub' : (assets.master ? 'master' : '');
+    if (!masterKey) issues.push('delivery_manifest:missing_canonical_master');
+    if (issues.length) return { ...base, issues: Array.from(new Set(issues)), error: 'delivery_contract_rejected' };
+
+    const verifiedMaster = verifyStableCanonicalSha256(root, assets[masterKey].path, checksums[masterKey]);
+    if (!verifiedMaster.ok) {
+        return {
+            ...base,
+            issues: [`delivery_manifest:${masterKey}:${verifiedMaster.reason}`],
+            error: 'master_verification_failed',
+        };
+    }
+    if (verifiedMaster.mtime_ms > read.stats.mtimeMs) {
+        return {
+            ...base,
+            issues: [`delivery_manifest:${masterKey}:manifest_stale`],
+            error: 'manifest_stale',
+        };
+    }
+
+    return {
+        ...base,
+        parsed: true,
+        verified: true,
+        value: {
+            schema_version: DELIVERY_SCHEMA,
+            gate_status: 'pass',
+            assets,
+            checksums,
+            probes,
+            canonical_master: {
+                key: masterKey,
+                path: verifiedMaster.path,
+                relative_path: verifiedMaster.relative_path,
+                sha256: verifiedMaster.sha256,
+                sha256_verified: true,
+                size_bytes: verifiedMaster.size_bytes,
+                persisted_probe: probes[masterKey],
+                persisted_probe_verified: true,
+                fresh_probe_verified: false,
+            },
+        },
+        error: '',
+    };
 }
 
 function sanitizePipelinePackReport(value) {
@@ -1028,6 +1357,12 @@ function readProductionFolder(rootPath, options = {}) {
     const shotManifest = parseCanonicalJson(root, 'shot_manifest.json', 'shot_manifest.json', sanitizeShotManifest);
     const selectedTakes = parseCanonicalJson(root, 'selected_takes.json', 'selected_takes.json', (value) => sanitizeSelectedTakes(root, value));
     const qcReport = parseCanonicalJson(root, 'qc_report.json', 'qc_report.json', sanitizeQcReport);
+    const deliveryManifest = detected.layout === 'A'
+        ? parseCanonicalDeliveryManifest(root)
+        : {
+            label: 'delivery_manifest.json', path: '', relative_path: DELIVERY_MANIFEST_RELATIVE_PATH,
+            exists: false, parsed: false, verified: false, value: null, records: [], issues: [], error: 'unsupported_layout',
+        };
 
     const storyboardParsed = storyboardJson.parsed || storySceneBundle.parsed || storyboardMarkdown.parsed;
     const motionBoardParsed = motionBoardJson.parsed || motionBoardMarkdown.parsed;
@@ -1109,6 +1444,10 @@ function readProductionFolder(rootPath, options = {}) {
             if (take.shot_id && !knownShotIds.has(take.shot_id)) finishingInconsistencies.push(`selected_takes:unknown_manifest_shot:${take.shot_id}`);
         }
     }
+    const deliveryInconsistencies = deliveryManifest.exists && !deliveryManifest.verified
+        ? deliveryManifest.issues
+        : [];
+    finishingInconsistencies.push(...deliveryInconsistencies);
     if (finishingInconsistencies.length && !blockers.includes(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN)) {
         blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
     }
@@ -1146,11 +1485,14 @@ function readProductionFolder(rootPath, options = {}) {
             shotManifest,
             selectedTakes,
             qcReport,
+            deliveryManifest,
         },
         canonical: {
             contract: 'happyVideoFactory_short_drama_pipeline_pack',
             inconsistencies: canonicalInconsistencies,
             finishing_inconsistencies: Array.from(new Set(finishingInconsistencies)),
+            delivery_inconsistencies: Array.from(new Set(deliveryInconsistencies)),
+            delivery_ready: deliveryManifest.verified === true,
             final_ready: false,
         },
         blockers: Array.from(new Set(blockers)),
@@ -1158,6 +1500,7 @@ function readProductionFolder(rootPath, options = {}) {
             skipped_sensitive_patterns: SENSITIVE_NAME_PATTERNS.map((pattern) => pattern.toString()),
             max_text_bytes: MAX_TEXT_BYTES,
             max_canonical_json_bytes: MAX_CANONICAL_JSON_BYTES,
+            max_canonical_media_bytes: MAX_CANONICAL_MEDIA_BYTES,
             max_walk_files: walkResult.maxFiles,
             max_walk_depth: walkResult.maxDepth,
             skipped: walkResult.skipped,

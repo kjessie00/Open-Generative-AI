@@ -464,10 +464,16 @@ export function normalizeProductionReaderState(rawReader) {
     const submitRecords = normalizeSubmitRecords(rawReader);
     const heartbeatRecords = normalizeHeartbeatRecords(rawReader);
     const blockers = Array.from(new Set(rawReader.blockers || []));
-    const finalVideoPath = joinPath(rootPath, rawReader.layout === 'A' ? 'final/final.mp4' : 'edit/final.mp4');
+    const deliveryManifest = rawReader.parsed?.deliveryManifest || {};
+    const canonicalDelivery = deliveryManifest.verified === true ? deliveryManifest.value : null;
+    const deliveryMaster = canonicalDelivery?.canonical_master || null;
+    const deliveryAttempted = deliveryManifest.exists === true;
+    const legacyFinalVideoPath = joinPath(rootPath, rawReader.layout === 'A' ? 'final/final.mp4' : 'edit/final.mp4');
+    const finalVideoPath = deliveryMaster?.path || (deliveryAttempted ? '' : legacyFinalVideoPath);
     const reportPath = rawReader.parsed?.report?.path || rawReader.parsed?.capcutReport?.path || firstMarkdownPath(markdown, ['report', 'report.md']);
     const concatListPath = joinPath(rootPath, rawReader.layout === 'A' ? 'final/concat_list.txt' : 'edit/concat_list.txt');
-    const finalVideoExists = rawReader.files?.some((file) => file.path === finalVideoPath) === true;
+    const finalVideoExists = deliveryMaster?.sha256_verified === true
+        || (!deliveryAttempted && rawReader.files?.some((file) => file.path === finalVideoPath) === true);
     const reportExists = Boolean(reportPath);
     const concatExists = rawReader.files?.some((file) => file.path === concatListPath) === true;
     const briefPath = firstMarkdownPath(markdown, ['brief', 'intake', 'script']);
@@ -489,8 +495,10 @@ export function normalizeProductionReaderState(rawReader) {
         qcReportPath: rawReader.parsed?.qcReport?.path || '',
         shotManifestPath: rawReader.parsed?.shotManifest?.path || '',
     };
-    const ffprobePath = qaArtifacts.ffprobePaths[0] || `${finalVideoPath}.ffprobe.json`;
-    const ffprobeExists = rawReader.files?.some((file) => file.path === ffprobePath) === true;
+    const ffprobePath = deliveryAttempted || !finalVideoPath ? '' : `${finalVideoPath}.ffprobe.json`;
+    const ffprobeExists = !deliveryAttempted
+        && Boolean(ffprobePath)
+        && rawReader.files?.some((file) => file.path === ffprobePath) === true;
 
     const stateBlockers = [...blockers];
     if (!storyboard.length && !stateBlockers.includes(BLOCKERS.MISSING_STORYBOARD_CONTINUITY_PACKET)) {
@@ -562,6 +570,16 @@ export function normalizeProductionReaderState(rawReader) {
             concat_list_path: concatListPath,
             ffprobe_verified: ffprobeExists,
             ffprobe_path: ffprobePath,
+            fresh_probe_verified: ffprobeExists,
+            delivery_manifest_path: deliveryManifest.verified === true ? deliveryManifest.path : '',
+            delivery_verified: deliveryManifest.verified === true,
+            delivery_master_key: deliveryMaster?.key || '',
+            delivery_sha256: deliveryMaster?.sha256 || '',
+            delivery_sha256_verified: deliveryMaster?.sha256_verified === true,
+            delivery_size_bytes: deliveryMaster?.size_bytes || 0,
+            persisted_probe: deliveryMaster?.persisted_probe || null,
+            persisted_probe_verified: deliveryMaster?.persisted_probe_verified === true,
+            stitch_evidence: deliveryMaster?.sha256_verified === true ? 'canonical_delivery_manifest' : '',
             report_path: reportPath,
             clip_table: storyboard.map((clip) => ({
                 clip_id: clip.clip_id,
@@ -600,8 +618,16 @@ export function normalizeProductionReaderState(rawReader) {
             shot_manifest_path: rawReader.parsed?.shotManifest?.path || '',
             selected_takes_path: rawReader.parsed?.selectedTakes?.path || '',
             qc_report_path: rawReader.parsed?.qcReport?.path || '',
+            delivery_manifest_path: deliveryManifest.verified === true ? deliveryManifest.path : '',
+            delivery_verified: deliveryManifest.verified === true,
+            delivery_master_key: deliveryMaster?.key || '',
+            delivery_master_path: deliveryMaster?.path || '',
+            delivery_sha256_verified: deliveryMaster?.sha256_verified === true,
+            persisted_probe_verified: deliveryMaster?.persisted_probe_verified === true,
+            fresh_probe_verified: false,
             inconsistencies: rawReader.canonical?.inconsistencies || [],
             finishing_inconsistencies: rawReader.canonical?.finishing_inconsistencies || [],
+            delivery_inconsistencies: rawReader.canonical?.delivery_inconsistencies || [],
             selected_range_count: canonicalSelectedRanges.length,
             selected_range_ready_count: selectedRangesReady.length,
             qc_record_count: canonicalQcRecords.length,
@@ -617,6 +643,7 @@ export function normalizeProductionReaderState(rawReader) {
             [concatListPath]: concatExists,
             [reportPath]: reportExists,
             [ffprobePath]: ffprobeExists,
+            ...(deliveryManifest.verified === true ? { [deliveryManifest.path]: true } : {}),
             ...Object.fromEntries(acceptedSeconds
                 .filter((record) => record.source_exists === true && record.source_file)
                 .map((record) => [record.source_file, true])),
