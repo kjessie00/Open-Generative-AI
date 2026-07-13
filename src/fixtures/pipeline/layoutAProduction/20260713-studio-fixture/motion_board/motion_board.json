@@ -1,0 +1,13 @@
+{
+  "shots": [
+    {
+      "clip_id": "clip_a_001",
+      "shot_size": "medium",
+      "camera_movement": "locked",
+      "movement_risk": "low",
+      "identity_risk": "low",
+      "continuity_notes": "Keep the neutral desk composition stable.",
+      "duration_lock": true
+    }
+  ]
+}

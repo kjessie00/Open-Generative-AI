@@ -22,6 +22,10 @@ const SENSITIVE_NAME_PATTERNS = [
     /token/i,
     /secret/i,
     /credential/i,
+    /api[-_ ]?key/i,
+    /private[-_ ]?key/i,
+    /^\.env(?:\.|$)/i,
+    /^id_rsa(?:\.|$)/i,
 ];
 
 function isSensitiveName(name) {
@@ -33,22 +37,46 @@ function assertDirectory(rootPath) {
         throw new Error('rootPath must be a non-empty string');
     }
     const absolute = path.resolve(rootPath);
-    if (!fs.existsSync(absolute) || !fs.statSync(absolute).isDirectory()) {
+    let stats;
+    try {
+        stats = fs.lstatSync(absolute);
+    } catch {
+        stats = null;
+    }
+    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
         throw new Error(`Production folder does not exist: ${absolute}`);
+    }
+    if (isSensitiveName(path.basename(absolute))) {
+        throw new Error('Production folder rejected by safety policy');
     }
     return absolute;
 }
 
 function existsFile(filePath) {
-    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+    try {
+        const stats = fs.lstatSync(filePath);
+        return stats.isFile() && !stats.isSymbolicLink();
+    } catch {
+        return false;
+    }
 }
 
 function existsDir(dirPath) {
-    return fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory();
+    try {
+        const stats = fs.lstatSync(dirPath);
+        return stats.isDirectory() && !stats.isSymbolicLink();
+    } catch {
+        return false;
+    }
 }
 
 function safeRelative(root, filePath) {
     return path.relative(root, filePath);
+}
+
+function isWithinRoot(root, filePath) {
+    const relative = safeRelative(root, filePath);
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 function safeReadText(filePath) {
@@ -60,14 +88,18 @@ function safeReadText(filePath) {
 }
 
 function markdownRecord(root, filePath, label) {
-    if (!filePath || !existsFile(filePath) || isSensitiveName(path.basename(filePath))) {
+    if (!filePath || !isWithinRoot(root, filePath) || !existsFile(filePath) || isSensitiveName(path.basename(filePath))) {
         return null;
     }
     const stats = fs.statSync(filePath);
     const read = safeReadText(filePath);
-    const heading = read.ok
-        ? read.content.split(/\r?\n/).find((line) => /^#{1,3}\s+/.test(line.trim()))?.replace(/^#{1,3}\s+/, '').trim() || ''
-        : '';
+    const lines = read.ok ? read.content.split(/\r?\n/) : [];
+    const heading = lines.find((line) => /^#{1,3}\s+/.test(line.trim()))?.replace(/^#{1,3}\s+/, '').trim() || '';
+    const metadata = {};
+    for (const line of lines) {
+        const match = line.match(/^\s*(concept|logline)\s*:\s*(.+?)\s*$/i);
+        if (match) metadata[match[1].toLowerCase()] = match[2];
+    }
     return {
         label,
         path: filePath,
@@ -75,6 +107,7 @@ function markdownRecord(root, filePath, label) {
         exists: true,
         parsed: read.ok,
         heading,
+        metadata,
         line_count: read.ok ? read.content.split(/\r?\n/).length : 0,
         updated_at: stats.mtime.toISOString(),
         error: read.ok ? '' : read.error,
@@ -85,19 +118,77 @@ function walkFiles(root, options = {}) {
     const files = [];
     const maxDepth = options.maxDepth ?? MAX_WALK_DEPTH;
     const maxFiles = options.maxFiles ?? MAX_WALK_FILES;
+    const skipped = {
+        sensitive_name: 0,
+        ignored_directory: 0,
+        symlink: 0,
+        unsupported_entry: 0,
+        root_escape: 0,
+        depth_limit: 0,
+        file_limit: 0,
+        read_error: 0,
+    };
+    const errors = [];
+    let truncated = false;
 
     function walk(dir, depth) {
-        if (files.length >= maxFiles || depth > maxDepth) return;
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            if (files.length >= maxFiles) break;
-            if (entry.name === '.git' || entry.name === 'node_modules' || isSensitiveName(entry.name)) continue;
+        if (files.length >= maxFiles) {
+            truncated = true;
+            skipped.file_limit += 1;
+            return;
+        }
+        if (depth > maxDepth) {
+            truncated = true;
+            skipped.depth_limit += 1;
+            return;
+        }
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+        } catch (error) {
+            skipped.read_error += 1;
+            errors.push({ relative_path: safeRelative(root, dir), code: error.code || 'READ_ERROR' });
+            return;
+        }
+        for (const entry of entries) {
+            if (files.length >= maxFiles) {
+                truncated = true;
+                skipped.file_limit += 1;
+                break;
+            }
+            if (entry.name === '.git' || entry.name === 'node_modules') {
+                skipped.ignored_directory += 1;
+                continue;
+            }
+            if (isSensitiveName(entry.name)) {
+                skipped.sensitive_name += 1;
+                continue;
+            }
             const fullPath = path.join(dir, entry.name);
+            if (!isWithinRoot(root, fullPath)) {
+                skipped.root_escape += 1;
+                continue;
+            }
+            if (entry.isSymbolicLink()) {
+                skipped.symlink += 1;
+                continue;
+            }
             if (entry.isDirectory()) {
                 walk(fullPath, depth + 1);
                 continue;
             }
-            if (isSensitiveName(entry.name)) continue;
-            const stats = fs.statSync(fullPath);
+            if (!entry.isFile()) {
+                skipped.unsupported_entry += 1;
+                continue;
+            }
+            let stats;
+            try {
+                stats = fs.lstatSync(fullPath);
+            } catch (error) {
+                skipped.read_error += 1;
+                errors.push({ relative_path: safeRelative(root, fullPath), code: error.code || 'READ_ERROR' });
+                continue;
+            }
             files.push({
                 path: fullPath,
                 relative_path: safeRelative(root, fullPath),
@@ -110,7 +201,7 @@ function walkFiles(root, options = {}) {
     }
 
     walk(root, 0);
-    return files;
+    return { files, skipped, truncated, errors, maxDepth, maxFiles };
 }
 
 function findFirst(root, relativeCandidates) {
@@ -127,7 +218,7 @@ function findByName(files, names) {
 }
 
 function parseJsonFile(root, filePath, label) {
-    if (!filePath || !existsFile(filePath)) {
+    if (!filePath || !isWithinRoot(root, filePath) || !existsFile(filePath) || isSensitiveName(path.basename(filePath))) {
         return { label, path: '', exists: false, parsed: false, value: null, error: 'missing' };
     }
     const read = safeReadText(filePath);
@@ -161,7 +252,7 @@ function parseJsonFile(root, filePath, label) {
 }
 
 function parseImageDashboardJs(root, filePath) {
-    if (!filePath || !existsFile(filePath)) {
+    if (!filePath || !isWithinRoot(root, filePath) || !existsFile(filePath) || isSensitiveName(path.basename(filePath))) {
         return { label: 'image-dashboard-data.js', path: '', exists: false, parsed: false, value: null, error: 'missing' };
     }
     const stats = fs.statSync(filePath);
@@ -208,7 +299,7 @@ function parseImageDashboardJs(root, filePath) {
 }
 
 function parseJsonl(root, filePath, label) {
-    if (!filePath || !existsFile(filePath)) {
+    if (!filePath || !isWithinRoot(root, filePath) || !existsFile(filePath) || isSensitiveName(path.basename(filePath))) {
         return { label, path: '', exists: false, parsed: false, records: [], errors: ['missing'] };
     }
     const read = safeReadText(filePath);
@@ -239,7 +330,7 @@ function parseJsonl(root, filePath, label) {
 }
 
 function parseCsv(root, filePath, label) {
-    if (!filePath || !existsFile(filePath)) {
+    if (!filePath || !isWithinRoot(root, filePath) || !existsFile(filePath) || isSensitiveName(path.basename(filePath))) {
         return { label, path: '', exists: false, parsed: false, records: [], errors: ['missing'] };
     }
     const read = safeReadText(filePath);
@@ -247,12 +338,13 @@ function parseCsv(root, filePath, label) {
         return { label, path: filePath, relative_path: safeRelative(root, filePath), exists: true, parsed: false, records: [], errors: [read.error] };
     }
     const lines = read.content.split(/\r?\n/).filter((line) => line.trim());
-    const headers = splitCsvLine(lines[0] || '');
+    const headers = splitCsvLine(lines[0] || '').filter(Boolean);
     const records = lines.slice(1).map((line) => {
         const cells = splitCsvLine(line);
         return Object.fromEntries(headers.map((header, index) => [header, cells[index] || '']));
     });
-    return { label, path: filePath, relative_path: safeRelative(root, filePath), exists: true, parsed: headers.length > 0, records, errors: [] };
+    const errors = headers.length ? [] : ['missing CSV header'];
+    return { label, path: filePath, relative_path: safeRelative(root, filePath), exists: true, parsed: errors.length === 0, records, errors };
 }
 
 function splitCsvLine(line) {
@@ -289,9 +381,17 @@ function parseAcceptedSeconds(root, filePath) {
         .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()))
         .filter((cells) => cells.length >= 4);
     const [header, ...body] = rows;
+    const normalizedHeader = (header || []).map((value) => value.toLowerCase().replace(/\s+/g, '_'));
+    const required = ['clip_id', 'source_file', 'in_time', 'out_time'];
+    const missingHeaders = required.filter((name) => !normalizedHeader.includes(name));
     const records = header ? body.map((cells) => Object.fromEntries(header.map((key, index) => [key, cells[index] || '']))) : [];
 
-    return { ...record, parsed: true, records, error: '' };
+    return {
+        ...record,
+        parsed: Boolean(header) && missingHeaders.length === 0,
+        records: missingHeaders.length ? [] : records,
+        error: missingHeaders.length ? `missing required table headers: ${missingHeaders.join(', ')}` : '',
+    };
 }
 
 function parseBlockers(root, filePath) {
@@ -339,11 +439,12 @@ function deriveMarkdown(root, layout, files) {
     return Object.fromEntries(Object.entries(markdown).filter(([, value]) => Boolean(value)));
 }
 
-function readProductionFolder(rootPath) {
+function readProductionFolder(rootPath, options = {}) {
     const selectedRoot = assertDirectory(rootPath);
     const detected = detectLayout(selectedRoot);
     const root = detected.root;
-    const files = walkFiles(root);
+    const walkResult = walkFiles(root, options);
+    const files = walkResult.files;
     const markdown = deriveMarkdown(root, detected.layout, files);
 
     const storyboardJson = parseJsonFile(root, findFirst(root, [
@@ -402,6 +503,12 @@ function readProductionFolder(rootPath) {
         security: {
             skipped_sensitive_patterns: SENSITIVE_NAME_PATTERNS.map((pattern) => pattern.toString()),
             max_text_bytes: MAX_TEXT_BYTES,
+            max_walk_files: walkResult.maxFiles,
+            max_walk_depth: walkResult.maxDepth,
+            skipped: walkResult.skipped,
+            skipped_total: Object.values(walkResult.skipped).reduce((sum, value) => sum + value, 0),
+            walk_truncated: walkResult.truncated,
+            walk_errors: walkResult.errors,
         },
     };
 }
@@ -410,4 +517,6 @@ module.exports = {
     readProductionFolder,
     detectLayout,
     isSensitiveName,
+    MAX_WALK_FILES,
+    MAX_WALK_DEPTH,
 };

@@ -1,5 +1,5 @@
 import { BLOCKERS } from './blockers.js';
-import { basename, joinPath } from './filePathUtils.js';
+import { basename, joinPath, looksSensitivePath, normalizeSlashes } from './filePathUtils.js';
 
 function nowIso() {
     return new Date().toISOString();
@@ -30,9 +30,25 @@ function arrayFromMaybe(value) {
 
 function absolutePath(rootPath, value) {
     if (!value) return '';
-    const stringValue = String(value);
-    if (stringValue.startsWith('/') || /^[A-Za-z]:[\\/]/.test(stringValue)) return stringValue;
-    return joinPath(rootPath, stringValue);
+    const stringValue = normalizeSlashes(String(value));
+    if (looksSensitivePath(stringValue)) return '';
+    const normalizedRoot = normalizeSlashes(rootPath).replace(/\/$/, '');
+    const rawCandidate = stringValue.startsWith('/') || /^[A-Za-z]:\//.test(stringValue)
+        ? stringValue
+        : `${normalizedRoot}/${stringValue}`;
+    const prefix = rawCandidate.startsWith('/') ? '/' : '';
+    const segments = [];
+    for (const segment of rawCandidate.split('/')) {
+        if (!segment || segment === '.') continue;
+        if (segment === '..') {
+            segments.pop();
+            continue;
+        }
+        segments.push(segment);
+    }
+    const candidate = `${prefix}${segments.join('/')}`;
+    if (candidate !== normalizedRoot && !candidate.startsWith(`${normalizedRoot}/`)) return '';
+    return candidate;
 }
 
 function pickValue(record = {}, keys = []) {
@@ -347,8 +363,8 @@ export function normalizeProductionReaderState(rawReader) {
             updated_at: rawReader.readAt || nowIso(),
         },
         brief: {
-            concept: markdown.brief?.heading || markdown.intake?.heading || '',
-            logline: '',
+            concept: markdown.brief?.metadata?.concept || markdown.intake?.metadata?.concept || markdown.brief?.heading || markdown.intake?.heading || '',
+            logline: markdown.brief?.metadata?.logline || markdown.intake?.metadata?.logline || '',
             script_path: scriptPath,
             dialogue_required: false,
             subtitles_required: false,

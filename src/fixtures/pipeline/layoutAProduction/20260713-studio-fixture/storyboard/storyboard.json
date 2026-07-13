@@ -1,0 +1,21 @@
+{
+  "clips": [
+    {
+      "scene_id": "scene_a_01",
+      "clip_id": "clip_a_001",
+      "duration": 6,
+      "dramatic_beat": "The operator confirms the restored shot plan.",
+      "characters": ["operator"],
+      "location": "local editing desk",
+      "first_frame": "a neutral local studio frame",
+      "action": "reviews the shot state",
+      "camera": "locked medium shot",
+      "lighting": "soft neutral key",
+      "audio_sfx_dialogue": "room tone only",
+      "reference_dependencies": ["asset_a_001"],
+      "risk": "fixture evidence only",
+      "dominant_action": "state review",
+      "dominant_camera_strategy": "locked frame"
+    }
+  ]
+}
