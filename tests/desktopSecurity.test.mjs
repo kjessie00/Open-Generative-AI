@@ -229,5 +229,6 @@ test('product execution surfaces reject hosted service reintroduction', async ()
     const settings = await source('src/components/SettingsModal.js');
     assert.doesNotMatch(vite, /proxy\s*:/);
     assert.doesNotMatch(settings, /localStorage|type=["']password["']/);
+    assert.doesNotMatch(settings, /LocalModelManager\s*\(|isLocalAIAvailable\s*\(|from\s+['"][^'"]*(?:LocalModelManager|localInferenceClient)/i);
     assert.match(settings, /settings\.pipelineNote/);
 });

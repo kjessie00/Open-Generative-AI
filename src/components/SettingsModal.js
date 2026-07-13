@@ -1,5 +1,3 @@
-import { LocalModelManager } from '../components/LocalModelManager.js';
-import { isLocalAIAvailable } from '../lib/localInferenceClient.js';
 import { t } from '../lib/i18n.js';
 
 export function SettingsModal(onClose) {
@@ -19,10 +17,9 @@ export function SettingsModal(onClose) {
     `;
     modal.appendChild(header);
 
-    const tabs = [
-        { id: 'pipeline', label: t('settings.pipeline') },
-        ...(isLocalAIAvailable() ? [{ id: 'local', label: t('settings.localModels') }] : []),
-    ];
+    // The Cinematic Pipeline Studio is a preview/audit workbench. Legacy model
+    // acquisition controls are intentionally unreachable from this surface.
+    const tabs = [{ id: 'pipeline', label: t('settings.pipeline') }];
     const tabBar = document.createElement('div');
     tabBar.style.cssText = 'display:flex;gap:0.25rem;padding:0.75rem 1.5rem 0;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;';
     const tabButtons = {};
@@ -41,10 +38,8 @@ export function SettingsModal(onClose) {
             </p>
         </div>
     `;
-    const localPanel = LocalModelManager();
-
     function switchTab(id) {
-        body.replaceChildren(id === 'local' ? localPanel : pipelinePanel);
+        body.replaceChildren(pipelinePanel);
         for (const tab of tabs) {
             const active = tab.id === id;
             tabButtons[tab.id].style.background = active ? 'rgba(255,255,255,0.08)' : 'transparent';

@@ -264,3 +264,34 @@ test('PipelineStudio renderer preserves the production dry-run UI contract', asy
     assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'writePlanningFile').length, 0);
 });
+
+test('PipelineSidebar renders discovered production entries as DOM nodes', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { PipelineSidebar } = await import('../src/components/pipeline/PipelineSidebar.js');
+
+    const sidebar = PipelineSidebar({
+        tabs: [{ id: 'intake', label: 'Intake' }],
+        activeTab: 'intake',
+        productions: [{
+            name: 'sanitized-production',
+            path: '/tmp/sanitized-production',
+            mtime: '2026-07-13T00:00:00.000Z',
+            fileCount: 3,
+            hasMarkdownBrief: true,
+            hasJsonlLedger: false,
+        }],
+        productionsState: { status: 'ok', reason: '' },
+        onSelect() {},
+        onSelectProduction() {},
+        onOpenSettings() {},
+        onRefreshProductions() {},
+    });
+
+    assert.match(sidebar.textContent, /sanitized-production/);
+    assert.match(sidebar.textContent, /3 files/);
+    assert.ok(
+        sidebar.textContent.indexOf('Intake') < sidebar.textContent.indexOf('Productions'),
+        'primary pipeline navigation must remain ahead of the potentially long production list',
+    );
+});

@@ -84,7 +84,7 @@ function productionsSection({ productions, productionsState, onSelectProduction,
                 className: 'rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-secondary hover:bg-white/[0.07] hover:text-white',
             }),
         ]),
-        productions.map((entry) => {
+        ...productions.map((entry) => {
             const meta = [
                 formatRelativeMtime(entry.mtime),
                 `${entry.fileCount || 0} files`,
@@ -103,12 +103,11 @@ function productionsSection({ productions, productionsState, onSelectProduction,
 }
 
 export function PipelineSidebar({ tabs, activeTab, productions, productionsState, onSelect, onSelectProduction, onOpenSettings, onRefreshProductions }) {
-    return el('aside', { className: 'flex w-full shrink-0 flex-col gap-2 border-b border-white/10 bg-black/20 p-3 lg:w-64 lg:border-b-0 lg:border-r' }, [
+    return el('aside', { className: 'flex min-h-0 w-full shrink-0 flex-col gap-2 overflow-y-auto border-b border-white/10 bg-black/20 p-3 lg:w-64 lg:border-b-0 lg:border-r' }, [
         el('div', { className: 'mb-2 flex flex-wrap gap-2' }, [
             statusBadge('DRY RUN', 'BLOCK'),
             statusBadge('Preview only', 'PREVIEW'),
         ]),
-        productionsSection({ productions, productionsState, onSelectProduction, onOpenSettings, onRefreshProductions }),
         el('nav', { className: 'grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1' }, tabs.map((tab) => (
             el('button', {
                 text: tab.label,
@@ -120,5 +119,6 @@ export function PipelineSidebar({ tabs, activeTab, productions, productionsState
                 }`,
             })
         ))),
+        productionsSection({ productions, productionsState, onSelectProduction, onOpenSettings, onRefreshProductions }),
     ]);
 }
