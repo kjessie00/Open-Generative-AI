@@ -25,4 +25,12 @@ equality를 검증하며, 실제 macOS trusted click에서 화면 preview와 길
 SHA-256이 일치했다. 결과는 `verified:true`, `executed:false`였고 command
 실행 event는 0이었다. clipboard 원문은 로그나 문서에 저장하지 않았다.
 
+## 해결됨: ACTIVE_LEGACY_GENERATION_BRIDGE_GAP
+
+기본 Electron main lifecycle은 더 이상 `localInference` 또는
+`wan2gpProvider`를 import/register하지 않으며 preload는 `window.filmPipeline`만
+노출한다. 실제 network-denied Electron에서 `window.localAI === undefined`,
+legacy control 0, external request 0을 확인했다. dormant 소스는 active import
+graph 회귀로 도달 불가를 계속 검증한다.
+
 현재 상태와 승인 경계는 `docs/ui_integration/21_current_acceptance_status.md`와 `.agent/goal-checkpoint.md`를 우선한다. 실제 generation, 외부 upload, browser automation, account access는 명시적 현재 회차 승인 없이는 계속 금지한다.

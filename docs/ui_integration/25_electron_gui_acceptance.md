@@ -27,6 +27,13 @@ reader/IPC/UI 검증을 native PASS로 과장하지 않는다. 반면 trusted co
 copy는 main-process clipboard write/read-back과 실제 macOS click으로 별도
 검증되어 이전 gap이 닫혔다.
 
+후속 최소권한 패치는 global Settings에서 숨겨져 있었지만 main/preload에
+여전히 등록된 Local AI/Wan2GP 생성·다운로드·삭제·remote
+probe·upload IPC를 발견했다. `active_generation_surface_integrator`가
+기본 lifecycle의 provider import/register와 `window.localAI` 전체를
+제거했다. dormant 구현은 보존하되 active main/preload import graph에서
+도달할 수 없다.
+
 ## 승인과 안전 경계
 
 Jessie는 policy `2026-07-12-manager-only-v1` 아래 다음을 현재 회차에
@@ -93,6 +100,34 @@ BrowserWindow security preference는 바꾸지 않았고 전체 Electron process
 - bridge method: 12개 (`copyCommandPreview` 포함)
 - mock fallback badge: 없음; `Electron bridge` 표시
 - relaunch 후 저장된 fixture/root state 복원: PASS
+
+### active generation bridge 제거 후 실제 runtime
+
+외부망을 차단하고 loopback만 허용한 OS sandbox에서 fresh
+`/private/tmp` userData/cache로 실제 Electron을 다시 실행했다. CDP
+target/title까지는 성공했지만 aggregate evaluation이 timeout되어 그
+결론은 사용하지 않았다. 대신 별도 QA wrapper가 실제
+`electron/main.js`를 로드한 뒤 `BrowserWindow.webContents.executeJavaScript`,
+`session.webRequest`, `capturePage` 경로로 독립 증거를 수집했다.
+
+- `window.localAI === undefined`: PASS
+- `window.filmPipeline`: object, 예상 12 methods 정확히 일치
+- 예상 tab/heading 11개: missing 0
+- enabled `run|execute|generate|submit|upload|download|get|probe|connect|delete`:
+  0
+- Local Models/Wan2GP/download/upload/delete/probe control text: 0
+- renderer request: `file:` 7, external 0
+- renderer console warning/error: 0/0
+- post-reload load failure/render-process failure: 0/0
+- screenshot: `/private/tmp` 전용, 265,638 bytes, SHA-256
+  `0280c8892a5e6c9dbf9a913ade9d9ec4618a554b6d9564246f68e28da5539e70`
+
+screenshot의 `NO LIVE GENERATION`, `DRY-RUN LOCKED`, `ELECTRON BRIDGE`가
+시각적으로 확인되었고 Settings modal은 Pipeline tab만 노출했다.
+QA wrapper가 초기 load 직후 강제 reload하여 `ERR_ABORTED` 한 건이 main
+stderr에 기록되었지만, 후속 reload의 load/render failure와 renderer
+console error는 0이었다. 이를 제품 오류 0 증거와 섞지 않고 QA
+navigation-interruption diagnostic으로 별도 기록한다.
 
 ## dataset matrix
 
@@ -205,7 +240,7 @@ macOS window/region helper와 loopback CDP `Page.captureScreenshot`을 함께
 
 ```text
 focused native/clipboard/security/renderer: 12/12 PASS
-full network-denied suite: 72/72 PASS
+full network-denied suite: 74/74 PASS
 npm run lint: PASS
 npm run build: PASS, Vite 36 modules
 git diff --check: PASS

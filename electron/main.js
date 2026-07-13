@@ -2,8 +2,6 @@ const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { createMainWindow } = require('./lib/createMainWindow');
 const { installNavigationPolicy } = require('./lib/navigationPolicy');
-const { register: registerLocalInference } = require('./lib/localInference');
-const { register: registerWan2gp } = require('./lib/wan2gpProvider');
 const { register: registerFilmPipeline } = require('./lib/filmPipelineProvider');
 
 // Ubuntu 24.04+ sets kernel.apparmor_restrict_unprivileged_userns=1 which
@@ -32,8 +30,6 @@ function createWindow() {
 
 app.whenReady().then(() => {
     createWindow();
-    registerLocalInference();
-    registerWan2gp();
     registerFilmPipeline();
 
     app.on('activate', () => {

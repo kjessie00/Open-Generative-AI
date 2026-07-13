@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 const require = createRequire(import.meta.url);
 const { installNavigationPolicy } = require('../electron/lib/navigationPolicy');
@@ -104,6 +105,128 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.match(preload, /copyCommandPreview:[\s\S]*film-pipeline:copy-command-preview/);
 });
 
+function assertDefaultElectronEntryBoundary(main, preload) {
+    assert.doesNotMatch(main, /(?:require\s*\(\s*['"]\.\/lib\/|register)(?:localInference|wan2gpProvider)/i);
+    assert.doesNotMatch(main, /register(?:LocalInference|Wan2gp)\s*\(/i);
+    assert.deepEqual(
+        [...preload.matchAll(/exposeInMainWorld\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+        ['filmPipeline'],
+    );
+    assert.doesNotMatch(preload, /local-ai:|wan2gp:|\blocalAI\b/i);
+    for (const match of preload.matchAll(/ipcRenderer\.(?:invoke|on|removeListener)\(\s*['"]([^'"]+)['"]/g)) {
+        assert.match(match[1], /^film-pipeline:/);
+    }
+}
+
+test('default Electron entrypoints expose and register only the cinematic pipeline', async () => {
+    const main = await source('electron/main.js');
+    const preload = await source('electron/preload.js');
+    assertDefaultElectronEntryBoundary(main, preload);
+
+    assert.throws(
+        () => assertDefaultElectronEntryBoundary(`${main}\nrequire('./lib/localInference').register();`, preload),
+        /localInference/i,
+        'active provider imports must fail the boundary regression',
+    );
+    assert.throws(
+        () => assertDefaultElectronEntryBoundary(main, `${preload}\ncontextBridge.exposeInMainWorld('localAI', {});`),
+        /filmPipeline|localAI/i,
+        'a second renderer bridge must fail the boundary regression',
+    );
+    assert.throws(
+        () => assertDefaultElectronEntryBoundary(main, preload.replace('film-pipeline:get-config', 'wan2gp:probe')),
+        /wan2gp/i,
+        'a legacy IPC channel must fail the boundary regression',
+    );
+});
+
+test('preload behavior presents the exact filmPipeline bridge without invoking IPC on load', async () => {
+    const preload = await source('electron/preload.js');
+    const exposed = new Map();
+    const invocations = [];
+    const eventCalls = [];
+    const ipcRenderer = {
+        invoke(channel, ...args) {
+            invocations.push([channel, args]);
+            return Promise.resolve({ channel, args });
+        },
+        on(channel, listener) {
+            eventCalls.push(['on', channel, listener]);
+        },
+        removeListener(channel, listener) {
+            eventCalls.push(['removeListener', channel, listener]);
+        },
+    };
+    const contextBridge = {
+        exposeInMainWorld(name, bridge) {
+            exposed.set(name, bridge);
+        },
+    };
+
+    runInNewContext(preload, {
+        require(specifier) {
+            assert.equal(specifier, 'electron');
+            return { contextBridge, ipcRenderer };
+        },
+    }, { filename: 'electron/preload.js' });
+
+    assert.deepEqual([...exposed.keys()], ['filmPipeline']);
+    assert.equal(invocations.length, 0, 'preload initialization must not invoke any IPC channel');
+    const bridge = exposed.get('filmPipeline');
+    assert.deepEqual(Object.keys(bridge).sort(), [
+        'copyCommandPreview',
+        'getConfig',
+        'listAssets',
+        'listProductionChildren',
+        'onProgress',
+        'previewCommand',
+        'readJsonl',
+        'readProductionState',
+        'runSafeCommand',
+        'selectProductionRoot',
+        'setConfig',
+        'writePlanningFile',
+    ]);
+
+    await bridge.getConfig();
+    await bridge.setConfig({});
+    await bridge.selectProductionRoot('/tmp/fixture');
+    await bridge.listProductionChildren('/tmp');
+    await bridge.readProductionState('/tmp/fixture');
+    await bridge.writePlanningFile({});
+    await bridge.listAssets('/tmp/fixture');
+    await bridge.readJsonl({});
+    await bridge.previewCommand({});
+    await bridge.copyCommandPreview({});
+    await bridge.runSafeCommand({});
+    assert.deepEqual(
+        invocations.map(([channel]) => channel),
+        [
+            'film-pipeline:get-config',
+            'film-pipeline:set-config',
+            'film-pipeline:select-production-root',
+            'film-pipeline:list-production-children',
+            'film-pipeline:read-production-state',
+            'film-pipeline:write-planning-file',
+            'film-pipeline:list-assets',
+            'film-pipeline:read-jsonl',
+            'film-pipeline:preview-command',
+            'film-pipeline:copy-command-preview',
+            'film-pipeline:run-safe-command',
+        ],
+    );
+
+    const unsubscribe = bridge.onProgress(() => {});
+    assert.equal(eventCalls.length, 1);
+    assert.equal(eventCalls[0][0], 'on');
+    assert.equal(eventCalls[0][1], 'film-pipeline:progress');
+    unsubscribe();
+    assert.equal(eventCalls.length, 2);
+    assert.equal(eventCalls[1][0], 'removeListener');
+    assert.equal(eventCalls[1][1], 'film-pipeline:progress');
+    assert.equal(eventCalls[1][2], eventCalls[0][2]);
+});
+
 const importPattern = /(?:import\s*(?:[^'"()]*?\s+from\s*)?|import\s*\(|require\s*\()\s*['"](\.{1,2}\/[^'"]+)['"]/g;
 
 async function resolveImport(fromFile, specifier) {
@@ -180,6 +303,10 @@ test('active desktop import graph has no hosted service or legacy Next reachabil
     }
 
     for (const dormant of [
+        'electron/lib/localInference.js',
+        'electron/lib/wan2gpProvider.js',
+        'src/components/LocalModelManager.js',
+        'src/lib/localInferenceClient.js',
         'src/lib/uploadHistory.js',
         'src/lib/pendingJobs.js',
         'src/lib/uploadProxyTarget.js',
