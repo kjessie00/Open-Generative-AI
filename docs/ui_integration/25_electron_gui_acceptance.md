@@ -129,6 +129,51 @@ stderr에 기록되었지만, 후속 reload의 load/render failure와 renderer
 console error는 0이었다. 이를 제품 오류 0 증거와 섞지 않고 QA
 navigation-interruption diagnostic으로 별도 기록한다.
 
+### active boundary 독립 read-only 검증
+
+독립 verifier `/root/active_boundary_independent_verifier`는 코드 커밋
+`1ed9ca4702cc93e06343091d4fcb4c6f44791f7e`, tree
+`e6048cbf1c2fb2f0f9e28a87abb2239d6fe4710f`, parent
+`41380953da5d955b69d788eeb8e43c0d4519d3bb`를 고정해 별도 snapshot
+`/private/tmp/open-ga-active-boundary-verifier-EOxDGn`에서 검증했다.
+네트워크와 snapshot source write를 동시에 차단한 `sandbox-exec`
+profile SHA-256은
+`95a5e8551c0437062e32095998f7f3c68f4b64a54fe4d88f963e3ad8e3c844ab`이며,
+source write probe는 `EPERM`이었다.
+
+Git object에서 추출한 변경 artifact와 snapshot SHA-256은 7/7 일치했다.
+
+| artifact | SHA-256 |
+| --- | --- |
+| `.agent/goal-checkpoint.md` | `24e417f059e265da74b72ec2bcb6cc1e55bbad4d46c37e0d93d2405746077a43` |
+| `docs/ui_integration/21_current_acceptance_status.md` | `d0d5d38b6c5a2781c4832690d6e9d6a509cdee4da6fc46aad0d3a357770e6104` |
+| `docs/ui_integration/25_electron_gui_acceptance.md` | `532ef211bc9fa00eca6a14a5e79e2e703d40cd6625e18d16570607bb2e3af0a7` |
+| `docs/ui_integration/missing_inputs.md` | `c5c2a97e4d2e263d91977cef1741c7351aa9f621ff2d5401637fe9adabc65c18` |
+| `electron/main.js` | `a5f90eb3704308f36f9258135f289a32720735ddbdfb2921033cf994f6bb2352` |
+| `electron/preload.js` | `d6931e532dcd1922113636305771c58089ce704958928f70035f421aa5838b82` |
+| `tests/desktopSecurity.test.mjs` | `e221882980d2e7989ca7ab1b51f27a5d1a786fe3c3a7e0ed31dc70acc824fc6d` |
+
+검증 결과:
+
+- VM main/preload 직접 실행: PASS; 등록 provider는 `filmPipelineProvider`
+  1개, exposed world는 `filmPipeline` 1개, 예상 method/channel 일치
+- active import graph: 42 files, SHA-256
+  `824e0bb4df91c91dddc237504907f59bc8d2558f2a7d826551f93e38ceb883fe`,
+  legacy provider/client/LocalModelManager reachability 0
+- focused security: 8/8, exit 0
+- full Node suite: 74/74, exit 0
+- lint 및 diff check: exit 0
+- 커밋된 `vite.config.mjs` 직접 load는 Vite의 timestamp module write가
+  source-write deny에서 `EPERM`으로 종료되어 `READONLY_N/A`다. 대신
+  `configFile:false`, `base:'./'`, `write:false`인 독립 in-memory Vite
+  build는 36 modules/5 outputs, exit 0이었다.
+- findings: P0 0, P1 0, P2 0; verifier 결론 PASS
+
+이 verifier는 실제 GUI/Electron runtime을 다시 실행하지 않았다. 따라서
+위 runtime/screenshot 결과는 executor 및 root의 시각 증거이며 독립 verifier의
+주장으로 승격하지 않는다. `NATIVE_FOLDER_SELECTION_ROOT2_GAP`,
+`OSV_OFFLINE_DB_GAP`, 실제 날짜-run Layout A gap도 그대로 남는다.
+
 ## dataset matrix
 
 실제 production의 narrative, prompt, media 또는 private metadata는 본 문서에
