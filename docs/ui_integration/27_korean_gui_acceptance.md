@@ -8,6 +8,14 @@
 
 ## 결론
 
+> 후속 상태 (2026-07-13): `docs/ui_integration/28_media_preview_hardening.md`에서
+> 상대 artifact 경로를 자동 `img`/`video` source로 만들던 두 렌더 표면을
+> 공통 deny-by-default 계약으로 수정했고 deterministic DOM 회귀가 통과했다.
+> 이는 과거 2건의 가장 강한 코드 가설을 제거하지만 exact URL과 수정 후 실제
+> Electron 재실행이 없으므로 이 문서의 역사적 console-clean BLOCK은 유지한다.
+> mobile select DOM change도 PASS했지만 실제 키보드-only runtime 증거와는
+> 분리한다.
+
 Jessie가 승인한 외부망 차단 Electron GUI 회차에서 한국어 우선 UI의 11개
 작업 단계와 320px, 768px, 1024px, 1440px 레이아웃을 실제 렌더로 확인했다.
 모든 메뉴와 패널 제목은 기대한 한국어 계약에 맞았고, 가로 넘침·잘린 조작

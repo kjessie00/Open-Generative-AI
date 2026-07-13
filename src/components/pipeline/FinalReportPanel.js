@@ -1,6 +1,7 @@
 import { BLOCKERS } from '../../lib/pipeline/blockers.js';
 import { buildFfmpegConcatPreviewCommand, buildFfprobeValidationCommands } from '../../lib/pipeline/commandBuilders.js';
 import { validateFinalReady } from '../../lib/pipeline/validators.js';
+import { localMediaSource } from '../../lib/pipeline/mediaSources.js';
 import { blockerList, card, dataTable, el, infoGrid, panelShell, statusBadge } from './ui.js';
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { p } from './copy.js';
@@ -56,14 +57,14 @@ function acceptedSecondsText(record) {
 
 function firstFrameCell(asset) {
     if (!asset?.path) return '—';
-    const canPreview = /\.(png|jpe?g|webp|gif)$/i.test(asset.path);
+    const previewSource = localMediaSource(asset.path, 'image');
     return el('div', { className: 'flex min-w-[180px] flex-col gap-2' }, [
-        canPreview ? el('img', {
+        previewSource ? el('img', {
             className: 'h-20 w-32 rounded-lg border border-white/10 object-cover',
-            attrs: { src: asset.path, alt: asset.asset_id || p('First frame') },
-        }) : null,
+            attrs: { src: previewSource, alt: asset.asset_id || p('First frame') },
+        }) : el('span', { text: p('Preview unavailable'), className: 'text-xs font-semibold text-secondary', attrs: { role: 'status' } }),
         el('span', { text: asset.path, className: 'break-all font-mono text-xs text-secondary' }),
-    ].filter(Boolean));
+    ]);
 }
 
 export function buildFinalClipRows(state = {}) {

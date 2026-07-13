@@ -1,5 +1,6 @@
 import { actionButton, card, el, emptyState, statusBadge } from './ui.js';
 import { p } from './copy.js';
+import { localMediaSource } from '../../lib/pipeline/mediaSources.js';
 
 function isVideo(path = '') {
     return /\.(mp4|mov|webm)$/i.test(path);
@@ -7,6 +8,12 @@ function isVideo(path = '') {
 
 function isImage(path = '') {
     return /\.(png|jpe?g|webp|gif|avif|apng)$/i.test(path);
+}
+
+function mediaKind(item = {}) {
+    if (item.type === 'video' || isVideo(item.path)) return 'video';
+    if (['image', 'first_frame', 'start_frame', 'reference'].includes(item.type) || isImage(item.path)) return 'image';
+    return '';
 }
 
 function deriveHistoryItems(state = {}, payload = {}) {
@@ -67,11 +74,14 @@ function previewBody(item) {
         ]);
     }
 
-    if (isVideo(item.path)) {
+    const kind = mediaKind(item);
+    const source = localMediaSource(item.path, kind);
+
+    if (kind === 'video' && source) {
         const video = el('video', {
             className: 'max-h-[75vh] max-w-full rounded-xl border border-white/10 bg-black object-contain',
             attrs: {
-                src: item.path,
+                src: source,
                 controls: 'true',
                 playsinline: 'true',
             },
@@ -80,18 +90,20 @@ function previewBody(item) {
         return video;
     }
 
-    if (isImage(item.path)) {
+    if (kind === 'image' && source) {
         return el('img', {
             className: 'max-h-[75vh] max-w-full rounded-xl border border-white/10 bg-black object-contain',
             attrs: {
-                src: item.path,
+                src: source,
                 alt: item.label || p('reference preview'),
             },
         });
     }
 
     return el('div', { className: 'rounded-xl border border-white/10 bg-black/40 p-5' }, [
-        el('div', { text: item.path || p('No previewable media path recorded.'), className: 'break-all font-mono text-sm text-secondary' }),
+        el('p', { text: p('Automatic media preview unavailable.'), className: 'text-sm font-semibold text-white', attrs: { role: 'status' } }),
+        el('p', { text: p('Only explicit local media sources are previewed. The recorded path remains available below.'), className: 'mt-2 text-xs leading-5 text-secondary' }),
+        el('div', { text: item.path || p('No previewable media path recorded.'), className: 'mt-3 break-all font-mono text-sm text-secondary' }),
     ]);
 }
 
@@ -144,7 +156,10 @@ export function GenerationHistoryGrid({ state = {}, payload = {} }) {
             ]),
             statusBadge(p('no run controls'), 'BLOCK'),
         ]),
-        items.length ? el('div', { className: 'grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4' }, items.map((item) => card([
+        items.length ? el('div', { className: 'grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4' }, items.map((item) => {
+            const kind = mediaKind(item);
+            const source = localMediaSource(item.path, kind);
+            return card([
             el('div', { className: 'mb-3 flex items-start justify-between gap-2' }, [
                 el('div', { className: 'min-w-0' }, [
                     el('div', { text: item.label, className: 'truncate text-sm font-bold text-white' }),
@@ -159,17 +174,18 @@ export function GenerationHistoryGrid({ state = {}, payload = {} }) {
             }, [
                 item.type === 'json'
                     ? el('span', { text: p('{ } Payload') })
-                    : isImage(item.path)
-                        ? el('img', { className: 'h-full w-full object-cover opacity-80', attrs: { src: item.path, alt: item.label } })
-                        : isVideo(item.path)
+                    : kind === 'image' && source
+                        ? el('img', { className: 'h-full w-full object-cover opacity-80', attrs: { src: source, alt: item.label } })
+                        : kind === 'video' && source
                             ? el('span', { text: p('Video Preview') })
-                            : el('span', { text: p('Open Preview') }),
+                            : el('span', { text: kind ? p('Preview unavailable') : p('Open Preview') }),
             ]),
             el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
                 statusBadge(item.type, 'PREVIEW'),
                 statusBadge(item.source, 'UNREVIEWED'),
             ]),
-        ], 'p-4'))) : emptyState(p('No preview or history items recorded yet.')),
+            ], 'p-4');
+        })) : emptyState(p('No preview or history items recorded yet.')),
     ]);
 }
 

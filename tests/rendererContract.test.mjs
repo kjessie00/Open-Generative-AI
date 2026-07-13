@@ -91,13 +91,24 @@ function installDeterministicDom(bridge) {
         document: Object.getOwnPropertyDescriptor(globalThis, 'document'),
         window: Object.getOwnPropertyDescriptor(globalThis, 'window'),
     };
+    const documentListeners = new Map();
     const document = {
         body: new TestNode(1, 'body'),
+        activeElement: null,
         createElement: (tagName) => new TestNode(1, tagName),
         createTextNode: (text) => {
             const node = new TestNode(3);
             node.textContent = text;
             return node;
+        },
+        addEventListener(type, listener) {
+            const listeners = documentListeners.get(type) || [];
+            listeners.push(listener);
+            documentListeners.set(type, listeners);
+        },
+        removeEventListener(type, listener) {
+            const listeners = documentListeners.get(type) || [];
+            documentListeners.set(type, listeners.filter((candidate) => candidate !== listener));
         },
     };
     const windowListeners = new Map();
@@ -223,6 +234,16 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     for (const group of ['기획', '제작 준비', '생성·검토', '마무리']) {
         assert.ok(byText(studio, 'h2', group), `${group} workflow group must be rendered`);
     }
+    const mobileWorkflow = byAttribute(studio, 'select', 'aria-label', '파이프라인 작업 단계');
+    assert.ok(mobileWorkflow, 'mobile workflow select must have a Korean accessible name');
+    mobileWorkflow.value = 'storyboard';
+    await mobileWorkflow.dispatchEvent({ type: 'change' });
+    assert.ok(byText(studio, 'h2', '스토리보드'), 'mobile workflow change must render the storyboard panel');
+    assert.equal(
+        byAttribute(studio, 'select', 'aria-label', '파이프라인 작업 단계').value,
+        'storyboard',
+        'the rerendered mobile workflow select must preserve the selected step',
+    );
     assert.deepEqual(
         findAll(studio, 'dt').map((node) => node.textContent.trim()),
         ['파일', '파싱', '검토', '채택'],
@@ -347,4 +368,97 @@ test('PipelineSidebar keeps grouped navigation ahead of a collapsed Korean produ
     assert.ok(byAttribute(sidebar, 'button', 'aria-label', '제작 목록 새로고침'));
     assert.equal(findAll(sidebar, 'details').length, 1);
     assert.equal(findAll(sidebar, 'details')[0].attributes.has('open'), false);
+});
+
+test('pipeline media surfaces keep relative and external paths as metadata without resource fetch nodes', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const { GenerationHistoryGrid } = await import('../src/components/pipeline/GenerationHistoryGrid.js');
+    const { FinalReportPanel } = await import('../src/components/pipeline/FinalReportPanel.js');
+
+    const relativePath = samplePipelineState.assets[0].path;
+    const history = GenerationHistoryGrid({ state: samplePipelineState });
+    const finalReport = FinalReportPanel({ state: samplePipelineState });
+
+    assert.match(history.textContent, new RegExp(relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(finalReport.textContent, new RegExp(relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(history.textContent, /미리보기 불가/);
+    assert.match(finalReport.textContent, /미리보기 불가/);
+    assert.equal(findAll(history, 'img').length, 0, 'relative shot artifacts must not create image fetch nodes');
+    assert.equal(findAll(finalReport, 'img').length, 0, 'relative final-report artifacts must not create image fetch nodes');
+
+    const externalPath = 'https://example.invalid/external-preview.png';
+    const externalState = structuredClone(samplePipelineState);
+    externalState.generationHistory = [{ id: 'external', label: 'External', path: externalPath, type: 'image' }];
+    externalState.assets[0].path = externalPath;
+    const externalHistory = GenerationHistoryGrid({ state: externalState });
+    const externalFinal = FinalReportPanel({ state: externalState });
+    assert.match(externalHistory.textContent, /https:\/\/example\.invalid\/external-preview\.png/);
+    assert.match(externalFinal.textContent, /https:\/\/example\.invalid\/external-preview\.png/);
+    assert.equal(findAll(externalHistory, 'img').length, 0, 'HTTP sources must stay metadata-only');
+    assert.equal(findAll(externalFinal, 'img').length, 0, 'HTTP final-report sources must stay metadata-only');
+
+    const relativeVideoPath = 'production/clip/generated.mp4';
+    const relativeVideoHistory = GenerationHistoryGrid({
+        state: { generationHistory: [{ id: 'relative-video', label: 'Relative video', path: relativeVideoPath, type: 'video' }] },
+    });
+    await findAll(relativeVideoHistory, 'button')[0].dispatchEvent({ type: 'click' });
+    assert.equal(findAll(document.body, 'video').length, 0, 'relative video artifacts must not create video fetch nodes');
+    assert.match(document.body.textContent, /production\/clip\/generated\.mp4/);
+    assert.match(document.body.textContent, /자동 미디어 미리보기를 사용할 수 없습니다/);
+});
+
+test('pipeline media surfaces preserve explicit safe local image sources', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const { GenerationHistoryGrid } = await import('../src/components/pipeline/GenerationHistoryGrid.js');
+    const { FinalReportPanel } = await import('../src/components/pipeline/FinalReportPanel.js');
+
+    const safeSources = [
+        '/private/tmp/fixture.png',
+        'file:///private/tmp/fixture.png',
+        'data:image/png;base64,AA==',
+        'blob:fixture-preview',
+    ];
+    const historyState = {
+        generationHistory: safeSources.map((source, index) => ({
+            id: `safe-${index}`,
+            label: `Safe ${index}`,
+            path: source,
+            type: 'image',
+        })),
+    };
+    const history = GenerationHistoryGrid({ state: historyState });
+    assert.deepEqual(
+        findAll(history, 'img').map((node) => node.attributes.get('src')),
+        safeSources,
+        'safe local source forms must remain usable in the shot preview grid',
+    );
+
+    const finalState = structuredClone(samplePipelineState);
+    finalState.assets[0].path = safeSources[0];
+    const finalReport = FinalReportPanel({ state: finalState });
+    assert.equal(findAll(finalReport, 'img')[0]?.attributes.get('src'), safeSources[0]);
+    assert.match(finalReport.textContent, /\/private\/tmp\/fixture\.png/);
+
+    const videoHistory = GenerationHistoryGrid({
+        state: { generationHistory: [{ id: 'safe-video', label: 'Safe video', path: '/private/tmp/fixture.mp4', type: 'video' }] },
+    });
+    await findAll(videoHistory, 'button')[0].dispatchEvent({ type: 'click' });
+    assert.equal(findAll(document.body, 'video')[0]?.attributes.get('src'), '/private/tmp/fixture.mp4');
+});
+
+test('local media source policy is deny-by-default and never permits remote file hosts', async () => {
+    const { localMediaSource } = await import('../src/lib/pipeline/mediaSources.js');
+
+    assert.equal(localMediaSource('production/clip/frame.png', 'image'), '');
+    assert.equal(localMediaSource('https://example.invalid/frame.png', 'image'), '');
+    assert.equal(localMediaSource('//server/share/frame.png', 'image'), '');
+    assert.equal(localMediaSource('file://server/share/frame.png', 'image'), '');
+    assert.equal(localMediaSource('data:text/html,unsafe', 'image'), '');
+    assert.equal(localMediaSource('data:image/svg+xml,<svg/>', 'image'), '');
+    assert.equal(localMediaSource('/private/tmp/frame.png', 'image'), '/private/tmp/frame.png');
+    assert.equal(localMediaSource('file:///private/tmp/frame.png', 'image'), 'file:///private/tmp/frame.png');
 });
