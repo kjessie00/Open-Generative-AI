@@ -402,6 +402,131 @@ test('copy-disabled command card attaches no click handler and performs zero cli
     assert.equal(calls.length, 1, 'usable preview copy must keep the existing copy-only bridge');
 });
 
+test('new-project intake uses labeled Korean controls and dedicated save/copy IPC without leaking errors', async (t) => {
+    const calls = [];
+    const alerts = [];
+    let rejectSave = false;
+    const draft = {
+        production_id: 'restored-project',
+        brief: '복원된 한글 브리프',
+        script: '복원된 한글 스크립트',
+        route: 'both',
+        aspect_ratio: '9:16',
+        scene_duration: 5,
+        max_scenes: 3,
+    };
+    const readyState = (value = draft) => ({
+        ok: true,
+        status: 'restored',
+        draft: structuredClone(value),
+        savedAt: '2026-07-13T12:00:00.000Z',
+        readiness: 'ready_to_copy',
+        blockers: [],
+        parentRoot: '/tmp/main-owned-parent',
+        targetPath: `/tmp/main-owned-parent/${value.production_id}`,
+        harnessReady: true,
+        executed: false,
+        preview: {
+            ready: true,
+            copyAllowed: true,
+            previewOnly: true,
+            executed: false,
+            shellSafeCommand: `cd /fixed/harness && python3 /fixed/builder.py --production-id ${value.production_id}`,
+        },
+    });
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '', productionParentRoot: '/tmp/main-owned-parent' } };
+        },
+        async getNewProjectDraftState(...args) {
+            calls.push(['getNewProjectDraftState', args]);
+            return readyState();
+        },
+        async saveNewProjectDraft(payload) {
+            calls.push(['saveNewProjectDraft', structuredClone(payload)]);
+            if (rejectSave) throw new Error('SECRET_DRAFT_CONTENT_AND_PATH');
+            return { ...readyState(payload), status: 'saved' };
+        },
+        async copyNewProjectBuildCommand(...args) {
+            calls.push(['copyNewProjectBuildCommand', args]);
+            return { ok: true, copied: true, verified: true, executed: false, state: readyState() };
+        },
+        async previewCommand(command) {
+            calls.push(['previewCommand', command]);
+        },
+        async copyCommandPreview(command) {
+            calls.push(['copyCommandPreview', command]);
+        },
+        async runSafeCommand(command) {
+            calls.push(['runSafeCommand', command]);
+        },
+    };
+    const { restore } = installDeterministicDom(bridge, { alerts });
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+
+    assert.ok(byText(studio, 'h3', '새 프로젝트 시작'));
+    const form = byAttribute(studio, 'form', 'aria-label', '새 프로젝트 초안');
+    assert.ok(form, 'new-project fields must be grouped in a native form');
+    assert.match(form.className, /grid-cols-1/);
+    assert.match(form.className, /md:grid-cols-2/);
+    for (const [id, label] of [
+        ['new-project-production-id', '제작 ID'],
+        ['new-project-brief', '브리프'],
+        ['new-project-script', '스크립트'],
+        ['new-project-route', '생성 경로'],
+        ['new-project-aspect', '화면 비율'],
+        ['new-project-duration', '씬 길이(초)'],
+        ['new-project-scenes', '최대 씬 수'],
+    ]) {
+        assert.equal(byAttribute(studio, 'label', 'for', id)?.textContent.trim(), label);
+        const control = byAttribute(studio, 'input', 'id', id)
+            || byAttribute(studio, 'textarea', 'id', id)
+            || byAttribute(studio, 'select', 'id', id);
+        assert.ok(control, `${id} must have a native control`);
+        assert.equal(control.attributes.get('required'), 'true');
+    }
+    assert.match(studio.textContent, /저장만으로 제작 폴더가 생기거나 명령이 실행되지 않습니다/);
+    assert.match(studio.textContent, /canonical 명령 미리보기/);
+    assert.ok(byText(studio, 'button', '새 프로젝트 초안'), 'project bar must expose direct intake navigation');
+
+    const productionId = byAttribute(studio, 'input', 'id', 'new-project-production-id');
+    productionId.value = 'edited-project';
+    await productionId.dispatchEvent({ type: 'input' });
+    const briefInput = byAttribute(studio, 'textarea', 'id', 'new-project-brief');
+    briefInput.value = '편집한 한글 브리프';
+    await briefInput.dispatchEvent({ type: 'input' });
+    const duration = byAttribute(studio, 'input', 'id', 'new-project-duration');
+    duration.value = '8';
+    await duration.dispatchEvent({ type: 'input' });
+    await byText(studio, 'button', '로컬 초안 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const saveCall = calls.find(([method]) => method === 'saveNewProjectDraft');
+    assert.equal(saveCall[1].production_id, 'edited-project');
+    assert.equal(saveCall[1].brief, '편집한 한글 브리프');
+    assert.equal(saveCall[1].scene_duration, 8);
+    assert.equal(Object.hasOwn(saveCall[1], 'output_root'), false);
+    assert.equal(Object.hasOwn(saveCall[1], 'cwd'), false);
+    assert.equal(Object.hasOwn(saveCall[1], 'command'), false);
+
+    await byText(studio, 'button', 'canonical 빌드 명령 복사').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'copyNewProjectBuildCommand')[1], []);
+    assert.equal(calls.filter(([method]) => method === 'previewCommand').length, 0);
+    assert.equal(calls.filter(([method]) => method === 'copyCommandPreview').length, 0);
+    assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
+    assert.ok(alerts.includes('canonical 빌드 명령을 복사했습니다.'));
+
+    rejectSave = true;
+    await byText(studio, 'button', '로컬 초안 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.equal(alerts.at(-1), '새 프로젝트 초안 저장이 차단되었습니다.');
+    assert.doesNotMatch(`${studio.textContent}\n${alerts.join('\n')}`, /SECRET_DRAFT_CONTENT_AND_PATH/);
+    assert.deepEqual(calls.find(([method]) => method === 'getNewProjectDraftState')[1], []);
+});
+
 test('settings renders partial and blocked fixed-root harness readiness in Korean', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);

@@ -103,6 +103,7 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.doesNotMatch(`${main}\n${windowFactory}`, /shell\.openExternal/);
     assert.match(preload, /exposeInMainWorld\(['"]filmPipeline['"]/);
     assert.match(preload, /copyCommandPreview:[\s\S]*film-pipeline:copy-command-preview/);
+    assert.match(preload, /copyNewProjectBuildCommand:[\s\S]*film-pipeline:copy-new-project-build-command/);
     assert.doesNotMatch(preload, /film-pipeline:set-config|\bsetConfig\b/);
 });
 
@@ -176,8 +177,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     const bridge = exposed.get('filmPipeline');
     assert.deepEqual(Object.keys(bridge).sort(), [
         'copyCommandPreview',
+        'copyNewProjectBuildCommand',
         'getConfig',
         'getHarnessContractStatus',
+        'getNewProjectDraftState',
         'listAssets',
         'listProductionChildren',
         'onProgress',
@@ -185,12 +188,16 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'readJsonl',
         'readProductionState',
         'runSafeCommand',
+        'saveNewProjectDraft',
         'selectProductionRoot',
         'writePlanningFile',
     ]);
 
     await bridge.getConfig();
     await bridge.getHarnessContractStatus();
+    await bridge.getNewProjectDraftState();
+    await bridge.saveNewProjectDraft({ production_id: 'test-project' });
+    await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
     await bridge.selectProductionRoot({ mode: 'production' });
     await bridge.listProductionChildren();
@@ -206,6 +213,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         [
             'film-pipeline:get-config',
             'film-pipeline:get-harness-contract-status',
+            'film-pipeline:get-new-project-draft-state',
+            'film-pipeline:save-new-project-draft',
+            'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
             'film-pipeline:read-production-state',
@@ -223,6 +233,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     );
     for (const channel of [
         'film-pipeline:get-harness-contract-status',
+        'film-pipeline:get-new-project-draft-state',
+        'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',
         'film-pipeline:list-assets',
@@ -233,6 +245,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             `${channel} must not carry a renderer path argument`,
         );
     }
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:save-new-project-draft')[1],
+        [{ production_id: 'test-project' }],
+    );
 
     const unsubscribe = bridge.onProgress(() => {});
     assert.equal(eventCalls.length, 1);

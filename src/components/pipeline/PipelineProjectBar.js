@@ -1,7 +1,7 @@
 import { actionButton, el } from './ui.js';
 import { p } from './copy.js';
 
-export function PipelineProjectBar({ state, onOpenProduction, onRefreshProductions }) {
+export function PipelineProjectBar({ state, onNewProject, onOpenProduction, onRefreshProductions }) {
     const project = state.project || {};
     return el('header', { className: 'pipeline-project-bar' }, [
         el('div', { className: 'pipeline-project-context' }, [
@@ -15,6 +15,7 @@ export function PipelineProjectBar({ state, onOpenProduction, onRefreshProductio
             }),
         ]),
         el('div', { className: 'pipeline-project-actions' }, [
+            actionButton(p('New project draft'), { onClick: onNewProject }),
             actionButton(p('Open production folder'), { onClick: onOpenProduction }),
             actionButton(p('Refresh productions'), { onClick: onRefreshProductions, variant: 'muted' }),
         ]),

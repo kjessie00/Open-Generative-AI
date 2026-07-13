@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { readProductionFolder } = require('./productionReader');
+const newProjectDraftProvider = require('./newProjectDraftProvider');
 
 const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
@@ -939,6 +940,48 @@ function getHarnessContractStatus(options = {}) {
     };
 }
 
+function newProjectContext(options = {}) {
+    return {
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        config: getConfig(options),
+        harnessStatus: getHarnessContractStatus(options),
+        clipboardApi: options.clipboardApi || clipboard,
+        renameFile: options.renameFile,
+        randomBytes: options.randomBytes,
+    };
+}
+
+function getNewProjectDraftState(options = {}) {
+    return newProjectDraftProvider.getNewProjectDraftState(newProjectContext(options));
+}
+
+function saveNewProjectDraft(payload, options = {}) {
+    const result = newProjectDraftProvider.saveNewProjectDraft(payload, newProjectContext(options));
+    sendProgress({
+        phase: 'new-project-draft-saved',
+        status: result.status,
+        readiness: result.readiness,
+        blockerCount: result.blockers.length,
+        executed: false,
+    });
+    return result;
+}
+
+function copyNewProjectBuildCommand(options = {}) {
+    const result = newProjectDraftProvider.copyNewProjectBuildCommand(newProjectContext(options));
+    sendProgress({
+        phase: result.copied ? 'new-project-command-copied' : 'new-project-command-copy-blocked',
+        copied: result.copied,
+        verified: result.verified,
+        executed: false,
+        length: result.length,
+        byteLength: result.byteLength,
+        sha256: result.sha256,
+        error: result.error,
+    });
+    return result;
+}
+
 function listConfiguredProductionChildren(options = {}) {
     const parentRoot = configuredPath(options, 'productionParentRoot', 'PRODUCTION_PARENT_NOT_CONFIGURED');
     return listProductionChildren(parentRoot);
@@ -1136,6 +1179,15 @@ function register(ipcApi = ipcMain, options = {}) {
         assertNoRendererPathArgument(pathArgument);
         return getHarnessContractStatus(options);
     });
+    ipcApi.handle('film-pipeline:get-new-project-draft-state', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectDraftState(options);
+    });
+    ipcApi.handle('film-pipeline:save-new-project-draft', (_, payload) => saveNewProjectDraft(payload, options));
+    ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return copyNewProjectBuildCommand(options);
+    });
     ipcApi.handle('film-pipeline:select-production-root', (_, request) => selectProductionRoot(request, options));
     ipcApi.handle('film-pipeline:read-production-state', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
@@ -1173,6 +1225,9 @@ module.exports = {
     readConfiguredJsonl,
     resolveProductionDialogDefaultPath,
     getHarnessContractStatus,
+    getNewProjectDraftState,
+    saveNewProjectDraft,
+    copyNewProjectBuildCommand,
     HARNESS_CONTRACT_ALLOWLIST,
     HAPPY_VIDEO_FACTORY_ROOT,
 };

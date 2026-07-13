@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('filmPipeline', {
     getConfig: () => ipcRenderer.invoke('film-pipeline:get-config'),
     getHarnessContractStatus: () => ipcRenderer.invoke('film-pipeline:get-harness-contract-status'),
+    getNewProjectDraftState: () => ipcRenderer.invoke('film-pipeline:get-new-project-draft-state'),
+    saveNewProjectDraft: (draft) => ipcRenderer.invoke('film-pipeline:save-new-project-draft', draft),
+    copyNewProjectBuildCommand: () => ipcRenderer.invoke('film-pipeline:copy-new-project-build-command'),
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),
     readProductionState: () => ipcRenderer.invoke('film-pipeline:read-production-state'),

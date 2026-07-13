@@ -76,11 +76,37 @@ export function PipelineStudio() {
         rootPath: '',
         entries: [],
     };
+    let newProjectDraftState = {
+        status: 'loading',
+        draft: {
+            production_id: '', brief: '', script: '', route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 10,
+        },
+        readiness: 'blocked',
+        blockers: [],
+        preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
+    };
+    let newProjectDraftValue = { ...newProjectDraftState.draft };
 
     const render = () => {
         container.innerHTML = '';
 
         const showPathSelectionBlocked = () => window.alert(p('Folder selection blocked by the local path safety policy.'));
+
+        const refreshNewProjectDraft = async () => {
+            try {
+                const result = await pipelineClient.getNewProjectDraftState();
+                newProjectDraftState = result;
+                if (result?.draft) newProjectDraftValue = { ...result.draft };
+            } catch {
+                newProjectDraftState = {
+                    ...newProjectDraftState,
+                    status: 'error',
+                    readiness: 'blocked',
+                    blockers: ['NEW_PROJECT_DRAFT_READ_FAILED'],
+                    preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
+                };
+            }
+        };
 
         const openProductionFolder = async () => {
             try {
@@ -133,6 +159,8 @@ export function PipelineStudio() {
                     allowSafeCommandExecution: false,
                 };
                 await refreshProductions();
+                await refreshNewProjectDraft();
+                render();
             } catch {
                 showPathSelectionBlocked();
             }
@@ -173,6 +201,57 @@ export function PipelineStudio() {
             PipelineSafetySummary(),
             renderPanel(activeTab, state, config, {
                 harnessStatus,
+                newProjectDraftState,
+                newProjectDraftValue,
+                onNewProjectDraftChange: (field, value) => {
+                    newProjectDraftValue[field] = value;
+                },
+                onSaveNewProjectDraft: async (draft) => {
+                    newProjectDraftState = { ...newProjectDraftState, status: 'saving' };
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectDraft(draft);
+                        newProjectDraftState = result;
+                        if (result?.draft) newProjectDraftValue = { ...result.draft };
+                        window.alert(result?.ok
+                            ? p('New project draft saved.')
+                            : p('New project draft save was blocked.'));
+                    } catch {
+                        newProjectDraftState = {
+                            ...newProjectDraftState,
+                            status: 'error',
+                            readiness: 'blocked',
+                            blockers: ['NEW_PROJECT_DRAFT_SAVE_FAILED'],
+                            preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
+                        };
+                        window.alert(p('New project draft save was blocked.'));
+                    }
+                    render();
+                },
+                onCopyNewProjectBuildCommand: async () => {
+                    newProjectDraftState = { ...newProjectDraftState, status: 'copying' };
+                    render();
+                    try {
+                        const result = await pipelineClient.copyNewProjectBuildCommand();
+                        if (result?.state) {
+                            newProjectDraftState = result.state;
+                            if (result.state.draft) newProjectDraftValue = { ...result.state.draft };
+                        }
+                        window.alert(result?.copied && result?.verified
+                            ? p('Canonical build command copied.')
+                            : p('Canonical build command copy was blocked.'));
+                    } catch {
+                        newProjectDraftState = {
+                            ...newProjectDraftState,
+                            status: 'error',
+                            readiness: 'blocked',
+                            blockers: ['NEW_PROJECT_COMMAND_COPY_FAILED'],
+                            preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
+                        };
+                        window.alert(p('Canonical build command copy was blocked.'));
+                    }
+                    render();
+                },
                 onSavePlanningFile: async (payload) => {
                     try {
                         const result = await pipelineClient.writePlanningFile(payload);
@@ -206,6 +285,10 @@ export function PipelineStudio() {
 
         container.appendChild(PipelineProjectBar({
             state,
+            onNewProject: () => {
+                activeTab = 'intake';
+                render();
+            },
             onOpenProduction: openProductionFolder,
             onRefreshProductions: refreshProductions,
         }));
@@ -223,9 +306,10 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
+            pipelineClient.getNewProjectDraftState(),
         ]);
         if (configResult.status === 'fulfilled') {
             const result = configResult.value;
@@ -233,6 +317,16 @@ export function PipelineStudio() {
         }
         if (harnessResult.status === 'fulfilled' && harnessResult.value) {
             harnessStatus = harnessResult.value;
+        }
+        if (newProjectResult.status === 'fulfilled' && newProjectResult.value) {
+            newProjectDraftState = newProjectResult.value;
+            if (newProjectResult.value.draft) newProjectDraftValue = { ...newProjectResult.value.draft };
+        } else {
+            newProjectDraftState = {
+                ...newProjectDraftState,
+                status: 'error',
+                blockers: ['NEW_PROJECT_DRAFT_READ_FAILED'],
+            };
         }
         config = {
             ...config,

@@ -10,6 +10,16 @@ const mockConfig = Object.freeze({
     updatedAt: null,
 });
 
+const emptyNewProjectDraft = Object.freeze({
+    production_id: '',
+    brief: '',
+    script: '',
+    route: 'both',
+    aspect_ratio: '9:16',
+    scene_duration: 5,
+    max_scenes: 10,
+});
+
 function getBridge() {
     return globalThis.window?.filmPipeline || null;
 }
@@ -58,6 +68,46 @@ export async function getHarnessContractStatus() {
         reason: 'FILM_PIPELINE_BRIDGE_UNAVAILABLE',
         rootPath: '',
         entries: [],
+    };
+}
+
+export async function getNewProjectDraftState() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectDraftState === 'function') return bridge.getNewProjectDraftState();
+    return {
+        ...unavailable('getNewProjectDraftState'),
+        status: 'empty',
+        draft: { ...emptyNewProjectDraft },
+        savedAt: '',
+        readiness: 'blocked',
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        parentRoot: '',
+        targetPath: '',
+        harnessReady: false,
+        preview: {
+            ready: false,
+            copyAllowed: false,
+            previewOnly: true,
+            executed: false,
+            shellSafeCommand: '',
+        },
+    };
+}
+
+export async function saveNewProjectDraft(draft) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectDraft === 'function') return bridge.saveNewProjectDraft(draft);
+    return { ...await getNewProjectDraftState(), ...unavailable('saveNewProjectDraft') };
+}
+
+export async function copyNewProjectBuildCommand() {
+    const bridge = getBridge();
+    if (typeof bridge?.copyNewProjectBuildCommand === 'function') return bridge.copyNewProjectBuildCommand();
+    return {
+        ...unavailable('copyNewProjectBuildCommand'),
+        copied: false,
+        verified: false,
+        state: await getNewProjectDraftState(),
     };
 }
 
@@ -154,6 +204,9 @@ export const pipelineClient = Object.freeze({
     hasFilmPipelineBridge,
     getConfig,
     getHarnessContractStatus,
+    getNewProjectDraftState,
+    saveNewProjectDraft,
+    copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,
     readProductionState,
