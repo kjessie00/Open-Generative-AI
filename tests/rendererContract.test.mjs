@@ -86,7 +86,7 @@ function byAttribute(root, tagName, name, value) {
     return findAll(root, tagName).find((node) => node.attributes.get(name) === value) || null;
 }
 
-function installDeterministicDom(bridge) {
+function installDeterministicDom(bridge, options = {}) {
     const previous = {
         document: Object.getOwnPropertyDescriptor(globalThis, 'document'),
         window: Object.getOwnPropertyDescriptor(globalThis, 'window'),
@@ -115,7 +115,9 @@ function installDeterministicDom(bridge) {
     const window = {
         document,
         filmPipeline: bridge,
-        alert() {},
+        alert(message) {
+            options.alerts?.push(String(message));
+        },
         addEventListener(type, listener) {
             const listeners = windowListeners.get(type) || [];
             listeners.push(listener);
@@ -332,6 +334,51 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'writePlanningFile').length, 0);
     assert.match(studio.textContent, /\/tmp\/selected-production/, 'technical paths must remain unmodified');
+});
+
+test('PipelineStudio reports planning write rejection in Korean without leaking the thrown error or rejecting the click', async (t) => {
+    const alerts = [];
+    const unhandled = [];
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const state = structuredClone(samplePipelineState);
+    state.project.root_path = '/tmp/planning-write-rejection';
+    const bridge = {
+        async getConfig() {
+            return {
+                config: {
+                    productionRoot: state.project.root_path,
+                    productionParentRoot: '',
+                    dryRunMode: true,
+                    allowSafeCommandExecution: false,
+                },
+            };
+        },
+        async readProductionState() {
+            return { ok: true, state };
+        },
+        async writePlanningFile() {
+            throw new Error('SECRET_PAYLOAD_SHOULD_NOT_RENDER');
+        },
+    };
+    const { restore } = installDeterministicDom(bridge, { alerts });
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    t.after(() => {
+        process.off('unhandledRejection', onUnhandled);
+        restore();
+    });
+
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    const saveButton = byText(studio, 'button', '계획 파일 저장');
+    assert.ok(saveButton, 'intake planning save button must be available');
+    await saveButton.dispatchEvent({ type: 'click' });
+    await flushRenderer();
+
+    assert.deepEqual(alerts, ['저장이 차단되었습니다: 안전한 계획 파일 경로와 내용인지 확인하세요.']);
+    assert.doesNotMatch(alerts[0], /SECRET_PAYLOAD/);
+    assert.deepEqual(unhandled, []);
 });
 
 test('PipelineSidebar keeps grouped navigation ahead of a collapsed Korean production list', async (t) => {

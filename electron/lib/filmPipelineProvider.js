@@ -9,6 +9,9 @@ const MAX_JSONL_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_COUNT = 600;
 const MAX_WALK_DEPTH = 8;
 const MAX_COMMAND_PREVIEW_BYTES = 256 * 1024;
+const MAX_PLANNING_FILE_BYTES = 1024 * 1024;
+const MAX_PLANNING_FILE_ID_LENGTH = 128;
+const PLANNING_TEMP_PREFIX = '.film-pipeline-planning-';
 
 const SIDE_EFFECT_TYPES = new Set([
     'local_planning_write',
@@ -199,6 +202,214 @@ function assertDirectory(rootPath) {
     return root;
 }
 
+function planningWriteError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+}
+
+function assertPlanningRoot(rootPath, configuredRoot) {
+    if (typeof rootPath !== 'string' || rootPath.length === 0 || rootPath.includes('\0')) {
+        throw planningWriteError('PLANNING_ROOT_INVALID', 'Planning root must be a non-empty path');
+    }
+    if (typeof configuredRoot !== 'string' || configuredRoot.length === 0 || configuredRoot.includes('\0')) {
+        throw planningWriteError('PLANNING_ROOT_NOT_CONFIGURED', 'A production root must be configured before saving');
+    }
+    if (rootPath !== configuredRoot) {
+        throw planningWriteError('PLANNING_ROOT_MISMATCH', 'Planning root does not match the configured production root');
+    }
+    if (!path.isAbsolute(rootPath) || path.normalize(rootPath) !== rootPath) {
+        throw planningWriteError('PLANNING_ROOT_INVALID', 'Planning root must be an absolute normalized path');
+    }
+
+    let stats;
+    try {
+        stats = fs.lstatSync(rootPath);
+    } catch {
+        throw planningWriteError('PLANNING_ROOT_INVALID', 'Configured production root does not exist');
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw planningWriteError('PLANNING_ROOT_INVALID', 'Configured production root must be a non-symlink directory');
+    }
+
+    return {
+        root: rootPath,
+        realRoot: fs.realpathSync.native(rootPath),
+    };
+}
+
+function parsePlanningRelativePath(relativePath) {
+    if (typeof relativePath !== 'string' || relativePath.length === 0 || relativePath.includes('\0')) {
+        throw planningWriteError('PLANNING_PATH_NOT_ALLOWED', 'Planning path is not allowed');
+    }
+    if (relativePath === 'docs/ui_integration/intake_snapshot.json') {
+        return {
+            relativePath,
+            components: ['docs', 'ui_integration', 'intake_snapshot.json'],
+        };
+    }
+
+    const safeId = `(?![A-Za-z0-9._-]*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,${MAX_PLANNING_FILE_ID_LENGTH - 1}}`;
+    const patterns = [
+        new RegExp(`^storyboard/drafts/(${safeId})_shot_payload\\.json$`),
+        new RegExp(`^image_generation/prompts/(${safeId})_deepsearch_scene_image\\.md$`),
+    ];
+    const match = patterns.map((pattern) => relativePath.match(pattern)).find(Boolean);
+    if (!match) {
+        throw planningWriteError('PLANNING_PATH_NOT_ALLOWED', 'Planning path is not allowed');
+    }
+
+    return {
+        relativePath,
+        components: relativePath.split('/'),
+    };
+}
+
+function assertDirectoryInsideRoot(directoryPath, realRoot) {
+    const stats = fs.lstatSync(directoryPath);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw planningWriteError('PLANNING_PARENT_UNSAFE', 'Planning parent must be a non-symlink directory');
+    }
+    const realDirectory = fs.realpathSync.native(directoryPath);
+    if (realDirectory !== realRoot && !realDirectory.startsWith(realRoot + path.sep)) {
+        throw planningWriteError('PLANNING_ROOT_ESCAPE', 'Planning parent escapes the production root');
+    }
+    return { dev: stats.dev, ino: stats.ino, realDirectory };
+}
+
+function ensurePlanningParent(root, realRoot, components) {
+    let current = root;
+    for (const component of components.slice(0, -1)) {
+        current = path.join(current, component);
+        try {
+            const stats = fs.lstatSync(current);
+            if (stats.isSymbolicLink() || !stats.isDirectory()) {
+                throw planningWriteError('PLANNING_PARENT_UNSAFE', 'Planning parent must be a non-symlink directory');
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            try {
+                fs.mkdirSync(current, { mode: 0o700 });
+            } catch (mkdirError) {
+                if (mkdirError.code !== 'EEXIST') throw mkdirError;
+            }
+        }
+        assertDirectoryInsideRoot(current, realRoot);
+    }
+    return current;
+}
+
+function assertRegularTargetOrMissing(targetPath) {
+    try {
+        const stats = fs.lstatSync(targetPath);
+        if (stats.isSymbolicLink() || !stats.isFile()) {
+            throw planningWriteError('PLANNING_TARGET_UNSAFE', 'Planning target must be a regular file or not exist');
+        }
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+}
+
+function isWellFormedUnicode(value) {
+    for (let index = 0; index < value.length; index += 1) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+            if (index + 1 >= value.length) return false;
+            const next = value.charCodeAt(index + 1);
+            if (next < 0xDC00 || next > 0xDFFF) return false;
+            index += 1;
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function writePlanningFile(payload, options = {}) {
+    const { rootPath, relativePath, content } = payload || {};
+    const configuredRoot = options.configuredRoot ?? readConfig().productionRoot;
+    const { root, realRoot } = assertPlanningRoot(rootPath, configuredRoot);
+    const parsed = parsePlanningRelativePath(relativePath);
+    if (typeof content !== 'string') {
+        throw planningWriteError('PLANNING_CONTENT_INVALID', 'Planning content must be a string');
+    }
+    if (content.includes('\0') || !isWellFormedUnicode(content)) {
+        throw planningWriteError('PLANNING_CONTENT_INVALID', 'Planning content contains invalid characters');
+    }
+    const contentBuffer = Buffer.from(content, 'utf8');
+    if (contentBuffer.byteLength > MAX_PLANNING_FILE_BYTES) {
+        throw planningWriteError('PLANNING_CONTENT_TOO_LARGE', 'Planning content exceeds the 1 MiB limit');
+    }
+
+    const parentPath = ensurePlanningParent(root, realRoot, parsed.components);
+    const parentIdentity = assertDirectoryInsideRoot(parentPath, realRoot);
+    const targetPath = path.join(parentPath, parsed.components.at(-1));
+    assertRegularTargetOrMissing(targetPath);
+
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+        throw planningWriteError('PLANNING_NOFOLLOW_UNAVAILABLE', 'No-follow file creation is unavailable');
+    }
+    const tempPath = path.join(parentPath, `${PLANNING_TEMP_PREFIX}${process.pid}-${crypto.randomBytes(12).toString('hex')}`);
+    const openFlags = fs.constants.O_WRONLY
+        | fs.constants.O_CREAT
+        | fs.constants.O_EXCL
+        | fs.constants.O_NOFOLLOW;
+    let fileDescriptor;
+    let renamed = false;
+    try {
+        fileDescriptor = fs.openSync(tempPath, openFlags, 0o600);
+        fs.writeFileSync(fileDescriptor, contentBuffer);
+        fs.fsyncSync(fileDescriptor);
+        fs.closeSync(fileDescriptor);
+        fileDescriptor = undefined;
+
+        const currentParent = assertDirectoryInsideRoot(parentPath, realRoot);
+        if (currentParent.dev !== parentIdentity.dev || currentParent.ino !== parentIdentity.ino) {
+            throw planningWriteError('PLANNING_PARENT_CHANGED', 'Planning parent changed during the write');
+        }
+        assertRegularTargetOrMissing(targetPath);
+        const tempStats = fs.lstatSync(tempPath);
+        if (tempStats.isSymbolicLink() || !tempStats.isFile()) {
+            throw planningWriteError('PLANNING_TEMP_UNSAFE', 'Planning temporary file is unsafe');
+        }
+
+        const renameFile = options.renameFile || fs.renameSync;
+        renameFile(tempPath, targetPath);
+        renamed = true;
+    } finally {
+        if (fileDescriptor !== undefined) {
+            try {
+                fs.closeSync(fileDescriptor);
+            } catch {}
+        }
+        if (!renamed) {
+            try {
+                fs.unlinkSync(tempPath);
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+        }
+    }
+
+    sendProgress({
+        phase: 'planning-file-written',
+        rootPath: root,
+        relativePath: parsed.relativePath,
+        sideEffectType: 'local_planning_write',
+        planningWrite: true,
+        executed: false,
+    });
+    return {
+        ok: true,
+        written: true,
+        executed: false,
+        sideEffectType: 'local_planning_write',
+        rootPath: root,
+        relativePath: parsed.relativePath,
+        bytes: contentBuffer.byteLength,
+    };
+}
+
 function fileTypeForExtension(ext) {
     if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.apng'].includes(ext)) return 'image';
     if (['.mp4', '.mov', '.webm'].includes(ext)) return 'video';
@@ -380,31 +591,6 @@ function listProductionChildren(parentPath) {
         ok: true,
         rootPath: root,
         entries,
-    };
-}
-
-function writePlanningFile(payload) {
-    const { rootPath, relativePath, content } = payload || {};
-    const { root, resolved, relativePath: safeRelativePath } = resolveInsideRoot(rootPath, relativePath);
-    const ext = path.extname(resolved).toLowerCase();
-    const allowedExtensions = new Set(['.json', '.jsonl', '.md', '.txt']);
-
-    if (!allowedExtensions.has(ext)) {
-        throw new Error(`Planning files must use one of: ${Array.from(allowedExtensions).join(', ')}`);
-    }
-    if (typeof content !== 'string') {
-        throw new Error('content must be a string');
-    }
-
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.writeFileSync(resolved, content, 'utf8');
-    sendProgress({ phase: 'planning-file-written', rootPath: root, relativePath: safeRelativePath });
-
-    return {
-        ok: true,
-        rootPath: root,
-        relativePath: safeRelativePath,
-        bytes: Buffer.byteLength(content, 'utf8'),
     };
 }
 
@@ -601,7 +787,9 @@ function register() {
     ipcMain.handle('film-pipeline:select-production-root', (_, rootPath) => selectProductionRoot(rootPath));
     ipcMain.handle('film-pipeline:read-production-state', (_, rootPath) => readProductionState(rootPath));
     ipcMain.handle('film-pipeline:list-production-children', (_, parentPath) => listProductionChildren(parentPath));
-    ipcMain.handle('film-pipeline:write-planning-file', (_, payload) => writePlanningFile(payload));
+    ipcMain.handle('film-pipeline:write-planning-file', (_, payload) => writePlanningFile(payload, {
+        configuredRoot: readConfig().productionRoot,
+    }));
     ipcMain.handle('film-pipeline:list-assets', (_, rootPath) => listAssets(rootPath));
     ipcMain.handle('film-pipeline:read-jsonl', (_, payload) => readJsonl(payload));
     ipcMain.handle('film-pipeline:preview-command', (_, commandSpec) => previewCommand(commandSpec));
@@ -611,6 +799,7 @@ function register() {
 
 module.exports = {
     register,
+    writePlanningFile,
     sideEffectClassifier,
     previewCommand,
     copyCommandPreview,

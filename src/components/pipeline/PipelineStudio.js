@@ -154,10 +154,16 @@ export function PipelineStudio() {
             PipelineSafetySummary(),
             renderPanel(activeTab, state, config, {
                 onSavePlanningFile: async (payload) => {
-                    const result = await pipelineClient.writePlanningFile(payload);
-                    window.alert(result.ok
-                        ? p('Planning file saved: {path}', { path: result.relativePath })
-                        : p('Save blocked: {reason}', { reason: result.error || result.reason }));
+                    try {
+                        const result = await pipelineClient.writePlanningFile(payload);
+                        window.alert(result?.ok
+                            ? p('Planning file saved: {path}', { path: result.relativePath })
+                            : p('Save blocked: {reason}', { reason: p('Planning write safety policy rejected the request.') }));
+                    } catch {
+                        window.alert(p('Save blocked: {reason}', {
+                            reason: p('Planning write safety policy rejected the request.'),
+                        }));
+                    }
                 },
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),
                 onPickParent: pickParentFolder,
