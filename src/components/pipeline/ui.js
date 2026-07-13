@@ -1,3 +1,5 @@
+import { p } from './copy.js';
+
 export function el(tag, options = {}, children = []) {
     const node = document.createElement(tag);
     const childList = Array.isArray(children) ? children : [children];
@@ -8,6 +10,7 @@ export function el(tag, options = {}, children = []) {
     if (options.type) node.type = options.type;
     if (options.disabled !== undefined) node.disabled = Boolean(options.disabled);
     if (options.value !== undefined) node.value = options.value;
+    if (options.readOnly !== undefined) node.readOnly = Boolean(options.readOnly);
     if (options.onClick) node.addEventListener('click', options.onClick);
     if (options.attrs) {
         Object.entries(options.attrs).forEach(([key, value]) => {
@@ -23,7 +26,7 @@ export function el(tag, options = {}, children = []) {
 
 export function textOrDash(value) {
     if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
-    if (typeof value === 'boolean') return value ? 'yes' : 'no';
+    if (typeof value === 'boolean') return value ? p('yes') : p('no');
     if (value === 0) return '0';
     return value ? String(value) : '—';
 }
@@ -45,14 +48,14 @@ export function statusBadge(label, status = 'muted') {
     };
     return el('span', {
         text: label,
-        className: `inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest ${palette[normalized] || 'bg-white/[0.06] text-secondary border-white/10'}`,
+        className: `inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${palette[normalized] || 'bg-white/[0.06] text-secondary border-white/10'}`,
     });
 }
 
 export function panelShell(title, description, children = []) {
-    return el('section', { className: 'flex flex-col gap-5' }, [
+    return el('section', { className: 'flex flex-col gap-4', attrs: { 'aria-labelledby': `panel-${String(title).replace(/\s+/g, '-').toLowerCase()}` } }, [
         el('header', { className: 'flex flex-col gap-2' }, [
-            el('h2', { text: title, className: 'text-2xl font-black tracking-tight text-white' }),
+            el('h2', { text: title, className: 'text-xl font-bold tracking-tight text-white', attrs: { id: `panel-${String(title).replace(/\s+/g, '-').toLowerCase()}` } }),
             description ? el('p', { text: description, className: 'max-w-3xl text-sm leading-6 text-secondary' }) : null,
         ]),
         ...children,
@@ -61,30 +64,30 @@ export function panelShell(title, description, children = []) {
 
 export function card(children = [], className = '') {
     return el('div', {
-        className: `rounded-2xl border border-white/10 bg-white/[0.04] p-5 ${className}`.trim(),
+        className: `rounded-lg border border-white/10 bg-white/[0.035] p-4 ${className}`.trim(),
     }, children);
 }
 
 export function fieldCard(label, value, extra = null) {
     return card([
-        el('div', { text: label, className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+        el('div', { text: label, className: 'text-xs font-semibold text-secondary' }),
         el('div', { text: textOrDash(value), className: 'mt-2 break-words text-sm font-semibold text-white' }),
         extra,
-    ].filter(Boolean), 'min-h-[96px]');
+    ].filter(Boolean), 'min-h-[72px]');
 }
 
 export function infoGrid(items, columns = 'lg:grid-cols-3') {
-    return el('div', { className: `grid grid-cols-1 gap-4 md:grid-cols-2 ${columns}` }, items.map((item) => fieldCard(item.label, item.value, item.extra)));
+    return el('div', { className: `grid grid-cols-1 gap-3 md:grid-cols-2 ${columns}` }, items.map((item) => fieldCard(item.label, item.value, item.extra)));
 }
 
 export function blockerList(blockers = []) {
     const unique = Array.from(new Set(blockers.filter(Boolean)));
     if (!unique.length) {
-        return card([statusBadge('No blockers', 'PASS')], 'border-emerald-400/20');
+        return card([statusBadge(p('No blockers'), 'PASS')], 'border-emerald-400/20');
     }
 
     return card([
-        el('div', { text: 'Blockers', className: 'mb-3 text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+        el('div', { text: p('Blockers'), className: 'mb-3 text-xs font-semibold text-secondary' }),
         el('div', { className: 'flex flex-wrap gap-2' }, unique.map((blocker) => statusBadge(blocker, 'BLOCK'))),
     ], 'border-red-400/20');
 }
@@ -92,7 +95,7 @@ export function blockerList(blockers = []) {
 export function flagGrid(flags) {
     return el('div', { className: 'grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4' }, flags.map((flag) => (
         card([
-            statusBadge(flag.value ? 'enabled' : 'off', flag.value ? 'PASS' : 'UNREVIEWED'),
+            statusBadge(flag.value ? p('enabled') : p('off'), flag.value ? 'PASS' : 'UNREVIEWED'),
             el('div', { text: flag.label, className: 'mt-3 text-sm font-semibold text-white' }),
         ], 'p-4')
     )));
@@ -100,7 +103,7 @@ export function flagGrid(flags) {
 
 export function pathList(paths = []) {
     const values = Array.from(new Set(paths.filter(Boolean)));
-    if (!values.length) return el('p', { text: 'No paths recorded.', className: 'text-sm text-secondary' });
+    if (!values.length) return el('p', { text: p('No paths recorded.'), className: 'text-sm text-secondary', attrs: { role: 'status' } });
     return el('ul', { className: 'flex flex-col gap-2' }, values.map((path) => (
         el('li', { text: path, className: 'break-all rounded-lg border border-white/10 bg-black/20 px-3 py-2 font-mono text-xs text-secondary' })
     )));
@@ -110,7 +113,7 @@ export function dataTable(columns, rows) {
     const table = el('table', { className: 'min-w-full border-separate border-spacing-0 text-left text-sm' });
     const thead = el('thead');
     thead.appendChild(el('tr', {}, columns.map((column) => (
-        el('th', { text: column.label, className: 'sticky top-0 z-10 border-b border-white/10 bg-[#0a0a0a] px-3 py-3 text-[11px] font-bold uppercase tracking-widest text-secondary' })
+        el('th', { text: column.label, className: 'sticky top-0 z-10 border-b border-white/10 bg-[#0a0a0a] px-3 py-3 text-xs font-semibold text-secondary', attrs: { scope: 'col' } })
     ))));
 
     const tbody = el('tbody');
@@ -125,11 +128,11 @@ export function dataTable(columns, rows) {
     table.appendChild(thead);
     table.appendChild(tbody);
 
-    return el('div', { className: 'overflow-auto rounded-2xl border border-white/10 bg-white/[0.03]' }, rows.length ? table : emptyState('No rows recorded.'));
+    return el('div', { className: 'overflow-auto rounded-lg border border-white/10 bg-white/[0.03]' }, rows.length ? table : emptyState(p('No rows recorded.')));
 }
 
 export function emptyState(text) {
-    return el('div', { text, className: 'rounded-2xl border border-dashed border-white/10 bg-white/[0.02] p-8 text-center text-sm text-secondary' });
+    return el('div', { text, className: 'rounded-lg border border-dashed border-white/10 bg-white/[0.02] p-6 text-center text-sm text-secondary', attrs: { role: 'status', 'aria-live': 'polite' } });
 }
 
 export function actionButton(label, { disabled = false, variant = 'primary', onClick } = {}) {
@@ -143,12 +146,13 @@ export function actionButton(label, { disabled = false, variant = 'primary', onC
         text: label,
         disabled,
         onClick,
-        className: `rounded-xl border px-4 py-2 text-xs font-bold uppercase tracking-widest transition ${classes} ${disabled ? 'cursor-not-allowed opacity-45' : 'hover:bg-white/10'}`,
+        className: `ui-action-button rounded-md border px-3 py-2 text-xs font-semibold transition-colors ${classes} ${disabled ? 'cursor-not-allowed opacity-45' : 'hover:bg-white/10'}`,
+        attrs: { type: 'button' },
     });
 }
 
 export function codeBlock(text) {
-    return el('pre', { className: 'overflow-auto rounded-xl border border-white/10 bg-black/30 p-4 text-xs leading-6 text-secondary' }, [
+    return el('pre', { className: 'overflow-auto rounded-lg border border-white/10 bg-black/30 p-4 text-xs leading-6 text-secondary' }, [
         el('code', { text: textOrDash(text) }),
     ]);
 }

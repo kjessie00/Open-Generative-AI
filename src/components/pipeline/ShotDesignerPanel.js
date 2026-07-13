@@ -9,6 +9,7 @@ import { CameraControlStrip } from './CameraControlStrip.js';
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { MediaReferencePicker } from './MediaReferencePicker.js';
 import { GenerationHistoryGrid } from './GenerationHistoryGrid.js';
+import { p } from './copy.js';
 
 const MODEL_OPTIONS = Object.freeze([
     'seedance_2_i2v_payload_only',
@@ -112,9 +113,9 @@ function textareaControl(label, value, onInput, rows = 3) {
 async function copyText(text, button, fallbackLabel) {
     try {
         await navigator.clipboard.writeText(text);
-        button.textContent = 'Copied';
+        button.textContent = p('Copied');
     } catch {
-        button.textContent = 'Copy failed';
+        button.textContent = p('Copy failed');
     }
     setTimeout(() => {
         button.textContent = fallbackLabel;
@@ -156,7 +157,7 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
         };
 
         const clipSelect = selectControl(
-            'Clip',
+            p('Clip'),
             selectedClipId,
             clips.map((clip) => clip.clip_id),
             (clipId) => {
@@ -166,17 +167,17 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
             },
         );
 
-        const modelSelect = selectControl('Model target', selectedModel, MODEL_OPTIONS, (model) => {
+        const modelSelect = selectControl(p('Model target'), selectedModel, MODEL_OPTIONS, (model) => {
             selectedModel = model;
         });
 
-        const aspectSelect = selectControl('Aspect ratio', payload.aspect_ratio, ASPECT_RATIO_OPTIONS, (aspect_ratio) => setPayload({ aspect_ratio }));
-        const durationSelect = selectControl('Duration', payload.duration, DURATION_OPTIONS.map(String), (duration) => setPayload({ duration: Number(duration) }));
+        const aspectSelect = selectControl(p('Aspect ratio'), payload.aspect_ratio, ASPECT_RATIO_OPTIONS, (aspect_ratio) => setPayload({ aspect_ratio }));
+        const durationSelect = selectControl(p('Duration'), payload.duration, DURATION_OPTIONS.map(String), (duration) => setPayload({ duration: Number(duration) }));
 
-        const copyButton = actionButton('Copy Shot Payload JSON');
-        copyButton.addEventListener('click', () => copyText(jsonText(), copyButton, 'Copy Shot Payload JSON'));
+        const copyButton = actionButton(p('Copy Shot Payload JSON'));
+        copyButton.addEventListener('click', () => copyText(jsonText(), copyButton, p('Copy Shot Payload JSON')));
 
-        const saveButton = actionButton('Save to storyboard draft', {
+        const saveButton = actionButton(p('Save to storyboard draft'), {
             disabled: !state.project?.root_path || !payload.clip_id,
             onClick: () => onSavePlanningFile?.({
                 rootPath: state.project.root_path,
@@ -190,16 +191,16 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
         const deepSearchPromptBlock = codeBlock(deepSearchPromptText());
         deepSearchPromptCode = deepSearchPromptBlock.querySelector('code');
 
-        const copyDeepSearchPromptButton = actionButton('Copy DeepSearchTeam prompt', {
+        const copyDeepSearchPromptButton = actionButton(p('Copy DeepSearchTeam prompt'), {
             variant: 'muted',
         });
         copyDeepSearchPromptButton.addEventListener('click', () => copyText(
             deepSearchPromptText(),
             copyDeepSearchPromptButton,
-            'Copy DeepSearchTeam prompt',
+            p('Copy DeepSearchTeam prompt'),
         ));
 
-        const saveDeepSearchPromptButton = actionButton('Save DeepSearchTeam prompt draft', {
+        const saveDeepSearchPromptButton = actionButton(p('Save DeepSearchTeam prompt draft'), {
             disabled: !state.project?.root_path || !payload.clip_id,
             onClick: () => onSavePlanningFile?.({
                 rootPath: state.project.root_path,
@@ -211,20 +212,20 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
         deepSearchCommandMount = el('div');
         deepSearchCommandMount.appendChild(CommandPreviewCard({ commandSpec: deepSearchCommandSpec() }));
 
-        container.appendChild(panelShell('Shot Designer', 'Preview-only shot payload builder adapted from the old Video and Cinema Studio control patterns. No generation, upload, or external review is wired.', [
+        container.appendChild(panelShell(p('Shot Design'), p('Preview-only shot payload builder adapted from the old Video and Cinema Studio control patterns. No generation, upload, or external review is wired.'), [
             el('div', { className: 'flex flex-wrap items-center gap-2' }, [
-                statusBadge('ShotPayload draft', 'PREVIEW'),
-                statusBadge('No hosted API calls', 'BLOCK'),
-                statusBadge('No submit jobs', 'BLOCK'),
-                statusBadge('Planning file only', 'PASS'),
+                statusBadge(p('ShotPayload draft'), 'PREVIEW'),
+                statusBadge(p('No hosted API calls'), 'BLOCK'),
+                statusBadge(p('No submit jobs'), 'BLOCK'),
+                statusBadge(p('Planning file only'), 'PASS'),
                 copyButton,
                 saveButton,
             ]),
             card([
                 el('div', { className: 'mb-4 flex flex-wrap items-center justify-between gap-2' }, [
                     el('div', {}, [
-                        el('h3', { text: 'Prompt And Output Shape', className: 'text-sm font-black uppercase tracking-widest text-white' }),
-                        el('p', { text: 'Model is UI metadata only. The emitted JSON uses the ShotPayload contract fields.', className: 'mt-1 text-xs text-secondary' }),
+                        el('h3', { text: p('Prompt And Output Shape'), className: 'text-sm font-bold text-white' }),
+                        el('p', { text: p('Model is UI metadata only. The emitted JSON uses the ShotPayload contract fields.'), className: 'mt-1 text-xs text-secondary' }),
                     ]),
                     statusBadge(selectedModel, 'PREVIEW'),
                 ]),
@@ -235,17 +236,17 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
                     durationSelect,
                 ]),
                 el('div', { className: 'mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2' }, [
-                    textareaControl('Prompt', payload.prompt, (prompt) => setPayload({ prompt }), 7),
+                    textareaControl(p('Prompt'), payload.prompt, (prompt) => setPayload({ prompt }), 7),
                     el('div', { className: 'flex flex-col gap-4' }, [
-                        textareaControl('Lighting', payload.lighting, (lighting) => setPayload({ lighting })),
-                        textareaControl('Audio / SFX / Dialogue', payload.audio_sfx_dialogue, (audio_sfx_dialogue) => setPayload({ audio_sfx_dialogue })),
+                        textareaControl(p('Lighting'), payload.lighting, (lighting) => setPayload({ lighting })),
+                        textareaControl(p('Audio / SFX / Dialogue'), payload.audio_sfx_dialogue, (audio_sfx_dialogue) => setPayload({ audio_sfx_dialogue })),
                     ]),
                 ]),
                 el('div', { className: 'mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2' }, [
-                    textareaControl('Negative Constraints', (payload.negative_constraints || []).join('\n'), (value) => setPayload({
+                    textareaControl(p('Negative Constraints'), (payload.negative_constraints || []).join('\n'), (value) => setPayload({
                         negative_constraints: value.split('\n').map((item) => item.trim()).filter(Boolean),
                     }), 5),
-                    textareaControl('Risk Notes', payload.risk_notes, (risk_notes) => setPayload({ risk_notes }), 5),
+                    textareaControl(p('Risk Notes'), payload.risk_notes, (risk_notes) => setPayload({ risk_notes }), 5),
                 ]),
             ]),
             CameraControlStrip({
@@ -263,25 +264,25 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
             GenerationHistoryGrid({ state, payload }),
             card([
                 el('div', { className: 'mb-3 flex flex-wrap items-center justify-between gap-2' }, [
-                    el('h3', { text: 'ShotPayload JSON', className: 'text-sm font-black uppercase tracking-widest text-white' }),
-                    statusBadge('copy/save only', 'PREVIEW'),
+                    el('h3', { text: p('ShotPayload JSON'), className: 'text-sm font-bold text-white' }),
+                    statusBadge(p('copy/save only'), 'PREVIEW'),
                 ]),
                 jsonBlock,
             ]),
             card([
                 el('div', { className: 'mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between' }, [
                     el('div', {}, [
-                        el('h3', { text: 'DeepSearchTeam Scene Image Prompt', className: 'text-sm font-black uppercase tracking-widest text-white' }),
+                        el('h3', { text: p('DeepSearchTeam Scene Image Prompt'), className: 'text-sm font-bold text-white' }),
                         el('p', {
-                            text: `Storyboard-to-scene image route. Profile ${DEEPSEARCH_PROFILE}, Thinking mode, one finished image only. Execution remains blocked in this UI.`,
+                            text: p('Storyboard-to-scene image route. Profile {profile}, Thinking mode, one finished image only. Execution remains blocked in this UI.', { profile: DEEPSEARCH_PROFILE }),
                             className: 'mt-1 text-xs leading-5 text-secondary',
                         }),
                     ]),
                     el('div', { className: 'flex flex-wrap gap-2' }, [
-                        statusBadge('goldpure369 required', 'BLOCK'),
-                        statusBadge('Thinking mode required', 'BLOCK'),
-                        statusBadge('one image only', 'PREVIEW'),
-                        statusBadge('no generation run', 'BLOCK'),
+                        statusBadge(p('goldpure369 required'), 'BLOCK'),
+                        statusBadge(p('Thinking mode required'), 'BLOCK'),
+                        statusBadge(p('one image only'), 'PREVIEW'),
+                        statusBadge(p('no generation run'), 'BLOCK'),
                         copyDeepSearchPromptButton,
                         saveDeepSearchPromptButton,
                     ]),

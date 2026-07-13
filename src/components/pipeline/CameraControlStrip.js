@@ -1,4 +1,5 @@
 import { card, el, statusBadge } from './ui.js';
+import { p } from './copy.js';
 
 export const CAMERA_OPTIONS = Object.freeze([
     'locked tripod',
@@ -38,13 +39,12 @@ export const CAMERA_MOVEMENT_OPTIONS = Object.freeze([
     'one crane rise',
 ]);
 
-function selectControl(label, value, options, onChange) {
-    const id = `shot-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+function selectControl(id, label, value, options, onChange) {
     const optionList = value && !options.map(String).includes(String(value))
         ? [value, ...options]
         : options;
     const select = el('select', {
-        className: 'w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm font-semibold text-white outline-none transition focus:border-cyan-400/50',
+        className: 'w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm font-semibold text-white outline-none transition focus:border-cyan-400/50',
         attrs: { id },
     });
     optionList.forEach((option) => {
@@ -54,7 +54,7 @@ function selectControl(label, value, options, onChange) {
     select.addEventListener('change', () => onChange(select.value));
 
     return el('label', { className: 'flex min-w-0 flex-col gap-2' }, [
-        el('span', { text: label, className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+        el('span', { text: label, className: 'text-xs font-semibold text-secondary' }),
         select,
     ]);
 }
@@ -73,19 +73,19 @@ export function CameraControlStrip({ value = {}, onChange }) {
     return card([
         el('div', { className: 'mb-4 flex flex-wrap items-center justify-between gap-2' }, [
             el('div', {}, [
-                el('h3', { text: 'Camera Controls', className: 'text-sm font-black uppercase tracking-widest text-white' }),
-                el('p', { text: 'Local shot metadata only. These controls never submit a render job.', className: 'mt-1 text-xs text-secondary' }),
+                el('h3', { text: p('Camera Controls'), className: 'text-sm font-bold text-white' }),
+                el('p', { text: p('Local shot metadata only. These controls never submit a render job.'), className: 'mt-1 text-xs text-secondary' }),
             ]),
-            statusBadge('payload only', 'PREVIEW'),
+            statusBadge(p('payload only'), 'PREVIEW'),
         ]),
         el('div', { className: 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5' }, [
-            selectControl('Camera', current.camera, CAMERA_OPTIONS, (camera) => update({ camera })),
-            selectControl('Lens', current.lens, LENS_OPTIONS, (lens) => update({ lens })),
-            selectControl('Focal length', current.focal_length, FOCAL_LENGTH_OPTIONS.map(String), (focal) => update({ focal_length: Number(focal) })),
-            selectControl('Aperture', current.aperture, APERTURE_OPTIONS, (aperture) => update({ aperture })),
-            selectControl('Movement', current.camera_movement, CAMERA_MOVEMENT_OPTIONS, (camera_movement) => update({ camera_movement })),
+            selectControl('shot-camera', p('Camera'), current.camera, CAMERA_OPTIONS, (camera) => update({ camera })),
+            selectControl('shot-lens', p('Lens'), current.lens, LENS_OPTIONS, (lens) => update({ lens })),
+            selectControl('shot-focal-length', p('Focal length'), current.focal_length, FOCAL_LENGTH_OPTIONS.map(String), (focal) => update({ focal_length: Number(focal) })),
+            selectControl('shot-aperture', p('Aperture'), current.aperture, APERTURE_OPTIONS, (aperture) => update({ aperture })),
+            selectControl('shot-movement', p('Movement'), current.camera_movement, CAMERA_MOVEMENT_OPTIONS, (camera_movement) => update({ camera_movement })),
         ]),
-        el('div', { className: 'mt-4 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-secondary' }, [
+        el('div', { className: 'mt-4 rounded-md border border-white/10 bg-black/20 px-4 py-3 text-sm text-secondary' }, [
             el('span', { text: `${current.camera} · ${current.lens} · ${current.focal_length}mm · ${current.aperture} · ${current.camera_movement}` }),
         ]),
     ]);

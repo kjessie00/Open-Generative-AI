@@ -3,10 +3,11 @@ import { buildFfmpegConcatPreviewCommand, buildFfprobeValidationCommands } from 
 import { validateFinalReady } from '../../lib/pipeline/validators.js';
 import { blockerList, card, dataTable, el, infoGrid, panelShell, statusBadge } from './ui.js';
 import { CommandPreviewCard } from './CommandPreviewCard.js';
+import { p } from './copy.js';
 
 function checklistItem(label, ok, blocker = BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN) {
     return card([
-        statusBadge(ok ? 'ready' : blocker, ok ? 'PASS' : 'BLOCK'),
+        statusBadge(ok ? p('ready') : blocker, ok ? 'PASS' : 'BLOCK'),
         el('div', { text: label, className: 'mt-3 text-sm font-semibold text-white' }),
     ], ok ? 'border-emerald-400/20' : 'border-red-400/20');
 }
@@ -49,8 +50,8 @@ function downloadedFileForClip(state, clipId) {
 }
 
 function acceptedSecondsText(record) {
-    if (!record?.source_file || !(record.out_time > record.in_time)) return 'not recorded';
-    return `${record.in_time}-${record.out_time}s · ${record.reviewer_confidence || 'confidence not recorded'}`;
+    if (!record?.source_file || !(record.out_time > record.in_time)) return p('not recorded');
+    return `${record.in_time}-${record.out_time}s · ${record.reviewer_confidence || p('confidence not recorded')}`;
 }
 
 function firstFrameCell(asset) {
@@ -59,7 +60,7 @@ function firstFrameCell(asset) {
     return el('div', { className: 'flex min-w-[180px] flex-col gap-2' }, [
         canPreview ? el('img', {
             className: 'h-20 w-32 rounded-lg border border-white/10 object-cover',
-            attrs: { src: asset.path, alt: asset.asset_id || 'first frame' },
+            attrs: { src: asset.path, alt: asset.asset_id || p('First frame') },
         }) : null,
         el('span', { text: asset.path, className: 'break-all font-mono text-xs text-secondary' }),
     ].filter(Boolean));
@@ -143,67 +144,68 @@ export function FinalReportPanel({ state }) {
     const concatSpec = buildFfmpegConcatPreviewCommand(state);
 
     const checklist = [
-        checklistItem('all clips downloaded', allClipIds.length > 0 && allClipIds.every((clipId) => downloadedClipIds.has(clipId)), BLOCKERS.FRAME_EXTRACTION_BLOCKED),
-        checklistItem('all QA passed or exception recorded', allClipIds.length > 0 && allClipIds.every((clipId) => qaClipIds.has(clipId)), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
-        checklistItem('accepted seconds recorded', allClipIds.length > 0 && allClipIds.every((clipId) => acceptedClipIds.has(clipId)), BLOCKERS.MISSING_ACCEPTED_SECONDS),
-        checklistItem('concat list exists', hasFileEvidence(concatListPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
-        checklistItem('final.mp4 exists', hasFileEvidence(finalVideoPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
-        checklistItem('ffprobe verification exists', finalReport.ffprobe_verified === true || hasFileEvidence(ffprobePath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
-        checklistItem('report.md exists', hasFileEvidence(reportPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(p('all clips downloaded'), allClipIds.length > 0 && allClipIds.every((clipId) => downloadedClipIds.has(clipId)), BLOCKERS.FRAME_EXTRACTION_BLOCKED),
+        checklistItem(p('all QA passed or exception recorded'), allClipIds.length > 0 && allClipIds.every((clipId) => qaClipIds.has(clipId)), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(p('accepted seconds recorded'), allClipIds.length > 0 && allClipIds.every((clipId) => acceptedClipIds.has(clipId)), BLOCKERS.MISSING_ACCEPTED_SECONDS),
+        checklistItem(p('concat list exists'), hasFileEvidence(concatListPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(p('final.mp4 exists'), hasFileEvidence(finalVideoPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(p('ffprobe verification exists'), finalReport.ffprobe_verified === true || hasFileEvidence(ffprobePath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
+        checklistItem(p('report.md exists'), hasFileEvidence(reportPath, state), BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN),
     ];
 
-    return panelShell('Final', 'Final readiness checklist and exact blockers. Execution success is separated from output-quality proof.', [
+    const conditionLabel = p(condition);
+    return panelShell(p('Final Edit And Report'), p('Final readiness checklist and exact blockers. Execution success is separated from output-quality proof.'), [
         blockerList(validation.blockers),
         card([
             el('div', { className: 'mb-3 flex flex-wrap gap-2' }, [
-                statusBadge(validation.ok ? 'final ready' : condition, validation.ok ? 'PASS' : 'BLOCK'),
-                statusBadge('evidence-only credits', 'PREVIEW'),
-                statusBadge('ffmpeg/ffprobe preview only', 'PREVIEW'),
+                statusBadge(validation.ok ? p('final ready') : conditionLabel, validation.ok ? 'PASS' : 'BLOCK'),
+                statusBadge(p('evidence-only credits'), 'PREVIEW'),
+                statusBadge(p('ffmpeg/ffprobe preview only'), 'PREVIEW'),
             ]),
             el('p', {
                 text: finalVideoExists
-                    ? `Final video exists: ${finalVideoPath}`
-                    : `No final video exists. Current condition: ${condition}.`,
+                    ? p('Final video exists: {path}', { path: finalVideoPath })
+                    : p('No final video exists. Current condition: {condition}.', { condition: conditionLabel }),
                 className: 'break-words text-sm leading-6 text-secondary',
             }),
         ], validation.ok ? 'border-emerald-400/20' : 'border-red-400/20'),
         infoGrid([
-            { label: 'Final report path', value: finalReport.report_path },
-            { label: 'Final video path', value: finalVideoExists ? finalReport.final_video_path : `not available · ${condition}` },
-            { label: 'Production folder', value: finalReport.production_folder },
-            { label: 'Generator route', value: finalReport.generator_route },
-            { label: 'Concat list path', value: finalReport.concat_list_path },
-            { label: 'ffprobe evidence path', value: ffprobePath },
-            { label: 'Known credits', value: `${creditEvidence.total} (${creditEvidence.source})` },
-            { label: 'Completion time', value: completionTime(state) || 'not complete' },
-            { label: 'Residual risks', value: (finalReport.residual_risks || []).join(', ') },
+            { label: p('Final report path'), value: finalReport.report_path },
+            { label: p('Final video path'), value: finalVideoExists ? finalReport.final_video_path : p('not available · {condition}', { condition: conditionLabel }) },
+            { label: p('Production folder'), value: finalReport.production_folder },
+            { label: p('Generator route'), value: finalReport.generator_route },
+            { label: p('Concat list path'), value: finalReport.concat_list_path },
+            { label: p('ffprobe evidence path'), value: ffprobePath },
+            { label: p('Known credits'), value: `${creditEvidence.total} (${creditEvidence.source})` },
+            { label: p('Completion time'), value: completionTime(state) || p('not complete') },
+            { label: p('Residual risks'), value: (finalReport.residual_risks || []).join(', ') },
         ]),
         dataTable([
-            { label: 'Clip', key: 'clip_id' },
-            { label: 'First-frame image', render: (row) => firstFrameCell(row.firstFrameAsset) },
-            { label: 'Prompt pack path', key: 'prompt_pack_path' },
-            { label: 'Submit ID', render: (row) => row.submit_id ? statusBadge(row.submit_id, 'PASS') : statusBadge('missing', 'BLOCK') },
-            { label: 'Status', render: (row) => statusBadge(row.status, row.status === 'downloaded' || row.status === 'accepted' ? 'PASS' : 'PREVIEW') },
-            { label: 'Model evidence', key: 'model_evidence' },
-            { label: 'Downloaded file', key: 'downloaded_file' },
-            { label: 'QA verdict', render: (row) => statusBadge(row.qa_verdict, row.qa_verdict) },
-            { label: 'Accepted seconds', key: 'accepted_seconds' },
+            { label: p('Clip'), key: 'clip_id' },
+            { label: p('First-frame image'), render: (row) => firstFrameCell(row.firstFrameAsset) },
+            { label: p('Prompt pack path'), key: 'prompt_pack_path' },
+            { label: p('Submit ID'), render: (row) => row.submit_id ? statusBadge(row.submit_id, 'PASS') : statusBadge(p('missing'), 'BLOCK') },
+            { label: p('Status'), render: (row) => statusBadge(row.status, row.status === 'downloaded' || row.status === 'accepted' ? 'PASS' : 'PREVIEW') },
+            { label: p('Model evidence'), key: 'model_evidence' },
+            { label: p('Downloaded file'), key: 'downloaded_file' },
+            { label: p('QA verdict'), render: (row) => statusBadge(row.qa_verdict, row.qa_verdict) },
+            { label: p('Accepted seconds'), key: 'accepted_seconds' },
         ], clipRows),
         dataTable([
-            { label: 'Checked at', key: 'checked_at' },
-            { label: 'Clip', key: 'clip_id' },
-            { label: 'Submit ID', key: 'submit_id' },
-            { label: 'Queue status', key: 'queue_status' },
-            { label: 'Gen status', key: 'gen_status' },
-            { label: 'Downloaded files', render: (record) => record.downloaded_files?.join(', ') || '—' },
-            { label: 'Next heartbeat', key: 'next_heartbeat_at' },
-            { label: 'Blocker', key: 'blocker' },
+            { label: p('Checked at'), key: 'checked_at' },
+            { label: p('Clip'), key: 'clip_id' },
+            { label: p('Submit ID'), key: 'submit_id' },
+            { label: p('Queue status'), key: 'queue_status' },
+            { label: p('Gen status'), key: 'gen_status' },
+            { label: p('Downloaded files'), render: (record) => record.downloaded_files?.join(', ') || '—' },
+            { label: p('Next heartbeat'), key: 'next_heartbeat_at' },
+            { label: p('Blocker'), key: 'blocker' },
         ], state.heartbeatRecords || []),
         el('div', { className: 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3' }, checklist),
         el('section', { className: 'flex flex-col gap-4' }, [
             el('div', {}, [
-                el('h3', { text: 'Final Stitch Command Previews', className: 'text-lg font-black text-white' }),
-                el('p', { text: 'Copy-only previews for ffmpeg concat and ffprobe validation. These commands are not executed by the UI.', className: 'mt-1 text-sm leading-6 text-secondary' }),
+                el('h3', { text: p('Final Stitch Command Previews'), className: 'text-lg font-bold text-white' }),
+                el('p', { text: p('Copy-only previews for ffmpeg concat and ffprobe validation. These commands are not executed by the UI.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
             ]),
             el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, [
                 ...ffprobeSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec })),
@@ -211,17 +213,17 @@ export function FinalReportPanel({ state }) {
             ]),
         ]),
         card([
-            el('div', { text: 'Readiness details', className: 'mb-3 text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+            el('div', { text: p('Readiness details'), className: 'mb-3 text-xs font-semibold text-secondary' }),
             el('pre', { className: 'overflow-auto rounded-xl border border-white/10 bg-black/30 p-4 text-xs leading-6 text-secondary' }, [
                 el('code', { text: JSON.stringify(validation.details || {}, null, 2) }),
             ]),
         ]),
         card([
-            el('div', { text: 'Blockers and residual risks', className: 'mb-3 text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+            el('div', { text: p('Blockers and residual risks'), className: 'mb-3 text-xs font-semibold text-secondary' }),
             el('div', { className: 'flex flex-wrap gap-2' }, [
                 ...((finalReport.blockers || []).length
                     ? (finalReport.blockers || []).map((blocker) => statusBadge(blocker, 'BLOCK'))
-                    : [statusBadge('blockers recorded empty', 'PASS')]),
+                    : [statusBadge(p('blockers recorded empty'), 'PASS')]),
                 ...(finalReport.residual_risks || []).map((risk) => statusBadge(risk, 'WARN')),
             ]),
         ]),

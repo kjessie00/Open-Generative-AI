@@ -1,5 +1,6 @@
 import { classifySideEffect, allowedStatusLabel } from '../../lib/pipeline/sideEffects.js';
 import { el, statusBadge } from './ui.js';
+import { p } from './copy.js';
 
 export function SideEffectGate({ commandSpec }) {
     const classification = classifySideEffect(commandSpec);
@@ -10,7 +11,7 @@ export function SideEffectGate({ commandSpec }) {
             : 'PASS';
 
     return el('div', { className: 'flex flex-wrap items-center gap-2' }, [
-        statusBadge(allowedStatusLabel(classification), status),
+        statusBadge(p(allowedStatusLabel(classification)), status),
         statusBadge(classification.type, status),
         classification.blocker ? statusBadge(classification.blocker, 'BLOCK') : null,
     ].filter(Boolean));

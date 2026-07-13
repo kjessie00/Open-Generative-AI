@@ -1,124 +1,155 @@
-// PipelineSidebar — renders the productions list populated by
-// `pipelineClient.listProductionChildren(config.productionParentRoot)`
-// (Electron IPC: `film-pipeline:list-production-children`). The
-// productions array is passed in by PipelineStudio; this module only
-// shapes the entries for display.
 import { el, statusBadge } from './ui.js';
-
-const RELATIVE_TIME_THRESHOLDS = [
-    { ms: 1000, divisor: 1000, unit: 's' },
-    { ms: 60 * 1000, divisor: 60 * 1000, unit: 'm' },
-    { ms: 60 * 60 * 1000, divisor: 60 * 60 * 1000, unit: 'h' },
-    { ms: 24 * 60 * 60 * 1000, divisor: 24 * 60 * 60 * 1000, unit: 'd' },
-];
+import { p } from './copy.js';
 
 function formatRelativeMtime(isoString, now = Date.now()) {
     if (!isoString) return '—';
     const then = new Date(isoString).getTime();
     if (Number.isNaN(then)) return '—';
     const diff = Math.max(0, now - then);
-    if (diff < 60 * 1000) return 'just now';
-    for (const threshold of RELATIVE_TIME_THRESHOLDS) {
-        if (diff < threshold.ms * 60 || threshold.unit === 'd') {
-            if (threshold.unit === 'd') {
-                const days = Math.floor(diff / threshold.divisor);
-                return `${days}d ago`;
-            }
-            const value = Math.floor(diff / threshold.divisor);
-            return `${value}${threshold.unit} ago`;
-        }
-    }
+    if (diff < 60 * 1000) return p('just now');
+    if (diff < 60 * 60 * 1000) return p('{count}m ago', { count: Math.floor(diff / 60000) });
+    if (diff < 24 * 60 * 60 * 1000) return p('{count}h ago', { count: Math.floor(diff / 3600000) });
+    if (diff < 60 * 24 * 60 * 60 * 1000) return p('{count}d ago', { count: Math.floor(diff / 86400000) });
     return new Date(isoString).toISOString().slice(0, 10);
 }
 
-function productionsSection({ productions, productionsState, onSelectProduction, onOpenSettings, onRefreshProductions }) {
+function productionDetailsContent({ productions, productionsState, onSelectProduction, onOpenSettings, onRefreshProductions }) {
     const state = productionsState || { status: 'idle', reason: '' };
+    const body = el('div', {
+        className: 'pipeline-production-body',
+        attrs: { 'aria-live': 'polite', 'aria-busy': state.status === 'scanning' ? 'true' : 'false' },
+    });
 
     if (state.status === 'scanning') {
-        return el('section', { className: 'mb-3 flex flex-col gap-2' }, [
-            el('div', { className: 'flex flex-wrap items-center justify-between gap-2' }, [
-                el('div', { text: 'Productions', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
-                statusBadge('Scanning…', 'PREVIEW'),
-            ]),
-            el('div', { text: 'Scanning production parent…', className: 'rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-secondary' }),
-        ]);
+        body.appendChild(el('p', { text: p('Scanning production parent…'), className: 'pipeline-production-message', attrs: { role: 'status' } }));
+        return body;
     }
 
     if (state.status === 'error') {
-        return el('section', { className: 'mb-3 flex flex-col gap-2' }, [
-            el('div', { className: 'flex flex-wrap items-center justify-between gap-2' }, [
-                el('div', { text: 'Productions', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
-                statusBadge('Error', 'BLOCK'),
-            ]),
-            el('div', { text: `Cannot read parent: ${state.reason || 'unknown'}`, className: 'rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100' }),
-            el('button', {
-                text: 'Open Settings',
-                onClick: () => onOpenSettings && onOpenSettings(),
-                className: 'rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-bold uppercase tracking-widest text-secondary hover:bg-white/[0.07] hover:text-white',
-            }),
-        ]);
+        body.appendChild(el('p', {
+            text: p('Cannot read parent: {reason}', { reason: state.reason || 'unknown' }),
+            className: 'pipeline-production-error',
+            attrs: { role: 'alert' },
+        }));
+        body.appendChild(el('button', {
+            text: p('Open settings'),
+            onClick: () => onOpenSettings?.(),
+            className: 'pipeline-production-recovery',
+            attrs: { type: 'button' },
+        }));
+        return body;
     }
 
     if (!Array.isArray(productions) || productions.length === 0) {
-        return el('section', { className: 'mb-3 flex flex-col gap-2' }, [
-            el('div', { className: 'flex flex-wrap items-center justify-between gap-2' }, [
-                el('div', { text: 'Productions', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
-                statusBadge('Empty', 'UNREVIEWED'),
-            ]),
-            el('div', { text: 'No productions found. Set a production parent in Settings.', className: 'rounded-xl border border-dashed border-white/10 bg-black/20 px-3 py-2 text-xs text-secondary' }),
-            el('button', {
-                text: 'Open Settings',
-                onClick: () => onOpenSettings && onOpenSettings(),
-                className: 'rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-bold uppercase tracking-widest text-secondary hover:bg-white/[0.07] hover:text-white',
-            }),
-        ]);
+        body.appendChild(el('p', {
+            text: p('No productions found. Set a production parent in Settings.'),
+            className: 'pipeline-production-message',
+            attrs: { role: 'status' },
+        }));
+        body.appendChild(el('button', {
+            text: p('Open settings'),
+            onClick: () => onOpenSettings?.(),
+            className: 'pipeline-production-recovery',
+            attrs: { type: 'button' },
+        }));
+        return body;
     }
 
-    return el('section', { className: 'mb-3 flex flex-col gap-2' }, [
-        el('div', { className: 'flex flex-wrap items-center justify-between gap-2' }, [
-            el('div', { text: 'Productions', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
-            el('button', {
-                text: '↻',
-                title: 'Refresh productions',
-                onClick: () => onRefreshProductions && onRefreshProductions(),
-                className: 'rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-secondary hover:bg-white/[0.07] hover:text-white',
-            }),
-        ]),
-        ...productions.map((entry) => {
-            const meta = [
-                formatRelativeMtime(entry.mtime),
-                `${entry.fileCount || 0} files`,
-                `brief: ${entry.hasMarkdownBrief ? 'yes' : 'no'}`,
-                `ledger: ${entry.hasJsonlLedger ? 'yes' : 'no'}`,
-            ].join(' · ');
-            return el('button', {
-                onClick: () => onSelectProduction && onSelectProduction(entry.path),
-                className: 'rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-left transition hover:border-cyan-400/30 hover:bg-cyan-400/10',
-            }, [
-                el('div', { text: entry.name, className: 'truncate text-xs font-bold text-white' }),
-                el('div', { text: meta, className: 'mt-1 truncate text-[10px] text-secondary' }),
-            ]);
-        }),
-    ]);
+    const refresh = el('button', {
+        text: '↻',
+        title: p('Refresh productions'),
+        onClick: () => onRefreshProductions?.(),
+        className: 'pipeline-production-refresh',
+        attrs: { type: 'button', 'aria-label': p('Refresh production list') },
+    });
+    body.appendChild(refresh);
+
+    productions.forEach((entry) => {
+        const meta = [
+            formatRelativeMtime(entry.mtime),
+            p('{count} files', { count: entry.fileCount || 0 }),
+            p('brief: {value}', { value: entry.hasMarkdownBrief ? p('yes') : p('no') }),
+            p('ledger: {value}', { value: entry.hasJsonlLedger ? p('yes') : p('no') }),
+        ].join(' · ');
+        body.appendChild(el('button', {
+            onClick: () => onSelectProduction?.(entry.path),
+            className: 'pipeline-production-entry',
+            attrs: { type: 'button' },
+        }, [
+            el('span', { text: entry.name, className: 'pipeline-production-name' }),
+            el('span', { text: meta, className: 'pipeline-production-meta' }),
+        ]));
+    });
+    return body;
 }
 
-export function PipelineSidebar({ tabs, activeTab, productions, productionsState, onSelect, onSelectProduction, onOpenSettings, onRefreshProductions }) {
-    return el('aside', { className: 'flex min-h-0 w-full shrink-0 flex-col gap-2 overflow-y-auto border-b border-white/10 bg-black/20 p-3 lg:w-64 lg:border-b-0 lg:border-r' }, [
-        el('div', { className: 'mb-2 flex flex-wrap gap-2' }, [
-            statusBadge('DRY RUN', 'BLOCK'),
-            statusBadge('Preview only', 'PREVIEW'),
-        ]),
-        el('nav', { className: 'grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1' }, tabs.map((tab) => (
-            el('button', {
+function productionDetails(props) {
+    const state = props.productionsState || { status: 'idle' };
+    const details = el('details', { className: 'pipeline-production-details' });
+    details.appendChild(el('summary', { className: 'pipeline-production-summary' }, [
+        el('span', { text: p('Production list') }),
+        state.status === 'scanning'
+            ? statusBadge(p('Scanning…'), 'PREVIEW')
+            : state.status === 'error'
+                ? statusBadge(p('Error'), 'BLOCK')
+                : statusBadge(String(props.productions?.length || 0), props.productions?.length ? 'PASS' : 'UNREVIEWED'),
+    ]));
+    details.appendChild(productionDetailsContent(props));
+    return details;
+}
+
+function groupedTabs(tabs) {
+    const groups = [];
+    tabs.forEach((tab) => {
+        let group = groups.find((item) => item.id === tab.group);
+        if (!group) {
+            group = { id: tab.group, label: tab.groupLabel, tabs: [] };
+            groups.push(group);
+        }
+        group.tabs.push(tab);
+    });
+    return groups;
+}
+
+export function PipelineSidebar(props) {
+    const { tabs, activeTab, onSelect } = props;
+    const aside = el('aside', { className: 'pipeline-sidebar' });
+
+    const mobileLabel = el('label', { className: 'pipeline-mobile-nav' }, [
+        el('span', { text: p('Choose a workflow step'), className: 'pipeline-mobile-nav-label' }),
+    ]);
+    const mobileSelect = el('select', {
+        className: 'pipeline-mobile-nav-select',
+        attrs: { 'aria-label': p('Pipeline workflow steps') },
+    });
+    tabs.forEach((tab) => mobileSelect.appendChild(el('option', { text: tab.label, value: tab.id })));
+    mobileSelect.value = activeTab;
+    mobileSelect.addEventListener('change', () => onSelect(mobileSelect.value));
+    mobileLabel.appendChild(mobileSelect);
+    aside.appendChild(mobileLabel);
+
+    const navigation = el('nav', {
+        className: 'pipeline-desktop-nav',
+        attrs: { 'aria-label': p('Pipeline workflow steps') },
+    });
+    groupedTabs(tabs).forEach((group) => {
+        const section = el('section', { className: 'pipeline-nav-group' }, [
+            el('h2', { text: group.label, className: 'pipeline-nav-group-title' }),
+        ]);
+        group.tabs.forEach((tab) => {
+            section.appendChild(el('button', {
                 text: tab.label,
                 onClick: () => onSelect(tab.id),
-                className: `rounded-xl border px-3 py-3 text-left text-xs font-bold uppercase tracking-widest transition ${
-                    activeTab === tab.id
-                        ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-100'
-                        : 'border-white/10 bg-white/[0.03] text-secondary hover:bg-white/[0.07] hover:text-white'
-                }`,
-            })
-        ))),
-        productionsSection({ productions, productionsState, onSelectProduction, onOpenSettings, onRefreshProductions }),
-    ]);
+                className: `pipeline-nav-item${activeTab === tab.id ? ' is-active' : ''}`,
+                attrs: {
+                    type: 'button',
+                    'aria-current': activeTab === tab.id ? 'page' : undefined,
+                },
+            }));
+        });
+        navigation.appendChild(section);
+    });
+    aside.appendChild(navigation);
+    aside.appendChild(productionDetails(props));
+    return aside;
 }

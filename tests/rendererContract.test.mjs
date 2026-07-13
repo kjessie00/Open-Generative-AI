@@ -11,6 +11,7 @@ class TestNode {
         this.listeners = new Map();
         this.className = '';
         this.disabled = false;
+        this.readOnly = false;
         this.value = '';
         this._text = '';
     }
@@ -40,6 +41,12 @@ class TestNode {
         return child;
     }
 
+    replaceChildren(...children) {
+        this._text = '';
+        this.childNodes = [];
+        children.forEach((child) => this.appendChild(child));
+    }
+
     setAttribute(name, value) {
         this.attributes.set(String(name), String(value));
     }
@@ -60,7 +67,6 @@ class TestNode {
     querySelector(selector) {
         return findAll(this, selector)[0] || null;
     }
-
 }
 
 function descendants(root) {
@@ -74,6 +80,10 @@ function findAll(root, selector) {
 
 function byText(root, tagName, text) {
     return findAll(root, tagName).find((node) => node.textContent.trim() === text) || null;
+}
+
+function byAttribute(root, tagName, name, value) {
+    return findAll(root, tagName).find((node) => node.attributes.get(name) === value) || null;
 }
 
 function installDeterministicDom(bridge) {
@@ -90,10 +100,19 @@ function installDeterministicDom(bridge) {
             return node;
         },
     };
+    const windowListeners = new Map();
     const window = {
         document,
         filmPipeline: bridge,
         alert() {},
+        addEventListener(type, listener) {
+            const listeners = windowListeners.get(type) || [];
+            listeners.push(listener);
+            windowListeners.set(type, listeners);
+        },
+        dispatchEvent(event) {
+            (windowListeners.get(event.type) || []).forEach((listener) => listener(event));
+        },
     };
 
     globalThis.document = document;
@@ -113,7 +132,7 @@ async function flushRenderer() {
     }
 }
 
-test('PipelineStudio renderer preserves the production dry-run UI contract', async (t) => {
+test('PipelineStudio renders the Korean compact workbench and preserves dry-run boundaries', async (t) => {
     const calls = [];
     const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
     const restoredState = structuredClone(samplePipelineState);
@@ -193,85 +212,114 @@ test('PipelineStudio renderer preserves the production dry-run UI contract', asy
         ['/tmp/restored-production'],
         'saved productionRoot must restore renderer state through the bridge',
     );
-    assert.match(studio.textContent, /Dry-run locked/);
+    assert.match(studio.textContent, /안전 모드 · 생성 및 업로드 차단/);
     assert.doesNotMatch(studio.textContent, /Dry-run disabled/);
+    assert.equal(findAll(studio, 'h1').length, 1, 'the current production is the single page h1');
+    assert.equal(findAll(studio, 'main').length, 0, 'PipelineStudio must not nest a main landmark inside the app main');
 
-    const openFolder = byText(studio, 'button', 'Open Production Folder');
-    assert.ok(openFolder, 'folder-selection UI must be rendered');
+    const workflowNav = byAttribute(studio, 'nav', 'aria-label', '파이프라인 작업 단계');
+    assert.ok(workflowNav, 'workflow navigation must have a Korean accessible name');
+    assert.ok(byAttribute(studio, 'button', 'aria-current', 'page'), 'active workflow step must expose aria-current=page');
+    for (const group of ['기획', '제작 준비', '생성·검토', '마무리']) {
+        assert.ok(byText(studio, 'h2', group), `${group} workflow group must be rendered`);
+    }
+    assert.deepEqual(
+        findAll(studio, 'dt').map((node) => node.textContent.trim()),
+        ['파일', '파싱', '검토', '채택'],
+        'file evidence must be a compact four-metric strip',
+    );
+    const details = findAll(studio, 'details');
+    assert.ok(details.length >= 2, 'safety and production lists must use progressive disclosure');
+    assert.ok(details.every((node) => !node.attributes.has('open')), 'progressive details must be collapsed by default');
+
+    const openFolder = byText(studio, 'button', '제작 폴더 열기');
+    assert.ok(openFolder, 'folder-selection UI must be rendered in Korean');
     await openFolder.dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.match(studio.textContent, /Folder Selected Production/);
-    assert.deepEqual(
-        calls.filter(([method]) => method === 'selectProductionRoot').length,
-        1,
-        'folder selection must use the preload bridge exactly once',
-    );
-    assert.match(studio.textContent, /Dry-run locked/);
+    assert.equal(calls.filter(([method]) => method === 'selectProductionRoot').length, 1);
 
-    const refresh = byText(studio, 'button', 'Refresh productions');
-    assert.ok(refresh, 'production refresh control must be rendered');
+    const refresh = byText(studio, 'button', '목록 새로고침');
+    assert.ok(refresh, 'production refresh control must be rendered in Korean');
     await refresh.dispatchEvent({ type: 'click' });
     await flushRenderer();
-    assert.match(studio.textContent, /Cannot read parent: READ_PARENT_BLOCKED_FOR_TEST/);
-    assert.ok(byText(studio, 'button', 'Open Settings'), 'reader error must expose a settings recovery action');
+    assert.match(studio.textContent, /상위 폴더를 읽을 수 없습니다: READ_PARENT_BLOCKED_FOR_TEST/);
+    assert.ok(byText(studio, 'button', '설정 열기'), 'reader error must expose a Korean recovery action');
 
     const tabs = [
-        ['Intake', 'Intake'],
-        ['Storyboard', 'Storyboard'],
-        ['Shot Designer', 'Shot Designer'],
-        ['Motion Board', 'Motion Board'],
-        ['Assets', 'Assets'],
-        ['Prompt Packs', 'Prompt Packs'],
-        ['Review Gates', 'Review Gates'],
-        ['Queue', 'Queue'],
-        ['QA', 'QA'],
-        ['Final', 'Final'],
-        ['Settings', 'Settings'],
+        ['프로젝트', '프로젝트 개요'],
+        ['스토리보드', '스토리보드'],
+        ['샷 설계', '샷 설계'],
+        ['모션 보드', '모션 보드'],
+        ['참조 이미지', '첫 프레임·참조 이미지'],
+        ['프롬프트 팩', '프롬프트 팩'],
+        ['검토 게이트', '검토 게이트'],
+        ['생성 대기열', '생성 대기열'],
+        ['클립 QA', '클립 QA·채택 구간'],
+        ['최종 편집', '최종 편집·보고서'],
+        ['설정', '파이프라인 설정'],
     ];
 
+    const renderedPanelTexts = [];
     for (const [tabLabel, panelHeading] of tabs) {
         const tab = byText(studio, 'button', tabLabel);
         assert.ok(tab, `${tabLabel} tab must be rendered`);
         await tab.dispatchEvent({ type: 'click' });
         assert.ok(
             findAll(studio, 'h2').some((heading) => heading.textContent.trim() === panelHeading),
-            `${tabLabel} must render the ${panelHeading} product panel`,
+            `${tabLabel} must render the ${panelHeading} panel`,
         );
+        assert.equal(byText(studio, 'button', tabLabel).attributes.get('aria-current'), 'page');
+        renderedPanelTexts.push(studio.textContent);
+    }
+    const allPanelText = renderedPanelTexts.join('\n');
+    for (const staleUiLabel of [
+        'Cinematic Pipeline Studio',
+        'Open Production Folder',
+        'Refresh productions',
+        'Shot Designer',
+        'Review Gates',
+        'Live submit is disabled',
+        'Copy command',
+        'Open Settings',
+    ]) {
+        assert.doesNotMatch(allPanelText, new RegExp(staleUiLabel), `${staleUiLabel} must not remain in the default Korean UI`);
     }
 
-    await byText(studio, 'button', 'Assets').dispatchEvent({ type: 'click' });
-    assert.match(studio.textContent, /Harness image dashboard mirror/);
+    await byText(studio, 'button', '참조 이미지').dispatchEvent({ type: 'click' });
+    assert.match(studio.textContent, /하네스 이미지 대시보드를 읽기 전용으로 보여 줍니다/);
 
-    await byText(studio, 'button', 'Queue').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '생성 대기열').dispatchEvent({ type: 'click' });
     const queueText = studio.textContent;
-    assert.match(queueText, /Live submit is disabled/);
-    assert.match(queueText, /Preview card only\. No run button is rendered\./);
-    assert.match(queueText, /Copy command/);
+    assert.match(queueText, /라이브 제출은 차단/);
+    assert.match(queueText, /미리보기 카드만 제공합니다. 실행 버튼은 표시하지 않습니다./);
+    assert.match(queueText, /명령 복사/);
     assert.match(queueText, /CREDIT_CONFIRMATION_REQUIRED/);
-    assert.match(queueText, /image generationblocked/i);
-    assert.ok(byText(studio, 'button', 'Submit disabled')?.disabled, 'submit control must be visibly disabled');
+    assert.match(queueText, /이미지 생성차단/);
+    assert.ok(byText(studio, 'button', '제출 차단')?.disabled, 'submit control must stay visibly disabled');
 
     const unsafeEnabledButtons = findAll(studio, 'button').filter((button) => (
         button.disabled !== true
-        && /^(run|execute|generate|submit|upload)\b/i.test(button.textContent.trim())
+        && /^(run|execute|generate|submit|upload|실행|생성|제출|업로드)\b/i.test(button.textContent.trim())
     ));
     assert.deepEqual(
         unsafeEnabledButtons.map((button) => button.textContent.trim()),
         [],
-        'renderer must not expose an enabled run, execute, generate, submit, or upload button',
+        'renderer must not expose an enabled unsafe action button in either language',
     );
     assert.equal(calls.filter(([method]) => method === 'previewCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'writePlanningFile').length, 0);
+    assert.match(studio.textContent, /\/tmp\/selected-production/, 'technical paths must remain unmodified');
 });
 
-test('PipelineSidebar renders discovered production entries as DOM nodes', async (t) => {
+test('PipelineSidebar keeps grouped navigation ahead of a collapsed Korean production list', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);
     const { PipelineSidebar } = await import('../src/components/pipeline/PipelineSidebar.js');
 
     const sidebar = PipelineSidebar({
-        tabs: [{ id: 'intake', label: 'Intake' }],
+        tabs: [{ id: 'intake', label: '프로젝트', group: 'planning', groupLabel: '기획' }],
         activeTab: 'intake',
         productions: [{
             name: 'sanitized-production',
@@ -289,9 +337,14 @@ test('PipelineSidebar renders discovered production entries as DOM nodes', async
     });
 
     assert.match(sidebar.textContent, /sanitized-production/);
-    assert.match(sidebar.textContent, /3 files/);
+    assert.match(sidebar.textContent, /파일 3개/);
     assert.ok(
-        sidebar.textContent.indexOf('Intake') < sidebar.textContent.indexOf('Productions'),
-        'primary pipeline navigation must remain ahead of the potentially long production list',
+        sidebar.textContent.indexOf('프로젝트') < sidebar.textContent.indexOf('제작 목록'),
+        'primary workflow navigation must remain ahead of the production list',
     );
+    assert.ok(byAttribute(sidebar, 'nav', 'aria-label', '파이프라인 작업 단계'));
+    assert.equal(byText(sidebar, 'button', '프로젝트').attributes.get('aria-current'), 'page');
+    assert.ok(byAttribute(sidebar, 'button', 'aria-label', '제작 목록 새로고침'));
+    assert.equal(findAll(sidebar, 'details').length, 1);
+    assert.equal(findAll(sidebar, 'details')[0].attributes.has('open'), false);
 });

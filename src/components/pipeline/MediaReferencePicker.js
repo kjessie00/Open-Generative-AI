@@ -1,4 +1,5 @@
 import { actionButton, card, el, statusBadge, textOrDash } from './ui.js';
+import { p } from './copy.js';
 
 function normalizeReferences(references = []) {
     return references.map((reference) => (
@@ -87,42 +88,42 @@ export function MediaReferencePicker({ state = {}, value = {}, onChange }) {
         className: 'min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none transition placeholder:text-secondary focus:border-cyan-400/50',
         attrs: {
             type: 'text',
-            placeholder: 'Paste local reference path only. No upload or read occurs.',
-            'aria-label': 'Local reference path',
+            placeholder: p('Paste local reference path only. No upload or read occurs.'),
+            'aria-label': p('Local reference path'),
         },
     });
 
     return el('section', { className: 'flex flex-col gap-4' }, [
         el('div', { className: 'mb-4 flex flex-wrap items-center justify-between gap-2' }, [
             el('div', {}, [
-                el('h3', { text: 'Media References', className: 'text-sm font-black uppercase tracking-widest text-white' }),
-                el('p', { text: 'Displays existing local stills and references. There is no upload, generation, or external review.', className: 'mt-1 text-xs text-secondary' }),
+                el('h3', { text: p('Media References'), className: 'text-sm font-bold text-white' }),
+                el('p', { text: p('Displays existing local stills and references. There is no upload, generation, or external review.'), className: 'mt-1 text-xs text-secondary' }),
             ]),
-            statusBadge('local display only', 'PREVIEW'),
+            statusBadge(p('local display only'), 'PREVIEW'),
         ]),
         el('div', { className: 'mb-4 grid grid-cols-1 gap-3 md:grid-cols-3' }, [
             el('div', { className: 'rounded-xl border border-white/10 bg-black/20 px-3 py-2' }, [
-                el('div', { text: 'First frame', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+                el('div', { text: p('First frame'), className: 'text-xs font-semibold text-secondary' }),
                 el('div', { text: textOrDash(value.first_frame_asset_id), className: 'mt-2 break-all text-sm font-semibold text-white' }),
             ]),
             el('div', { className: 'rounded-xl border border-white/10 bg-black/20 px-3 py-2' }, [
-                el('div', { text: 'End frame', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+                el('div', { text: p('End frame'), className: 'text-xs font-semibold text-secondary' }),
                 el('div', { text: textOrDash(value.end_frame_asset_id), className: 'mt-2 break-all text-sm font-semibold text-white' }),
             ]),
             el('div', { className: 'rounded-xl border border-white/10 bg-black/20 px-3 py-2' }, [
-                el('div', { text: 'References', className: 'text-[11px] font-bold uppercase tracking-widest text-secondary' }),
-                el('div', { text: `${references.length} selected`, className: 'mt-2 text-sm font-semibold text-white' }),
+                el('div', { text: p('References'), className: 'text-xs font-semibold text-secondary' }),
+                el('div', { text: p('{count} selected', { count: references.length }), className: 'mt-2 text-sm font-semibold text-white' }),
             ]),
         ]),
         el('div', { className: 'mb-4 flex flex-col gap-2 sm:flex-row' }, [
             localPathInput,
-            actionButton('Add local path', { variant: 'muted', onClick: addLocalPath }),
+            actionButton(p('Add local path'), { variant: 'muted', onClick: addLocalPath }),
         ]),
         el('div', { className: 'grid grid-cols-1 gap-3 lg:grid-cols-2' }, options.map((asset) => card([
             el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
                 el('div', { className: 'min-w-0' }, [
                     el('div', { text: asset.asset_id || asset.type, className: 'break-all text-sm font-bold text-white' }),
-                    el('div', { text: asset.path || 'No path recorded', className: 'mt-1 break-all font-mono text-xs text-secondary' }),
+                    el('div', { text: asset.path || p('No path recorded'), className: 'mt-1 break-all font-mono text-xs text-secondary' }),
                 ]),
                 statusBadge(asset.review_verdict || 'UNREVIEWED', asset.review_verdict || 'UNREVIEWED'),
             ]),
@@ -132,18 +133,18 @@ export function MediaReferencePicker({ state = {}, value = {}, onChange }) {
                 asset.video_use_status ? statusBadge(asset.video_use_status, 'UNREVIEWED') : null,
             ].filter(Boolean)),
             el('div', { className: 'mt-4 flex flex-wrap gap-2' }, [
-                actionButton('Set first frame', { variant: 'muted', onClick: () => setFirstFrame(asset) }),
-                actionButton('Set end frame', { variant: 'muted', onClick: () => setEndFrame(asset) }),
-                actionButton('Add reference', { onClick: () => appendReference(asset) }),
+                actionButton(p('Set first frame'), { variant: 'muted', onClick: () => setFirstFrame(asset) }),
+                actionButton(p('Set end frame'), { variant: 'muted', onClick: () => setEndFrame(asset) }),
+                actionButton(p('Add reference'), { onClick: () => appendReference(asset) }),
             ]),
         ], 'p-4'))),
         references.length ? card([
-            el('div', { text: 'Selected References', className: 'mb-3 text-[11px] font-bold uppercase tracking-widest text-secondary' }),
+            el('div', { text: p('Selected References'), className: 'mb-3 text-xs font-semibold text-secondary' }),
             el('div', { className: 'flex flex-col gap-2' }, references.map((reference) => {
                 const key = reference.asset_id || reference.path;
                 return el('div', { className: 'flex flex-col gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2 sm:flex-row sm:items-center sm:justify-between' }, [
                     el('span', { text: `${reference.asset_id || reference.path} · ${reference.type || 'reference'}`, className: 'break-all text-xs text-secondary' }),
-                    actionButton('Remove', { variant: 'muted', onClick: () => removeReference(key) }),
+                    actionButton(p('Remove'), { variant: 'muted', onClick: () => removeReference(key) }),
                 ]);
             })),
         ], 'mt-4') : null,

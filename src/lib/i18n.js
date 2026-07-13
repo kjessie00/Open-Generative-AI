@@ -1,40 +1,51 @@
 const LANG_KEY = 'og_lang';
 
-/** Normalize legacy `zh` and browser locales to BCP-47 zh-CN. */
-export function normalizeLang(raw) {
-    if (!raw) return 'en';
-    const lower = String(raw).toLowerCase();
-    if (lower === 'zh' || lower.startsWith('zh-') || lower.startsWith('zh_')) return 'zh-CN';
-    return lower === 'zh-cn' ? 'zh-CN' : 'en';
+function applyDocumentLang(lang) {
+    if (typeof document !== 'undefined' && document.documentElement) {
+        document.documentElement.setAttribute('lang', lang);
+    }
 }
 
-/** Detect browser locale on first visit; migrates stored `zh` → `zh-CN`. */
+/** Normalize supported browser/storage locales to the product locale keys. */
+export function normalizeLang(raw) {
+    if (!raw) return 'ko-KR';
+    const lower = String(raw).toLowerCase();
+    if (lower === 'ko' || lower.startsWith('ko-') || lower.startsWith('ko_')) return 'ko-KR';
+    if (lower === 'zh' || lower.startsWith('zh-') || lower.startsWith('zh_')) return 'zh-CN';
+    if (lower === 'en' || lower.startsWith('en-') || lower.startsWith('en_')) return 'en';
+    return 'ko-KR';
+}
+
+/** Use Korean on first visit while preserving and migrating an explicit choice. */
 export function initLocale() {
-    if (typeof localStorage === 'undefined') return 'en';
+    if (typeof localStorage === 'undefined') return 'ko-KR';
     const stored = localStorage.getItem(LANG_KEY);
     if (stored) {
         const normalized = normalizeLang(stored);
         if (normalized !== stored) localStorage.setItem(LANG_KEY, normalized);
+        applyDocumentLang(normalized);
         return normalized;
     }
-    const detected = typeof navigator !== 'undefined' ? navigator.language : 'en';
-    const lang = normalizeLang(detected);
+    const lang = 'ko-KR';
     localStorage.setItem(LANG_KEY, lang);
+    applyDocumentLang(lang);
     return lang;
 }
 
 export function getLang() {
-    if (typeof localStorage === 'undefined') return 'en';
+    if (typeof localStorage === 'undefined') return 'ko-KR';
     const stored = localStorage.getItem(LANG_KEY);
     if (!stored) return initLocale();
     const normalized = normalizeLang(stored);
     if (normalized !== stored) localStorage.setItem(LANG_KEY, normalized);
+    applyDocumentLang(normalized);
     return normalized;
 }
 
 export function setLang(lang, { reload = true } = {}) {
     const normalized = normalizeLang(lang);
-    localStorage.setItem(LANG_KEY, normalized);
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LANG_KEY, normalized);
+    applyDocumentLang(normalized);
     if (reload && typeof location !== 'undefined') {
         location.reload();
     } else if (typeof window !== 'undefined') {
@@ -44,6 +55,7 @@ export function setLang(lang, { reload = true } = {}) {
 
 function dictFor(lang) {
     const key = normalizeLang(lang);
+    if (key === 'ko-KR') return translations['ko-KR'];
     if (key === 'zh-CN') return translations['zh-CN'] || translations.zh;
     return translations.en;
 }
@@ -438,6 +450,22 @@ const translations = {
 };
 
 translations['zh-CN'] = translations.zh;
+translations.en['settings.close'] = 'Close settings';
+translations.en['web.languageLabel'] = 'Display language';
+translations.zh['settings.close'] = '关闭设置';
+translations.zh['web.languageLabel'] = '显示语言';
+translations['ko-KR'] = {
+    ...translations.en,
+    'nav.pipeline': '시네마틱 파이프라인',
+    'nav.settings': '설정',
+    'settings.title': '설정',
+    'settings.pipeline': '파이프라인',
+    'settings.pipelineTitle': '로컬 파이프라인 설정',
+    'settings.pipelineNote': '제작 폴더와 드라이런 명령 미리보기는 파이프라인 설정 화면에서 관리합니다. 이 앱은 외부 서비스 인증 정보를 저장하지 않습니다.',
+    'settings.close': '설정 닫기',
+    'web.settingsTitle': '파이프라인 설정 열기',
+    'web.languageLabel': '표시 언어',
+};
 
 export function t(key) {
     const lang = getLang();
