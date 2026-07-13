@@ -1,6 +1,6 @@
 # Goal Checkpoint
 
-Last updated: 2026-07-13T12:36:39+09:00
+Last updated: 2026-07-13T12:40:29+09:00
 Main executor: Codex Goals
 Supervisor: Pi goal guard / external audit
 
@@ -55,6 +55,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - Approved cleanup: Jessie explicitly approved deletion of `/Users/jessiek/StudioProjects/Open-Generative-AI/release/` and `/tmp/open-generative-ai-security-review-20260713-p0`; 639MB and 36KB respectively were removed, symlink checks passed, and both paths were confirmed absent.
 - 2026-07-13 Layout A/B production reader validation: added a distinct dated-run Layout A fixture and reused the existing root-marker Layout B fixture; reader → normalizer → validator E2E and fail-safe tests passed 8/8. Sensitive-name, `.git`/`node_modules`, symlink/root escape, malformed JSON/JSONL/JS/CSV/markdown, and walker depth/file limits are now regression-covered. Full network-denied test suite passed 64/64; lint, Vite build (39 modules), and `git diff --check` passed. Detailed aggregate-only evidence is in `docs/ui_integration/20_production_reader_validation.md`.
 - Actual production read-only aggregate probe (maximum two): `gangnam_shorts_system_income_20260707` detected as partial Layout B with 293 files but no complete structured reader packet; `ep01_apologist` detected as unknown with 524 files. Both remained final-not-ready with required blockers; no raw script, media, private metadata, or secret content was copied and happyVideoFactory was not modified. Residual gaps are `REAL_LAYOUT_A_GAP` and `REAL_LAYOUT_B_PARTIAL`, not fixture failures.
+- 2026-07-13 documentation reconciliation: added `docs/ui_integration/21_current_acceptance_status.md`; marked the implementation plan, final audit, handoff, and launch verification as historical snapshots with a current-status pointer; replaced the resolved `MISSING_PIPELINE_DOC` notice with the current real-layout, GUI-evidence, and offline-OSV gaps. Historical evidence remains intact below each notice.
 
 ## Acceptance Evidence Map
 
@@ -65,16 +66,15 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - AC5: PENDING actual Electron GUI evidence for all panels, folder selection, state restoration, errors, and blocked preview.
 - AC6: VERIFIED for distinct Layout A/B fixtures, malformed/sensitive/limit fail-safe cases, and bounded real-production aggregate probes by `tests/productionReaderLayouts.test.mjs` (8/8) and `docs/ui_integration/20_production_reader_validation.md`. Real candidates remain honestly partial/unknown rather than claimed fixture-equivalent.
 - AC7: PARTIAL PASS for build, 64 tests, reader/security regressions, and diff/status; GUI/runtime scope remains pending.
-- AC8: PENDING reconciliation of stale `docs/ui_integration` audit/handoff/launch/missing-input records.
+- AC8: VERIFIED by `docs/ui_integration/21_current_acceptance_status.md` and current-status notices in the plan, final audit, handoff, launch verification, and missing-input records.
 - AC9: PARTIAL PASS for active-source scans and zero external generation/upload; OSV offline database gap remains.
 - AC10: VERIFIED at state-machine/test level; Jessie-visible GUI confirmation remains part of AC5.
 
 ## Pending
 
 - Verify all 10 core panels and the current 11-tab implementation in the actual Electron GUI, including folder selection, state restoration, error handling, and blocked command preview.
-- Reconcile `docs/ui_integration` audit, plan, handoff, launch verification, final audit, and missing-input status with current code and evidence.
 - Resolve or explicitly accept the offline OSV database gap without enabling network access implicitly.
-- Completion remains blocked on AC5, AC8, and the remaining AC7/AC9 runtime evidence; passing code tests alone is insufficient.
+- Completion remains blocked on AC5 and the remaining AC7/AC9 runtime evidence; passing code tests alone is insufficient.
 
 ## Compaction Reentry Rule
 

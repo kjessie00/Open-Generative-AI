@@ -1,5 +1,7 @@
 # Pipeline UI Agent Handoff
 
+> 현재 handoff 안내 (2026-07-13): 아래 본문은 2026-07-06의 미커밋 작업트리 스냅샷으로 보존한다. 현재는 `main`이 clean이고 P0 보안 통합 `4dac387`, 인수 기록 `86655d7`, Layout A/B reader `93f35a3`까지 로컬 `main`에 커밋되었다. 전체 network-denied tests 64/64, lint, build가 통과했다. 최신 남은 작업은 실제 Electron GUI 증거, 완전한 실제 Layout A/B gap, offline OSV gap이며 `21_current_acceptance_status.md`와 `.agent/goal-checkpoint.md`를 우선한다.
+
 작성일: 2026-07-06
 대상 repo: `/Users/jessiek/StudioProjects/Open-Generative-AI`
 상태: Cinematic Pipeline Studio UI shell, schema, validators, Electron bridge, production reader, command preview, DeepSearchTeam scene-image preview가 구현되어 있으나 아직 커밋되지 않은 작업트리 상태.

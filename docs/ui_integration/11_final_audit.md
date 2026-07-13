@@ -1,5 +1,7 @@
 # 최종 통합 감사
 
+> 역사 기록 안내 (2026-07-13): 아래 감사는 2026-07-05 당시 상태다. 이후 필수 하네스/00-03 문서가 추가되었고, active MuAPI 경로 격리, network-denied 64-test/lint/build 검증, Layout A/B reader 보강이 완료되었다. 아래의 dependency·missing-doc·legacy MuAPI BLOCK을 현재 상태로 해석하지 않는다. 최신 판정은 `21_current_acceptance_status.md`를 우선한다.
+
 감사 일시: 2026-07-05
 범위: 현재 체크아웃의 Cinematic Pipeline Studio 구현, Electron bridge, production reader, validators, fixture tests, command preview/gate UI.
 원칙: 새 기능 추가 없음. 외부 생성, Dreamina/Gemini, 업로드, ffmpeg/ffprobe 실행 없음.

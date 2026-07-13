@@ -1,5 +1,7 @@
 # 앱 Launch 검증 (Dry-Run 모드) (17)
 
+> 역사 기록 안내 (2026-07-13): 아래 문서는 2026-07-07의 정적 launch 검증이다. 이후 로컬 의존성이 준비된 상태에서 network-denied Vite build가 39 modules로 PASS했고 active MuAPI proxy/default path도 제거되었다. 다만 실제 Electron GUI 항목별 증거는 여전히 PENDING이다. 최신 판정은 `21_current_acceptance_status.md`를 우선한다.
+
 작성일: 2026-07-07 KST. 검증자: opencode session. 본 문서는 `docs/ui_integration/14_side_effect_audit.md` §7.2 후속 task 후보 둘째 항목 "앱 launch 검증 task"의 dry-run 검증 산출물이다. 본 검증 동안 외부 side effect 실행 0건, npm install 0회, git add/commit/push 0회, electron launch 0회이다.
 
 ## §1. 검증 결과 한 줄 요약
