@@ -1,0 +1,14 @@
+{
+  "video_id": "fixture_video_01",
+  "aspect_ratio": "9:16",
+  "audio_path": "audio/fixture.wav",
+  "duration_seconds": 6,
+  "scenes": [
+    {
+      "scene_id": "scene_01",
+      "clip_id": "clip_001",
+      "duration_seconds": 6,
+      "narrative": "synthetic content intentionally discarded by the reader"
+    }
+  ]
+}

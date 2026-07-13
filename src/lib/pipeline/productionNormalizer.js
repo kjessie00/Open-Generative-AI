@@ -24,8 +24,14 @@ function arrayFromMaybe(value) {
     if (Array.isArray(value?.clips)) return value.clips;
     if (Array.isArray(value?.storyboard)) return value.storyboard;
     if (Array.isArray(value?.shots)) return value.shots;
+    if (Array.isArray(value?.scenes)) return value.scenes;
     if (Array.isArray(value?.items)) return value.items;
     return [];
+}
+
+function structuralClipId(value, index = 0) {
+    const match = String(value || '').match(/(?:scene|beat|shot|clip|씬|장면|비트)[\s_:#-]*(\d+)/i);
+    return `clip_${String(match ? Number(match[1]) : index + 1).padStart(3, '0')}`;
 }
 
 function absolutePath(rootPath, value) {
@@ -76,30 +82,34 @@ function normalizeStoryboard(rawValue = []) {
         scene_id: clip.scene_id || clip.scene || `scene_${String(index + 1).padStart(2, '0')}`,
         clip_id: clip.clip_id || clip.id || `clip_${String(index + 1).padStart(3, '0')}`,
         duration: Number(clip.duration || clip.duration_seconds || 0),
-        dramatic_beat: clip.dramatic_beat || clip.beat || '',
+        dramatic_beat: clip.dramatic_beat || clip.beat || (clip.structural_only ? 'Structural scene evidence imported; narrative omitted.' : ''),
         characters: Array.isArray(clip.characters) ? clip.characters : String(clip.characters || '').split(',').map((item) => item.trim()).filter(Boolean),
-        location: clip.location || '',
-        first_frame: clip.first_frame || clip.firstFrame || '',
-        action: clip.action || '',
-        camera: clip.camera || '',
-        lighting: clip.lighting || '',
-        audio_sfx_dialogue: clip.audio_sfx_dialogue || clip.audio || clip.sfx || '',
+        location: clip.location || (clip.structural_only ? 'Unresolved from structural evidence' : ''),
+        first_frame: clip.first_frame || clip.firstFrame || (clip.structural_only ? 'Requires explicit first-frame evidence' : ''),
+        action: clip.action || (clip.structural_only ? 'Requires narrative reconstruction' : ''),
+        camera: clip.camera || (clip.structural_only ? 'Requires motion-board review' : ''),
+        lighting: clip.lighting || (clip.structural_only ? 'Requires visual review' : ''),
+        audio_sfx_dialogue: clip.audio_sfx_dialogue || clip.audio || clip.sfx || (clip.structural_only ? 'Requires audio review' : ''),
         reference_dependencies: Array.isArray(clip.reference_dependencies) ? clip.reference_dependencies : [],
-        risk: clip.risk || clip.continuity_risk || '',
-        dominant_action: clip.dominant_action || clip.action || '',
-        dominant_camera_strategy: clip.dominant_camera_strategy || clip.camera || '',
+        risk: clip.risk || clip.continuity_risk || (clip.structural_only ? 'Structure only; continuity not proven' : ''),
+        dominant_action: clip.dominant_action || clip.action || (clip.structural_only ? 'Unresolved' : ''),
+        dominant_camera_strategy: clip.dominant_camera_strategy || clip.camera || (clip.structural_only ? 'Unresolved' : ''),
+        structural_only: clip.structural_only === true,
+        source_relative_path: clip.source_relative_path || '',
     }));
 }
 
 function normalizeMotionBoard(rawValue = []) {
     return arrayFromMaybe(rawValue).map((shot) => ({
         clip_id: shot.clip_id || shot.id || '',
-        shot_size: shot.shot_size || shot.size || '',
-        camera_movement: shot.camera_movement || shot.camera || '',
-        movement_risk: shot.movement_risk || '',
-        identity_risk: shot.identity_risk || '',
-        continuity_notes: shot.continuity_notes || shot.notes || '',
+        shot_size: shot.shot_size || shot.size || (shot.structural_only ? 'unresolved' : ''),
+        camera_movement: shot.camera_movement || shot.camera || (shot.structural_only ? 'requires review' : ''),
+        movement_risk: shot.movement_risk || (shot.structural_only ? 'unreviewed' : ''),
+        identity_risk: shot.identity_risk || (shot.structural_only ? 'unreviewed' : ''),
+        continuity_notes: shot.continuity_notes || shot.notes || (shot.structural_only ? 'Structure only; continuity not proven.' : ''),
         duration_lock: shot.duration_lock === true || shot.duration_lock === 'true',
+        structural_only: shot.structural_only === true,
+        source_relative_path: shot.source_relative_path || '',
     }));
 }
 
@@ -156,9 +166,9 @@ function normalizeDashboardAssets(rawReader, rootPath) {
 
 function normalizePromptPacks(rawReader) {
     return (rawReader.files || [])
-        .filter((file) => file.extension === '.md' && /(^|\/)prompts?\//.test(file.relative_path))
+        .filter((file) => file.extension === '.md' && (/^seedance_prompts\.md$/i.test(file.relative_path) || /(^|\/)prompts?\//.test(file.relative_path)))
         .map((file, index) => ({
-            clip_id: '',
+            clip_id: structuralClipId(file.name, index),
             generator: file.relative_path.includes('flow') ? 'flow_omni' : 'seedance_dreamina',
             prompt_path: file.path,
             model: '',
@@ -187,7 +197,9 @@ function normalizeAcceptedSeconds(rawReader) {
 }
 
 function normalizeSubmitRecords(rawReader) {
-    return (rawReader.parsed?.submitRecords?.records || []).map((record) => ({
+    const structured = rawReader.parsed?.submitRecords?.records || [];
+    const artifacts = rawReader.parsed?.submitArtifacts?.records || [];
+    return [...structured, ...artifacts].map((record) => ({
         clip_id: record.clip_id || '',
         subcommand: record.subcommand || '',
         requested_model: record.requested_model || '',
@@ -200,6 +212,7 @@ function normalizeSubmitRecords(rawReader) {
         download_dir: absolutePath(rawReader.rootPath, record.download_dir || ''),
         command_log_path: absolutePath(rawReader.rootPath, record.command_log_path || ''),
         downloaded: record.downloaded === true,
+        source_relative_path: record.source_relative_path || '',
     }));
 }
 
@@ -302,8 +315,16 @@ export function normalizeProductionReaderState(rawReader) {
 
     const rootPath = rawReader.rootPath;
     const markdown = rawReader.markdown || {};
-    const storyboard = normalizeStoryboard(rawReader.parsed?.storyboardJson?.value);
-    const motionBoard = normalizeMotionBoard(rawReader.parsed?.motionBoardJson?.value);
+    const storyboardSource = rawReader.parsed?.storyboardJson?.parsed
+        ? rawReader.parsed.storyboardJson.value
+        : rawReader.parsed?.storySceneBundle?.parsed
+            ? rawReader.parsed.storySceneBundle.value
+            : rawReader.parsed?.storyboardMarkdown?.records;
+    const motionBoardSource = rawReader.parsed?.motionBoardJson?.parsed
+        ? rawReader.parsed.motionBoardJson.value
+        : rawReader.parsed?.motionBoardMarkdown?.records;
+    const storyboard = normalizeStoryboard(storyboardSource);
+    const motionBoard = normalizeMotionBoard(motionBoardSource);
     const assets = normalizeDashboardAssets(rawReader, rootPath);
     const promptPacks = normalizePromptPacks(rawReader);
     const acceptedSeconds = normalizeAcceptedSeconds(rawReader);
@@ -311,14 +332,17 @@ export function normalizeProductionReaderState(rawReader) {
     const heartbeatRecords = normalizeHeartbeatRecords(rawReader);
     const blockers = Array.from(new Set(rawReader.blockers || []));
     const finalVideoPath = joinPath(rootPath, rawReader.layout === 'A' ? 'final/final.mp4' : 'edit/final.mp4');
-    const reportPath = rawReader.parsed?.report?.path || firstMarkdownPath(markdown, ['report', 'report.md']);
+    const reportPath = rawReader.parsed?.report?.path || rawReader.parsed?.capcutReport?.path || firstMarkdownPath(markdown, ['report', 'report.md']);
     const concatListPath = joinPath(rootPath, rawReader.layout === 'A' ? 'final/concat_list.txt' : 'edit/concat_list.txt');
     const finalVideoExists = rawReader.files?.some((file) => file.path === finalVideoPath) === true;
     const reportExists = Boolean(reportPath);
     const concatExists = rawReader.files?.some((file) => file.path === concatListPath) === true;
-    const briefPath = firstMarkdownPath(markdown, ['brief', 'intake']);
-    const scriptPath = firstMarkdownPath(markdown, ['script']);
+    const briefPath = firstMarkdownPath(markdown, ['brief', 'intake', 'script']);
+    const scriptPath = firstMarkdownPath(markdown, ['script']) || rawReader.parsed?.storySceneBundle?.path || '';
     const title = firstMarkdownHeading(markdown, ['brief', 'intake', 'report']) || basename(rootPath) || 'Imported production';
+    const hasSummaryBrief = Boolean(markdown.brief || markdown.intake);
+    const structuralBrief = !hasSummaryBrief && Boolean(markdown.script);
+    const sceneBundle = rawReader.parsed?.storySceneBundle?.value || {};
     const qaArtifacts = {
         contactSheetPaths: (rawReader.files || []).filter((file) => /contact/i.test(file.name)).map((file) => file.path),
         frameSamplePaths: (rawReader.files || []).filter((file) => /(^|\/)(frames?|qa)\//.test(file.relative_path) && ['.jpg', '.jpeg', '.png', '.webp'].includes(file.extension)).map((file) => file.path),
@@ -355,22 +379,24 @@ export function normalizeProductionReaderState(rawReader) {
             production_id: basename(rootPath),
             title,
             root_path: rootPath,
-            route: rawReader.layout === 'A' ? 'seedance' : 'both',
+            route: rawReader.layout === 'A' || rawReader.variant === 'gangnam_scene_bundle' ? 'seedance' : 'both',
             target_platform: '',
-            aspect_ratio: '',
+            aspect_ratio: sceneBundle.aspect_ratio || '',
             status: stateBlockers.length ? 'partial_blocked' : 'imported',
             created_at: rawReader.readAt || nowIso(),
             updated_at: rawReader.readAt || nowIso(),
         },
         brief: {
-            concept: markdown.brief?.metadata?.concept || markdown.intake?.metadata?.concept || markdown.brief?.heading || markdown.intake?.heading || '',
-            logline: markdown.brief?.metadata?.logline || markdown.intake?.metadata?.logline || '',
+            concept: markdown.brief?.metadata?.concept || markdown.intake?.metadata?.concept || markdown.brief?.heading || markdown.intake?.heading || (structuralBrief ? 'Imported script structure' : ''),
+            logline: markdown.brief?.metadata?.logline || markdown.intake?.metadata?.logline || (hasSummaryBrief ? 'A summary artifact is present; narrative content was not copied.' : structuralBrief ? 'A script artifact is present; narrative content was not copied.' : ''),
             script_path: scriptPath,
             dialogue_required: false,
             subtitles_required: false,
             music_required: false,
             natural_sfx_required: false,
             stop_loss_rule: 'Imported production state: missing structured artifacts remain blockers, not success.',
+            structural_only: structuralBrief,
+            source_path: briefPath,
         },
         storyboard,
         motionBoard,
@@ -385,7 +411,7 @@ export function normalizeProductionReaderState(rawReader) {
         finalReport: {
             final_video_path: finalVideoPath,
             production_folder: rootPath,
-            generator_route: rawReader.layout === 'A' ? 'seedance' : 'both',
+            generator_route: rawReader.layout === 'A' || rawReader.variant === 'gangnam_scene_bundle' ? 'seedance' : 'both',
             concat_list_path: concatListPath,
             ffprobe_verified: ffprobeExists,
             ffprobe_path: ffprobePath,

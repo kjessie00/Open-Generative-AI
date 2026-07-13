@@ -19,6 +19,8 @@ const { readProductionFolder } = require('../electron/lib/productionReader.js');
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const layoutARoot = path.join(repoRoot, 'src/fixtures/pipeline/layoutAProduction/20260713-studio-fixture');
 const layoutBRoot = path.join(repoRoot, 'src/fixtures/pipeline/sampleProductionFolder');
+const gangnamVariantRoot = path.join(repoRoot, 'src/fixtures/pipeline/realLayoutVariants/gangnamSceneBundle');
+const markdownVariantRoot = path.join(repoRoot, 'src/fixtures/pipeline/realLayoutVariants/markdownScenePack');
 
 function withTempDir(name, callback) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
@@ -95,6 +97,67 @@ test('nested production folder is selected as Layout B without confusing its par
     });
 });
 
+test('Gangnam scene-bundle variant reconstructs sanitized structure and keeps quality gates blocked', () => {
+    const raw = readProductionFolder(gangnamVariantRoot);
+    const state = normalizeProductionReaderState(raw);
+    const serialized = JSON.stringify(raw);
+
+    assert.equal(raw.layout, 'B');
+    assert.equal(raw.variant, 'gangnam_scene_bundle');
+    assert.equal(raw.parsed.storySceneBundle.parsed, true);
+    assert.equal(raw.parsed.storySceneBundle.value.scenes.length, 1);
+    assert.equal(serialized.includes('synthetic content intentionally discarded'), false);
+    assert.equal(serialized.includes('this value must never enter reader output'), false);
+    assert.equal(raw.parsed.capcutReport.value, null);
+    assert.deepEqual(raw.parsed.capcutReport.keys, ['fixture_kind', 'timeline_present']);
+    assert.equal(raw.parsed.ledgerCsv.records[0].note, undefined);
+
+    assert.equal(state.project.route, 'seedance');
+    assert.equal(state.project.aspect_ratio, '9:16');
+    assert.equal(validateProductionBrief(state).ok, true);
+    assert.equal(state.storyboard.length, 1);
+    assert.equal(state.storyboard[0].structural_only, true);
+    assert.equal(state.motionBoard.length, 0);
+    assert.equal(state.promptPacks.length, 1);
+    assert.equal(state.submitRecords.length, 1);
+    assert.equal(state.submitRecords[0].status, 'artifact_present_unverified');
+    assert.ok(state.finalReport.report_path.endsWith('reports/capcut_report.json'));
+    assert.ok(state.blockers.includes('MISSING_STORYBOARD_CONTINUITY_PACKET'));
+    assert.ok(state.blockers.includes('MISSING_MOTION_BOARD'));
+    assert.ok(state.blockers.includes('MISSING_IMAGE_DASHBOARD'));
+    assert.ok(state.blockers.includes('MISSING_ACCEPTED_SECONDS'));
+    assert.ok(state.blockers.includes('OUTPUT_QUALITY_NOT_PROVEN'));
+    assert.equal(validateFinalReady(state).ok, false);
+});
+
+test('Markdown scene-pack variant reconstructs board, motion, prompts, and media without inventing approval', () => {
+    const raw = readProductionFolder(markdownVariantRoot);
+    const state = normalizeProductionReaderState(raw);
+
+    assert.equal(raw.layout, 'B');
+    assert.equal(raw.variant, 'markdown_scene_pack');
+    assert.equal(raw.parsed.storyboardMarkdown.parsed, true);
+    assert.equal(raw.parsed.motionBoardMarkdown.parsed, true);
+    assert.equal(validateProductionBrief(state).ok, true);
+    assert.equal(state.brief.structural_only, true);
+    assert.equal(state.storyboard.length, 1);
+    assert.equal(state.storyboard[0].clip_id, 'clip_001');
+    assert.equal(validateStoryboardClip(state.storyboard[0]).ok, false);
+    assert.equal(state.motionBoard.length, 1);
+    assert.equal(state.motionBoard[0].duration_lock, false);
+    assert.equal(state.promptPacks.length, 1);
+    assert.equal(state.assets.length, 1);
+    assert.equal(state.imageDashboard.parsed, false);
+    assert.equal(state.reviewGates.find((gate) => gate.type === 'dashboard')?.status, 'BLOCK');
+    assert.equal(state.reviewGates.find((gate) => gate.type === 'accepted_seconds')?.status, 'BLOCK');
+    assert.ok(state.blockers.includes('MISSING_STORYBOARD_CONTINUITY_PACKET'));
+    assert.ok(state.blockers.includes('MISSING_MOTION_BOARD'));
+    assert.ok(state.blockers.includes('MISSING_IMAGE_DASHBOARD'));
+    assert.ok(state.blockers.includes('MISSING_ACCEPTED_SECONDS'));
+    assert.ok(state.blockers.includes('OUTPUT_QUALITY_NOT_PROVEN'));
+    assert.equal(validateFinalReady(state).ok, false);
+});
+
 test('malformed JSON, JSONL, dashboard JavaScript, CSV, and accepted-seconds markdown fail closed', () => {
     withTempDir('reader-malformed', (root) => {
         fs.mkdirSync(path.join(root, 'assets'));
@@ -104,6 +167,9 @@ test('malformed JSON, JSONL, dashboard JavaScript, CSV, and accepted-seconds mar
         fs.mkdirSync(path.join(root, 'dreamina_outputs'));
         fs.mkdirSync(path.join(root, 'edit'));
         fs.writeFileSync(path.join(root, 'brief.md'), '# Malformed fixture\n');
+        fs.writeFileSync(path.join(root, 'story_scene_bundle.json'), '{broken');
+        fs.writeFileSync(path.join(root, 'storyboard/beat_board.md'), 'no headings or structural ids\n');
+        fs.writeFileSync(path.join(root, 'motion_board/notes.md'), '# Motion notes without scene identifiers\n');
         fs.writeFileSync(path.join(root, 'storyboard/storyboard.json'), '{broken');
         fs.writeFileSync(path.join(root, 'motion_board/motion_board.json'), '[broken');
         fs.writeFileSync(path.join(root, 'image_dashboard/image-dashboard-data.js'), 'export default not-json;');
@@ -117,7 +183,10 @@ test('malformed JSON, JSONL, dashboard JavaScript, CSV, and accepted-seconds mar
 
         assert.equal(raw.layout, 'B');
         assert.equal(raw.parsed.storyboardJson.parsed, false);
+        assert.equal(raw.parsed.storySceneBundle.parsed, false);
+        assert.equal(raw.parsed.storyboardMarkdown.parsed, false);
         assert.equal(raw.parsed.motionBoardJson.parsed, false);
+        assert.equal(raw.parsed.motionBoardMarkdown.parsed, false);
         assert.equal(raw.parsed.imageDashboard.parsed, false);
         assert.equal(raw.parsed.submitRecords.parsed, false);
         assert.equal(raw.parsed.heartbeatLog.parsed, false);
@@ -145,6 +214,10 @@ test('sensitive names, ignored directories, and symlink escapes are skipped with
             fs.writeFileSync(path.join(root, 'secret-token.txt'), 'DO_NOT_LEAK_MARKER');
             fs.writeFileSync(path.join(root, '.env'), 'DO_NOT_LEAK_MARKER');
             fs.writeFileSync(path.join(root, 'api_key.txt'), 'DO_NOT_LEAK_MARKER');
+            fs.writeFileSync(path.join(root, 'story_scene_bundle.json'), JSON.stringify({
+                video_id: 'safe_fixture',
+                scenes: [{ scene_id: '../../outside', narrative: 'DO_NOT_LEAK_MARKER' }],
+            }));
             fs.writeFileSync(path.join(root, '.git/config'), 'DO_NOT_LEAK_MARKER');
             fs.writeFileSync(path.join(root, 'node_modules/private.js'), 'DO_NOT_LEAK_MARKER');
             fs.writeFileSync(path.join(root, 'credentials/private.txt'), 'DO_NOT_LEAK_MARKER');
@@ -161,6 +234,7 @@ test('sensitive names, ignored directories, and symlink escapes are skipped with
             assert.equal(raw.security.skipped.sensitive_name >= 4, true);
             assert.equal(raw.security.skipped.ignored_directory, 2);
             assert.equal(raw.security.skipped.symlink, 1);
+            assert.equal(raw.parsed.storySceneBundle.value.scenes[0].scene_id, 'scene_01');
         } finally {
             fs.rmSync(outside, { force: true });
         }

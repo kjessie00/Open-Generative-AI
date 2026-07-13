@@ -347,6 +347,18 @@ function parseCsv(root, filePath, label) {
     return { label, path: filePath, relative_path: safeRelative(root, filePath), exists: true, parsed: errors.length === 0, records, errors };
 }
 
+function parseCostCsv(root, filePath) {
+    const parsed = parseCsv(root, filePath, 'cost ledger CSV');
+    if (!parsed.parsed) return parsed;
+    const allowed = /^(?:credit_count|credits?|cost|amount|known_credits)$/i;
+    return {
+        ...parsed,
+        records: parsed.records.map((record) => Object.fromEntries(
+            Object.entries(record).filter(([key]) => allowed.test(key)),
+        )),
+    };
+}
+
 function splitCsvLine(line) {
     const cells = [];
     let current = '';
@@ -403,20 +415,160 @@ function parseBlockers(root, filePath) {
     return { ...record, parsed: true, blockers, error: '' };
 }
 
+function structuralNumber(value) {
+    const match = String(value || '').match(/(?:scene|beat|shot|clip|씬|장면|비트)[\s_:#-]*(\d+)/i);
+    return match ? Number(match[1]) : null;
+}
+
+function structuralIds(value, index) {
+    const number = structuralNumber(value) || index + 1;
+    const paddedScene = String(number).padStart(2, '0');
+    const paddedClip = String(number).padStart(3, '0');
+    return {
+        scene_id: `scene_${paddedScene}`,
+        clip_id: `clip_${paddedClip}`,
+    };
+}
+
+function parseStorySceneBundle(root, filePath) {
+    const parsed = parseJsonFile(root, filePath, 'story_scene_bundle.json');
+    if (!parsed.parsed || !parsed.value || typeof parsed.value !== 'object' || !Array.isArray(parsed.value.scenes)) {
+        return { ...parsed, parsed: false, value: null, error: parsed.error || 'missing scenes array' };
+    }
+
+    const scenes = parsed.value.scenes.map((scene, index) => {
+        const ids = structuralIds(scene?.scene_id || scene?.clip_id || scene?.id || scene?.scene || '', index);
+        const duration = Number(scene?.duration_seconds || scene?.duration || 0);
+        return {
+            scene_id: ids.scene_id,
+            clip_id: ids.clip_id,
+            duration_seconds: Number.isFinite(duration) && duration > 0 ? duration : 0,
+            structural_only: true,
+            source_relative_path: safeRelative(root, filePath),
+        };
+    });
+
+    return {
+        ...parsed,
+        value: {
+            video_id_present: typeof parsed.value.video_id === 'string' && parsed.value.video_id.trim().length > 0,
+            aspect_ratio: typeof parsed.value.aspect_ratio === 'string' && /^[0-9]+:[0-9]+$/.test(parsed.value.aspect_ratio)
+                ? parsed.value.aspect_ratio
+                : '',
+            duration_seconds: Number.isFinite(Number(parsed.value.duration_seconds)) ? Number(parsed.value.duration_seconds) : 0,
+            audio_path_present: typeof parsed.value.audio_path === 'string' && parsed.value.audio_path.trim().length > 0,
+            scenes,
+        },
+    };
+}
+
+function parseStructuralMarkdown(root, files, label, role) {
+    const records = [];
+    const errors = [];
+    for (const file of files) {
+        if (!isWithinRoot(root, file.path) || !existsFile(file.path) || isSensitiveName(file.name)) continue;
+        const read = safeReadText(file.path);
+        if (!read.ok) {
+            errors.push(`${file.relative_path}: ${read.error}`);
+            continue;
+        }
+        const headingLines = read.content.split(/\r?\n/).filter((line) => /^#{1,4}\s+/.test(line.trim()));
+        const candidates = headingLines
+            .map((line) => line.replace(/^#{1,4}\s+/, '').trim())
+            .filter((heading) => structuralNumber(heading));
+        const fileNumber = structuralNumber(file.name);
+        const identifiers = role === 'motion_board' && fileNumber
+            ? [file.name]
+            : candidates.length
+                ? candidates
+                : (fileNumber ? [file.name] : []);
+        identifiers.forEach((identifier, index) => {
+            const ids = structuralIds(identifier, records.length + index);
+            records.push({
+                ...ids,
+                structural_only: true,
+                evidence_kind: role,
+                source_relative_path: file.relative_path,
+                heading_count: headingLines.length,
+                duration: 0,
+                duration_lock: false,
+            });
+        });
+    }
+    return {
+        label,
+        exists: files.length > 0,
+        parsed: files.length > 0 && records.length > 0 && errors.length === 0,
+        records,
+        errors,
+        paths: files.map((file) => file.path),
+        relative_paths: files.map((file) => file.relative_path),
+        error: errors.length ? errors.join('; ') : (files.length && !records.length ? 'no structural scene identifiers found' : files.length ? '' : 'missing'),
+    };
+}
+
+function parseSubmitArtifacts(files) {
+    const submitFiles = files.filter((file) => /(^|\/)dreamina_outputs\/submit_[^/]+\.txt$/i.test(file.relative_path));
+    return {
+        label: 'submit text artifacts',
+        exists: submitFiles.length > 0,
+        parsed: submitFiles.length > 0,
+        records: submitFiles.map((file, index) => {
+            const ids = structuralIds(file.name, index);
+            return {
+                clip_id: ids.clip_id,
+                status: 'artifact_present_unverified',
+                source_relative_path: file.relative_path,
+            };
+        }),
+        paths: submitFiles.map((file) => file.path),
+        error: submitFiles.length ? '' : 'missing',
+    };
+}
+
+function parseReportSummary(root, filePath) {
+    const parsed = parseJsonFile(root, filePath, 'capcut_report.json');
+    if (!parsed.parsed || !parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+        return { ...parsed, parsed: false, value: null, keys: [], error: parsed.error || 'report must be an object' };
+    }
+    return {
+        ...parsed,
+        value: null,
+        keys: Object.keys(parsed.value).filter((key) => /^[A-Za-z0-9_-]{1,80}$/.test(key) && !isSensitiveName(key) && !/private/i.test(key)).sort(),
+        source_type: 'capcut_report_structure',
+    };
+}
+
+function detectVariant(root) {
+    if (existsFile(path.join(root, 'story_scene_bundle.json'))
+        && existsFile(path.join(root, 'SUMMARY.md'))
+        && existsDir(path.join(root, 'dreamina_outputs'))) {
+        return 'gangnam_scene_bundle';
+    }
+    if (existsFile(path.join(root, 'script.md'))
+        && existsDir(path.join(root, 'storyboard'))
+        && existsDir(path.join(root, 'motion_board'))
+        && existsDir(path.join(root, 'prompts'))) {
+        return 'markdown_scene_pack';
+    }
+    return '';
+}
+
 function detectLayout(root) {
     const base = path.basename(root);
     const parent = path.basename(path.dirname(root));
     const looksLikeRun = /^\d{8}-.+/.test(base) || parent === 'short_drama_pipeline_runs';
     const hasLayoutADirs = ['intake', 'storyboard', 'prompts', 'generated', 'final', 'qa'].filter((name) => existsDir(path.join(root, name))).length >= 3;
-    const hasLayoutBMarkers = existsFile(path.join(root, 'brief.md')) || existsDir(path.join(root, 'assets')) || existsDir(path.join(root, 'dreamina_outputs'));
+    const variant = detectVariant(root);
+    const hasLayoutBMarkers = Boolean(variant) || existsFile(path.join(root, 'brief.md')) || existsDir(path.join(root, 'assets')) || existsDir(path.join(root, 'dreamina_outputs'));
     const nestedProduction = path.join(root, 'production');
 
     if (!hasLayoutBMarkers && existsDir(nestedProduction) && (existsFile(path.join(nestedProduction, 'brief.md')) || existsDir(path.join(nestedProduction, 'assets')))) {
-        return { layout: 'B', root: nestedProduction, selectedRoot: root };
+        return { layout: 'B', variant: detectVariant(nestedProduction) || 'classic', root: nestedProduction, selectedRoot: root };
     }
-    if (hasLayoutBMarkers) return { layout: 'B', root, selectedRoot: root };
-    if (looksLikeRun || hasLayoutADirs) return { layout: 'A', root, selectedRoot: root };
-    return { layout: 'unknown', root, selectedRoot: root };
+    if (hasLayoutBMarkers) return { layout: 'B', variant: variant || 'classic', root, selectedRoot: root };
+    if (looksLikeRun || hasLayoutADirs) return { layout: 'A', variant: 'dated_run', root, selectedRoot: root };
+    return { layout: 'unknown', variant: '', root, selectedRoot: root };
 }
 
 function deriveMarkdown(root, layout, files) {
@@ -426,7 +578,7 @@ function deriveMarkdown(root, layout, files) {
         markdown.script = markdownRecord(root, findFirst(root, ['intake/script.md', 'script.md']), 'script');
         markdown.report = markdownRecord(root, findFirst(root, ['report.md', 'final/report.md']), 'report');
     } else {
-        markdown.brief = markdownRecord(root, findFirst(root, ['brief.md']), 'brief');
+        markdown.brief = markdownRecord(root, findFirst(root, ['brief.md', 'SUMMARY.md']), 'brief');
         markdown.script = markdownRecord(root, findFirst(root, ['script.md']), 'script');
         markdown.report = markdownRecord(root, findFirst(root, ['report.md', 'final/report.md', 'edit/report.md']), 'report');
     }
@@ -452,31 +604,52 @@ function readProductionFolder(rootPath, options = {}) {
         'storyboard/clips.json',
         'storyboard.json',
     ]) || findByName(files, ['storyboard.json']), 'storyboard JSON');
+    const storySceneBundle = parseStorySceneBundle(root, findFirst(root, ['story_scene_bundle.json']) || findByName(files, ['story_scene_bundle.json']));
     const motionBoardJson = parseJsonFile(root, findFirst(root, [
         'motion_board/motion_board.json',
         'motion_board/shots.json',
         'motion_board.json',
     ]) || findByName(files, ['motion_board.json']), 'motion board JSON');
+    const storyboardMarkdown = parseStructuralMarkdown(
+        root,
+        files.filter((file) => file.extension === '.md' && /(^|\/)storyboard\//.test(file.relative_path)),
+        'storyboard markdown structure',
+        'storyboard',
+    );
+    const motionBoardMarkdown = parseStructuralMarkdown(
+        root,
+        files.filter((file) => file.extension === '.md' && /(^|\/)motion_board\//.test(file.relative_path)),
+        'motion board markdown structure',
+        'motion_board',
+    );
     const imageDashboard = parseImageDashboardJs(root, findFirst(root, [
         'image_dashboard/image-dashboard-data.js',
         'image_dashboard/image_dashboard_data.js',
         'image-dashboard-data.js',
     ]) || findByName(files, ['image-dashboard-data.js', 'image_dashboard_data.js']));
     const submitRecords = parseJsonl(root, findByName(files, ['submit_records.jsonl']), 'submit_records.jsonl');
+    const submitArtifacts = parseSubmitArtifacts(files);
     const heartbeatLog = parseJsonl(root, findByName(files, ['heartbeat_log.jsonl']), 'heartbeat_log.jsonl');
     const costLedgerJsonl = parseJsonl(root, findByName(files, ['cost_ledger.jsonl']), 'cost_ledger.jsonl');
-    const ledgerCsv = parseCsv(root, findFirst(root, ['ledger.csv']) || findByName(files, ['ledger.csv']), 'ledger.csv');
+    const ledgerCsv = parseCostCsv(root, findFirst(root, ['ledger.csv', 'cost_ledger.csv']) || findByName(files, ['ledger.csv', 'cost_ledger.csv']));
     const acceptedSeconds = parseAcceptedSeconds(root, findFirst(root, ['edit/accepted_seconds.md', 'qa/accepted_seconds.md', 'accepted_seconds.md']) || findByName(files, ['accepted_seconds.md']));
     const blockersMd = parseBlockers(root, findFirst(root, ['blockers.md', 'qa/blockers.md', 'reviews/blockers.md']) || findByName(files, ['blockers.md']));
     const report = markdownRecord(root, findFirst(root, ['report.md', 'final/report.md', 'edit/report.md']) || findByName(files, ['report.md']), 'report.md');
+    const capcutReport = parseReportSummary(root, findFirst(root, ['reports/capcut_report.json']) || findByName(files, ['capcut_report.json']));
+
+    const storyboardParsed = storyboardJson.parsed || storySceneBundle.parsed || storyboardMarkdown.parsed;
+    const motionBoardParsed = motionBoardJson.parsed || motionBoardMarkdown.parsed;
+    const structuralStoryboard = storySceneBundle.parsed || storyboardMarkdown.parsed;
+    const structuralMotionBoard = motionBoardMarkdown.parsed;
+    const briefEvidence = markdown.brief || markdown.intake || markdown.script;
 
     const blockers = [];
-    if (!markdown.brief && !markdown.intake) blockers.push(BLOCKERS.MISSING_PRODUCTION_BRIEF);
-    if (!storyboardJson.parsed) blockers.push(BLOCKERS.MISSING_STORYBOARD_CONTINUITY_PACKET);
-    if (!motionBoardJson.parsed) blockers.push(BLOCKERS.MISSING_MOTION_BOARD);
+    if (!briefEvidence) blockers.push(BLOCKERS.MISSING_PRODUCTION_BRIEF);
+    if (!storyboardParsed || structuralStoryboard) blockers.push(BLOCKERS.MISSING_STORYBOARD_CONTINUITY_PACKET);
+    if (!motionBoardParsed || structuralMotionBoard) blockers.push(BLOCKERS.MISSING_MOTION_BOARD);
     if (!imageDashboard.parsed) blockers.push(BLOCKERS.MISSING_IMAGE_DASHBOARD);
     if (!acceptedSeconds.records?.length) blockers.push(BLOCKERS.MISSING_ACCEPTED_SECONDS);
-    if (!report?.exists) blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+    if (!report?.exists || capcutReport.parsed) blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
     blockers.push(...(blockersMd.blockers || []));
 
     return {
@@ -484,20 +657,26 @@ function readProductionFolder(rootPath, options = {}) {
         rootPath: root,
         selectedRoot: detected.selectedRoot,
         layout: detected.layout,
+        variant: detected.variant,
         readAt: new Date().toISOString(),
         files,
         markdown,
         parsed: {
             storyboardJson,
+            storySceneBundle,
+            storyboardMarkdown,
             motionBoardJson,
+            motionBoardMarkdown,
             imageDashboard,
             submitRecords,
+            submitArtifacts,
             heartbeatLog,
             costLedgerJsonl,
             ledgerCsv,
             acceptedSeconds,
             blockersMd,
             report,
+            capcutReport,
         },
         blockers: Array.from(new Set(blockers)),
         security: {
