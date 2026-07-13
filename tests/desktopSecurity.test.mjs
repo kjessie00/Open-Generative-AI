@@ -136,9 +136,13 @@ async function collectActiveGraph(entrypoints) {
 
 test('default package lifecycle is only the local Vite/Electron studio', async () => {
     const pkg = JSON.parse(await source('package.json'));
+    const indexHtml = await source('index.html');
     assert.equal(pkg.scripts.dev, 'vite');
     assert.equal(pkg.scripts.build, 'vite build');
     assert.equal(pkg.scripts.start, 'npm run build && electron .');
+    assert.match(pkg.description, /Local Electron workbench/);
+    assert.match(indexHtml, /<title>Cinematic Pipeline Studio<\/title>/);
+    assert.doesNotMatch(indexHtml, /free, open-source|20\+ models|MuAPI/i);
 
     for (const name of ['dev', 'build', 'start']) {
         assert.doesNotMatch(pkg.scripts[name], /\bnext\b|\bapp\//i);

@@ -37,6 +37,7 @@ production 완료를 선언할 수는 없다. 실제 Electron GUI에서 10개 co
 - 상세 reader 증거: `docs/ui_integration/20_production_reader_validation.md`
 - renderer 계약 증거: `docs/ui_integration/22_renderer_contract_validation.md`
 - offline dependency 증거: `docs/ui_integration/23_offline_dependency_audit.md`
+- 운영 시작 안내: repository root `README.md`
 
 Jessie가 승인한 `release/`와 `/tmp/open-generative-ai-security-review-20260713-p0` 삭제는 완료되었고 두 경로는 재생성되지 않았다.
 

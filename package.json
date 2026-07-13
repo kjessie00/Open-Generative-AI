@@ -1,7 +1,7 @@
 {
   "name": "open-generative-ai",
-  "description": "Open-source alternative to HF AI — AI image, video, cinema and lip sync studio",
-  "homepage": "https://github.com/Anil-matcha/Open-Generative-AI",
+  "description": "Local Electron workbench for previewing, auditing, and reporting Jessie's cinematic video pipeline",
+  "homepage": "https://github.com/kjessie00/Open-Generative-AI",
   "private": true,
   "version": "2.0.0",
   "license": "MIT",
