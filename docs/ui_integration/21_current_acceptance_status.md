@@ -10,6 +10,14 @@
 
 실제 Electron GUI는 외부망 차단 상태에서 실행되었고 10개 core panel/11-tab, preload IPC, 상태 복원, blocker/copy-only preview, 1440×900 및 1024×640 레이아웃이 검증되었다. fixture와 첫 번째 production의 native folder selection은 PASS다. 두 번째 production은 sidebar/preload로 UI state를 복원했지만 native sheet 자동화가 parent root를 반환하여 `NATIVE_FOLDER_SELECTION_ROOT2_GAP`이 남는다. main-process clipboard IPC와 실제 macOS trusted click은 write/read-back/hash equality 및 `executed:false`로 PASS했다. review/dashboard/accepted-seconds/final-quality는 계속 blocker다.
 
+후속 한국어 UI 실제 검증은 320×900, 768×900, 1024×768,
+1440×900에서 11개 한국어 메뉴와 패널, responsive 구조, AX tree, axe 0건,
+focus 표시와 details 키보드 조작을 확인했다. 다만 이 후속 회차의
+`Log.entryAdded`에는 exact URL이 없는 로컬 `ERR_FILE_NOT_FOUND` 2건이 남아
+`console-clean`은 BLOCK이고, 모바일 select의 키보드 선택 변경도 저장된 최종
+값이 `intake`라 증거 부족으로 BLOCK이다. 상세 증거는
+`docs/ui_integration/27_korean_gui_acceptance.md`를 따른다.
+
 ## 인수 기준 현황
 
 | 기준 | 상태 | 현재 증거 또는 남은 조건 |
@@ -18,9 +26,9 @@
 | AC2 Electron 보안 | VERIFIED | 외부 navigation deny-by-default, active provider/bridge 최소권한, 보안 regression 8/8 PASS |
 | AC3 renderer/main 경계 | VERIFIED | renderer global은 `window.filmPipeline`만 노출하고 main이 file/preview 경계를 소유; `window.localAI` undefined |
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았고 command preview만 허용 |
-| AC5 실제 GUI | PARTIAL PASS | 실제 window/preload/11-tab/fixture+첫 root native/state/blocked preview/trusted copy/visual PASS; 두 번째 root native selection만 BLOCK |
+| AC5 실제 GUI | PARTIAL PASS | 실제 window/preload/11-tab/fixture+첫 root native/state/blocked preview/trusted copy와 한국어 4-viewport/AX/axe/focus PASS; 두 번째 root native selection, 후속 local-file log URL과 mobile select 변경 증거는 BLOCK |
 | AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant golden 10/10 PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
-| AC7 자동 검증 | VERIFIED (root2 native exception) | network-denied 전체 74/74, lint, build 36 modules, diff check 및 실제 GUI runtime PASS |
+| AC7 자동 검증 | VERIFIED (명시된 GUI gaps 제외) | 후속 network-denied 전체 80/80, lint, build 40 modules, diff check 및 4-viewport 실제 GUI runtime PASS |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
 | AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds를 독립 상태로 유지 |
@@ -30,9 +38,9 @@
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- network-denied 전체 테스트: 74/74 PASS
+- network-denied 전체 테스트: 80/80 PASS
 - lint: PASS
-- Vite build: PASS, 36 modules
+- Vite build: PASS, 40 modules
 - `git diff --check`: PASS
 - 상세 reader 증거: `docs/ui_integration/20_production_reader_validation.md`
 - 실제 포맷 호환성 증거: `docs/ui_integration/24_real_layout_compatibility.md`
@@ -40,6 +48,7 @@
 - offline dependency 증거: `docs/ui_integration/23_offline_dependency_audit.md`
 - 운영 시작 안내: repository root `README.md`
 - 실제 Electron GUI 증거: `docs/ui_integration/25_electron_gui_acceptance.md`
+- 한국어 4-viewport GUI 증거: `docs/ui_integration/27_korean_gui_acceptance.md`
 - native/clipboard focused regression: 12/12 PASS
 - active Electron entrypoint focused security regression: 8/8 PASS
 - fresh runtime: `window.localAI === undefined`, `window.filmPipeline` 12 methods, legacy/unsafe enabled control 0, `file:` 7/external request 0, renderer console warning/error 0
@@ -62,6 +71,8 @@ Jessie가 승인한 `release/`와 `/tmp/open-generative-ai-security-review-20260
 1. 두 번째 production의 native folder selection은 사용자 직접 선택 또는 별도 macOS dialog harness로 재검증한다.
 2. 완전한 실제 날짜-run Layout A가 생기면 aggregate-only read-only probe를 수행한다.
 3. OSV 취약점 검사는 오프라인 DB가 제공되면 재실행하거나 `SCANNER_GAP`을 명시적으로 수용한다. fresh HOME deny-network OSV v2.4.0은 1,097 packages/4 filtered 뒤 exit 127과 `no offline version of the OSV database is available`을 반환했다.
-4. remote push는 수행하지 않았다. `main`의 로컬 커밋과 원격 상태는 별도 사실로 취급한다.
+4. 후속 한국어 GUI의 로컬 `ERR_FILE_NOT_FOUND` 2건은 exact URL을 보존하는 read-only 회차에서 원인을 분류한다. 그 전에는 이 회차의 전체 `console-clean`을 주장하지 않는다.
+5. 모바일 작업 단계 select는 키보드 선택 변경 후 값과 heading을 같은 저장 증거로 재검증한다.
+6. remote push는 수행하지 않았다. `main`의 로컬 커밋과 원격 상태는 별도 사실로 취급한다.
 
 본 회차의 GUI 자동화는 Jessie의 current-turn 승인 아래 외부망 차단으로 수행했다. 외부 계정 접근, generation/upload, deploy/release는 실행하지 않았다.

@@ -145,10 +145,10 @@ export function PipelineStudio() {
         };
 
         const body = el('div', { className: 'pipeline-layout' });
-        const panelHost = el('section', {
-            className: 'pipeline-panel-host',
-            attrs: { 'aria-label': TABS.find((tab) => tab.id === activeTab)?.panelTitle },
-        });
+        // The inner panelShell already owns the named section landmark. Keep
+        // this scroll container neutral so assistive tech does not announce a
+        // duplicate region with the same panel title.
+        const panelHost = el('div', { className: 'pipeline-panel-host' });
         const panelContent = el('div', { className: 'pipeline-panel-content' }, [
             PipelineStatusStrip({ state }),
             PipelineSafetySummary(),

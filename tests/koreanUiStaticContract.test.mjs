@@ -32,6 +32,8 @@ test('Korean pipeline information architecture has 11 steps in four groups', () 
     assert.match(sidebar, /el\('details'/);
     assert.doesNotMatch(sidebar, /['"]open['"]\s*:/, 'production details must default to collapsed');
     assert.doesNotMatch(studio, /el\('main'/, 'the renderer must not create a nested main landmark');
+    assert.match(studio, /el\('div', \{ className: 'pipeline-panel-host' \}\)/,
+        'the panel scroll host must stay neutral because panelShell owns the named region');
 });
 
 test('responsive and accessibility styles cover the required production breakpoints', () => {
@@ -49,6 +51,8 @@ test('responsive and accessibility styles cover the required production breakpoi
     assert.match(css, /@media \(min-width: 64rem\)/, '1024px layout must switch to grouped sidebar navigation');
     assert.match(css, /max-width: 80rem/, 'wide 1440px layout must cap readable content width');
     assert.match(css, /button:focus-visible[\s\S]*summary:focus-visible/);
+    assert.match(css, /outline: 2px solid var\(--color-primary, #22d3ee\)/,
+        'focus indicator must retain a visible fallback when legacy tokens are absent');
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
     assert.doesNotMatch(activeUi, /hover:scale|style\.cssText/, 'active UI must avoid scale effects and inline styling');
 
