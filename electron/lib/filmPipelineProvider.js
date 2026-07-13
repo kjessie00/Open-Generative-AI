@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
+const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 
 const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
@@ -1173,6 +1174,42 @@ function runSafeCommand(commandSpec = {}) {
     };
 }
 
+function g3ReviewContext(options = {}) {
+    const appApi = options.appApi || app;
+    return {
+        config: getConfig(options),
+        userDataPath: options.userDataPath || appApi.getPath('userData'),
+        readProductionFolderFn: options.readProductionFolderFn,
+        tokenSecret: options.g3TokenSecret,
+        durationByRelativePath: options.g3DurationByRelativePath,
+        now: options.g3Now,
+        randomBytes: options.g3RandomBytes,
+        renameFile: options.g3RenameFile,
+    };
+}
+
+function getG3ReviewWorkspace(options = {}) {
+    return g3ReviewDraftProvider.getG3ReviewWorkspace(g3ReviewContext(options));
+}
+
+function loadG3CandidatePreview(payload, options = {}) {
+    const result = g3ReviewDraftProvider.loadG3CandidatePreview(payload, g3ReviewContext(options));
+    sendProgress({ phase: result.loaded ? 'g3-preview-loaded' : 'g3-preview-blocked', executed: false });
+    return result;
+}
+
+function saveG3ReviewDraft(payload, options = {}) {
+    const result = g3ReviewDraftProvider.saveG3ReviewDraft(payload, g3ReviewContext(options));
+    sendProgress({ phase: 'g3-draft-saved', shotCount: result.state?.selections?.length || 0, executed: false });
+    return result;
+}
+
+function exportG3ReviewPacket(payload, options = {}) {
+    const result = g3ReviewDraftProvider.exportG3ReviewPacket(payload, g3ReviewContext(options));
+    sendProgress({ phase: 'g3-draft-exported', promotionReady: false, executed: false });
+    return result;
+}
+
 function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:get-config', () => getConfig(options));
     ipcApi.handle('film-pipeline:get-harness-contract-status', (_, pathArgument) => {
@@ -1206,6 +1243,13 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:preview-command', (_, commandSpec) => previewCommand(commandSpec));
     ipcApi.handle('film-pipeline:copy-command-preview', (_, commandSpec) => copyCommandPreview(commandSpec));
     ipcApi.handle('film-pipeline:run-safe-command', (_, commandSpec) => runSafeCommand(commandSpec));
+    ipcApi.handle('film-pipeline:get-g3-review-workspace', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getG3ReviewWorkspace(options);
+    });
+    ipcApi.handle('film-pipeline:load-g3-candidate-preview', (_, payload) => loadG3CandidatePreview(payload, options));
+    ipcApi.handle('film-pipeline:save-g3-review-draft', (_, payload) => saveG3ReviewDraft(payload, options));
+    ipcApi.handle('film-pipeline:export-g3-review-packet', (_, payload) => exportG3ReviewPacket(payload, options));
 }
 
 module.exports = {
@@ -1228,6 +1272,10 @@ module.exports = {
     getNewProjectDraftState,
     saveNewProjectDraft,
     copyNewProjectBuildCommand,
+    getG3ReviewWorkspace,
+    loadG3CandidatePreview,
+    saveG3ReviewDraft,
+    exportG3ReviewPacket,
     HARNESS_CONTRACT_ALLOWLIST,
     HAPPY_VIDEO_FACTORY_ROOT,
 };

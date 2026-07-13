@@ -104,7 +104,10 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.match(preload, /exposeInMainWorld\(['"]filmPipeline['"]/);
     assert.match(preload, /copyCommandPreview:[\s\S]*film-pipeline:copy-command-preview/);
     assert.match(preload, /copyNewProjectBuildCommand:[\s\S]*film-pipeline:copy-new-project-build-command/);
+    assert.match(preload, /getG3ReviewWorkspace:[\s\S]*film-pipeline:get-g3-review-workspace/);
+    assert.match(preload, /exportG3ReviewPacket:[\s\S]*film-pipeline:export-g3-review-packet/);
     assert.doesNotMatch(preload, /film-pipeline:set-config|\bsetConfig\b/);
+    assert.doesNotMatch(preload, /g3[^'"\n]*(?:promote|production-write|ledger-write)/i);
 });
 
 function assertDefaultElectronEntryBoundary(main, preload) {
@@ -178,16 +181,20 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(Object.keys(bridge).sort(), [
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
+        'exportG3ReviewPacket',
         'getConfig',
+        'getG3ReviewWorkspace',
         'getHarnessContractStatus',
         'getNewProjectDraftState',
         'listAssets',
         'listProductionChildren',
+        'loadG3CandidatePreview',
         'onProgress',
         'previewCommand',
         'readJsonl',
         'readProductionState',
         'runSafeCommand',
+        'saveG3ReviewDraft',
         'saveNewProjectDraft',
         'selectProductionRoot',
         'writePlanningFile',
@@ -208,6 +215,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.previewCommand({});
     await bridge.copyCommandPreview({});
     await bridge.runSafeCommand({});
+    await bridge.getG3ReviewWorkspace();
+    await bridge.loadG3CandidatePreview({ candidateToken: 'opaque' });
+    await bridge.saveG3ReviewDraft({ draft_id: 'draft' });
+    await bridge.exportG3ReviewPacket({ draft_id: 'draft' });
     assert.deepEqual(
         invocations.map(([channel]) => channel),
         [
@@ -225,6 +236,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:preview-command',
             'film-pipeline:copy-command-preview',
             'film-pipeline:run-safe-command',
+            'film-pipeline:get-g3-review-workspace',
+            'film-pipeline:load-g3-candidate-preview',
+            'film-pipeline:save-g3-review-draft',
+            'film-pipeline:export-g3-review-packet',
         ],
     );
     assert.deepEqual(
@@ -238,6 +253,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',
         'film-pipeline:list-assets',
+        'film-pipeline:get-g3-review-workspace',
     ]) {
         assert.deepEqual(
             invocations.find(([candidate]) => candidate === channel)[1],
@@ -248,6 +264,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:save-new-project-draft')[1],
         [{ production_id: 'test-project' }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:load-g3-candidate-preview')[1],
+        [{ candidateToken: 'opaque' }],
     );
 
     const unsubscribe = bridge.onProgress(() => {});

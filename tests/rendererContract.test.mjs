@@ -969,3 +969,92 @@ test('canonical finishing UI stays Korean, separates QC states, and exposes zero
     assert.equal(copyCalls, 0);
     assert.equal(buttons.some((button) => /실행|Run/i.test(button.textContent)), false);
 });
+
+test('G3 review workspace is Korean-first, keyboard-native, responsive, and separates machine QC from human decisions', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { G3ReviewWorkspace } = await import('../src/components/pipeline/G3ReviewWorkspace.js');
+    const changes = [];
+    const workspace = {
+        ok: true,
+        status: 'restored',
+        draft_id: 'g3_fixture',
+        project_id: 'project_01',
+        episode_id: 'episode_01',
+        promotion_ready: false,
+        label: '초안/비승격',
+        shots: [{ shot_id: 'SH01' }],
+        beats: [{ beat_id: 'BEAT01' }],
+        canonical_beat_list_available: true,
+        candidates: [{
+            candidate_token: 'opaque-token',
+            display_path: 'generated/downloads/SH01.mp4',
+            file_name: 'SH01.mp4',
+            size_bytes: 1024,
+            duration_sec: 5,
+            duration_authoritative: true,
+            preview_allowed: true,
+        }],
+        machine_qc_contract: 'short-drama-room-qc-report-v1',
+        machine_qc_read_only: true,
+        machine_qc: [{
+            shot_id: 'SH01', provider: 'seedance', deterministic_checks_passed: true,
+            dialogue_intelligibility_score: 0.96, pronunciation_risk_flag: false,
+            decision: 'accept', external_review_state: 'recorded_without_verdict', external_finding_count: 1,
+        }],
+        selections: [{
+            shot_id: 'SH01', candidate_token: 'opaque-token', chosen_provider: 'seedance',
+            dialogue_source: 'native_video_lipsync', beat_id: 'BEAT01', take_id: 'SH01_take_01',
+            source_in_sec: 0, source_out_sec: 4.5, transition_in: null,
+            selection_reason: '사람이 직접 확인함', notes: '',
+        }],
+        overall_notes: '',
+        blockers: [],
+        validation_blockers: [],
+        authoring_ready: true,
+        export_ready: true,
+    };
+    const node = G3ReviewWorkspace({
+        workspace,
+        activeShotId: 'SH01',
+        onActiveShotChange: (value) => changes.push(['shot', value]),
+        onSelectionChange: (shotId, field, value) => changes.push([shotId, field, value]),
+        onOverallNotesChange: (value) => changes.push(['notes', value]),
+        onPreview: async () => ({ loaded: true, mime_type: 'video/mp4', base64: 'Zml4dHVyZQ==' }),
+        onSave: () => changes.push(['save']),
+        onExport: () => changes.push(['export']),
+    });
+    const text = node.textContent;
+
+    assert.match(text, /G3 인간 검토 작업대/);
+    assert.match(text, /초안\/비승격/);
+    assert.match(text, /기계 QC · 읽기 전용/);
+    assert.match(text, /인간 선택 기록/);
+    assert.match(text, /자동 승인하지 않습니다/);
+    assert.equal(text.includes('/tmp/'), false);
+    assert.match(node.className, /border-t/);
+    assert.ok(descendants(node).some((item) => item.className.includes('md:grid-cols-[')));
+
+    const provider = byAttribute(node, 'select', 'id', 'g3-provider');
+    const candidate = byAttribute(node, 'select', 'id', 'g3-candidate-select');
+    const reason = byAttribute(node, 'textarea', 'id', 'g3-selection-reason');
+    const shotButton = byAttribute(node, 'button', 'aria-pressed', 'true');
+    assert.ok(provider && candidate && reason && shotButton);
+    assert.match(provider.className, /min-h-11/);
+    assert.match(candidate.className, /min-h-11/);
+    provider.value = 'flow';
+    await provider.dispatchEvent({ type: 'change' });
+    assert.deepEqual(changes.at(-1), ['SH01', 'chosen_provider', 'flow']);
+
+    const previewButton = byText(node, 'button', '선택 후보 미리보기');
+    await previewButton.dispatchEvent({ type: 'click' });
+    assert.equal(findAll(node, 'video').length, 1);
+    assert.equal(byText(node, 'button', 'canonical 형태로 초안 내보내기').disabled, false);
+
+    const loading = G3ReviewWorkspace({ workspace: { ...workspace, status: 'loading' } });
+    const empty = G3ReviewWorkspace({ workspace: { ...workspace, status: 'empty', shots: [], blockers: [] } });
+    const error = G3ReviewWorkspace({ workspace: { ...workspace, status: 'error', shots: [], blockers: ['G3_WORKSPACE_UNAVAILABLE'] } });
+    assert.match(loading.textContent, /불러오는 중/);
+    assert.match(empty.textContent, /shot_manifest\.json/);
+    assert.match(error.textContent, /안전하게 불러오지 못했습니다/);
+});

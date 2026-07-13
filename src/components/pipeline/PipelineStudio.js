@@ -1,6 +1,12 @@
 import samplePipelineState from '../../lib/pipeline/mockData.js';
 import { pipelineClient } from '../../lib/pipeline/client.js';
 import { normalizeProductionReaderState } from '../../lib/pipeline/productionNormalizer.js';
+import {
+    emptyG3ReviewState,
+    g3DraftPayload,
+    normalizeG3ReviewState,
+    updateG3Selection,
+} from '../../lib/pipeline/g3ReviewWorkspace.js';
 import { PipelineSidebar } from './PipelineSidebar.js';
 import { PipelineProjectBar } from './PipelineProjectBar.js';
 import { PipelineSafetySummary } from './PipelineSafetySummary.js';
@@ -86,6 +92,8 @@ export function PipelineStudio() {
         preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
     };
     let newProjectDraftValue = { ...newProjectDraftState.draft };
+    let g3Workspace = emptyG3ReviewState();
+    let g3ActiveShotId = '';
 
     const render = () => {
         container.innerHTML = '';
@@ -118,8 +126,13 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const loaded = await pipelineClient.readProductionState();
+                const [loaded, g3Loaded] = await Promise.all([
+                    pipelineClient.readProductionState(),
+                    pipelineClient.getG3ReviewWorkspace(),
+                ]);
                 state = normalizeState(loaded?.state);
+                g3Workspace = normalizeG3ReviewState(g3Loaded);
+                g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
                 render();
             } catch {
                 showPathSelectionBlocked();
@@ -177,8 +190,13 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const loaded = await pipelineClient.readProductionState();
+                const [loaded, g3Loaded] = await Promise.all([
+                    pipelineClient.readProductionState(),
+                    pipelineClient.getG3ReviewWorkspace(),
+                ]);
                 state = normalizeState(loaded?.state);
+                g3Workspace = normalizeG3ReviewState(g3Loaded);
+                g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
                 render();
             } catch {
                 showPathSelectionBlocked();
@@ -267,6 +285,53 @@ export function PipelineStudio() {
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),
                 onPickParent: pickParentFolder,
                 onRefresh: refreshProductions,
+                g3Workspace,
+                g3ActiveShotId,
+                onG3ActiveShotChange: (shotId) => {
+                    g3ActiveShotId = shotId;
+                    render();
+                },
+                onG3SelectionChange: (shotId, field, value) => {
+                    g3Workspace = updateG3Selection(g3Workspace, shotId, field, value);
+                    g3Workspace = {
+                        ...g3Workspace,
+                        export_ready: false,
+                        validation_blockers: Array.from(new Set([...g3Workspace.validation_blockers, 'G3_UNSAVED_CHANGES'])),
+                    };
+                },
+                onG3OverallNotesChange: (value) => {
+                    g3Workspace = {
+                        ...g3Workspace,
+                        overall_notes: value,
+                        export_ready: false,
+                        validation_blockers: Array.from(new Set([...g3Workspace.validation_blockers, 'G3_UNSAVED_CHANGES'])),
+                    };
+                },
+                onG3Preview: (candidateToken) => pipelineClient.loadG3CandidatePreview({ candidateToken }),
+                onG3Save: async () => {
+                    const payload = g3DraftPayload(g3Workspace);
+                    try {
+                        const result = await pipelineClient.saveG3ReviewDraft(payload);
+                        g3Workspace = normalizeG3ReviewState(result?.state);
+                        window.alert(result?.saved ? 'G3 로컬 검토 초안을 저장했습니다.' : 'G3 초안 저장이 차단되었습니다.');
+                    } catch {
+                        window.alert('G3 초안 저장이 안전 정책에 따라 차단되었습니다.');
+                    }
+                    render();
+                },
+                onG3Export: async () => {
+                    const payload = g3DraftPayload(g3Workspace);
+                    try {
+                        const result = await pipelineClient.exportG3ReviewPacket(payload);
+                        g3Workspace = normalizeG3ReviewState(result?.state);
+                        window.alert(result?.exported
+                            ? 'canonical 형태의 비승격 G3 초안을 내보냈습니다.'
+                            : 'G3 초안 내보내기가 차단되었습니다.');
+                    } catch {
+                        window.alert('G3 초안 내보내기가 안전 정책에 따라 차단되었습니다.');
+                    }
+                    render();
+                },
             }),
         ]);
 
@@ -338,11 +403,20 @@ export function PipelineStudio() {
         };
 
         if (config.productionRoot) {
-            const loadedState = await pipelineClient.readProductionState()
-                .catch(() => ({ state: samplePipelineState }));
+            const [loadedState, loadedG3] = await Promise.all([
+                pipelineClient.readProductionState().catch(() => ({ state: samplePipelineState })),
+                pipelineClient.getG3ReviewWorkspace().catch(() => emptyG3ReviewState('error')),
+            ]);
             state = normalizeState(loadedState?.state);
+            g3Workspace = normalizeG3ReviewState(loadedG3);
+            g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
         } else {
             state = samplePipelineState;
+            g3Workspace = normalizeG3ReviewState({
+                ...emptyG3ReviewState('empty'),
+                blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],
+                validation_blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],
+            });
         }
         render();
     })();

@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     previewCommand: (commandSpec) => ipcRenderer.invoke('film-pipeline:preview-command', commandSpec),
     copyCommandPreview: (commandSpec) => ipcRenderer.invoke('film-pipeline:copy-command-preview', commandSpec),
     runSafeCommand: (commandSpec) => ipcRenderer.invoke('film-pipeline:run-safe-command', commandSpec),
+    getG3ReviewWorkspace: () => ipcRenderer.invoke('film-pipeline:get-g3-review-workspace'),
+    loadG3CandidatePreview: (payload) => ipcRenderer.invoke('film-pipeline:load-g3-candidate-preview', payload),
+    saveG3ReviewDraft: (payload) => ipcRenderer.invoke('film-pipeline:save-g3-review-draft', payload),
+    exportG3ReviewPacket: (payload) => ipcRenderer.invoke('film-pipeline:export-g3-review-packet', payload),
     onProgress: (callback) => {
         const listener = (_, data) => callback(data);
         ipcRenderer.on('film-pipeline:progress', listener);

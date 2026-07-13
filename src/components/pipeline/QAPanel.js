@@ -2,6 +2,7 @@ import { BLOCKERS } from '../../lib/pipeline/blockers.js';
 import { validateFinalReady } from '../../lib/pipeline/validators.js';
 import { blockerList, card, dataTable, el, infoGrid, panelShell, pathList, statusBadge } from './ui.js';
 import { p } from './copy.js';
+import { G3ReviewWorkspace } from './G3ReviewWorkspace.js';
 
 function qaBadge(value) {
     return statusBadge(value ? p('ok') : p('blocked'), value ? 'PASS' : 'BLOCK');
@@ -30,7 +31,17 @@ function scoreText(record) {
         : '—';
 }
 
-export function QAPanel({ state }) {
+export function QAPanel({
+    state,
+    g3Workspace,
+    g3ActiveShotId,
+    onG3ActiveShotChange,
+    onG3SelectionChange,
+    onG3OverallNotesChange,
+    onG3Preview,
+    onG3Save,
+    onG3Export,
+}) {
     const finalValidation = validateFinalReady(state);
     const qaRecords = state.qaRecords || [];
     const acceptedSeconds = state.acceptedSeconds || [];
@@ -52,6 +63,16 @@ export function QAPanel({ state }) {
         : [];
 
     return panelShell(p('Clip QA And Accepted Ranges'), p('Clip QA, frame samples, contact sheets, and accepted seconds. Final is blocked until output quality is proven.'), [
+        g3Workspace ? G3ReviewWorkspace({
+            workspace: g3Workspace,
+            activeShotId: g3ActiveShotId,
+            onActiveShotChange: onG3ActiveShotChange,
+            onSelectionChange: onG3SelectionChange,
+            onOverallNotesChange: onG3OverallNotesChange,
+            onPreview: onG3Preview,
+            onSave: onG3Save,
+            onExport: onG3Export,
+        }) : null,
         blockerList([
             ...finalValidation.blockers,
             ...acceptedSecondsBlockers,

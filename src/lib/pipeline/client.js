@@ -47,6 +47,33 @@ function unavailable(method) {
     };
 }
 
+function unavailableG3State(method = 'getG3ReviewWorkspace') {
+    return {
+        ...unavailable(method),
+        status: 'error',
+        draft_id: '',
+        project_id: '',
+        episode_id: '',
+        promotion_ready: false,
+        label: '초안/비승격',
+        shots: [],
+        beats: [],
+        canonical_beat_list_available: false,
+        candidates: [],
+        machine_qc_contract: '',
+        machine_qc_read_only: true,
+        machine_qc: [],
+        selections: [],
+        overall_notes: '',
+        saved_at: '',
+        exported_at: '',
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        validation_blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        authoring_ready: false,
+        export_ready: false,
+    };
+}
+
 export function hasFilmPipelineBridge() {
     return Boolean(getBridge());
 }
@@ -194,6 +221,30 @@ export async function runSafeCommand(commandSpec) {
     };
 }
 
+export async function getG3ReviewWorkspace() {
+    const bridge = getBridge();
+    if (typeof bridge?.getG3ReviewWorkspace === 'function') return bridge.getG3ReviewWorkspace();
+    return unavailableG3State();
+}
+
+export async function loadG3CandidatePreview(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.loadG3CandidatePreview === 'function') return bridge.loadG3CandidatePreview(payload);
+    return { ...unavailable('loadG3CandidatePreview'), loaded: false, base64: '', mime_type: '' };
+}
+
+export async function saveG3ReviewDraft(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveG3ReviewDraft === 'function') return bridge.saveG3ReviewDraft(payload);
+    return { ...unavailable('saveG3ReviewDraft'), saved: false, exported: false, state: unavailableG3State('saveG3ReviewDraft') };
+}
+
+export async function exportG3ReviewPacket(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.exportG3ReviewPacket === 'function') return bridge.exportG3ReviewPacket(payload);
+    return { ...unavailable('exportG3ReviewPacket'), saved: false, exported: false, promotion_ready: false, state: unavailableG3State('exportG3ReviewPacket') };
+}
+
 export function onProgress(callback) {
     const bridge = getBridge();
     if (bridge) return bridge.onProgress(callback);
@@ -216,6 +267,10 @@ export const pipelineClient = Object.freeze({
     previewCommand,
     copyCommandPreview,
     runSafeCommand,
+    getG3ReviewWorkspace,
+    loadG3CandidatePreview,
+    saveG3ReviewDraft,
+    exportG3ReviewPacket,
     onProgress,
 });
 
