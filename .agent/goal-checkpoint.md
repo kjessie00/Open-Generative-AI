@@ -1,6 +1,6 @@
 # Goal Checkpoint
 
-Last updated: 2026-07-13T12:40:29+09:00
+Last updated: 2026-07-13T12:46:22+09:00
 Main executor: Codex Goals
 Supervisor: Pi goal guard / external audit
 
@@ -56,6 +56,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - 2026-07-13 Layout A/B production reader validation: added a distinct dated-run Layout A fixture and reused the existing root-marker Layout B fixture; reader → normalizer → validator E2E and fail-safe tests passed 8/8. Sensitive-name, `.git`/`node_modules`, symlink/root escape, malformed JSON/JSONL/JS/CSV/markdown, and walker depth/file limits are now regression-covered. Full network-denied test suite passed 64/64; lint, Vite build (39 modules), and `git diff --check` passed. Detailed aggregate-only evidence is in `docs/ui_integration/20_production_reader_validation.md`.
 - Actual production read-only aggregate probe (maximum two): `gangnam_shorts_system_income_20260707` detected as partial Layout B with 293 files but no complete structured reader packet; `ep01_apologist` detected as unknown with 524 files. Both remained final-not-ready with required blockers; no raw script, media, private metadata, or secret content was copied and happyVideoFactory was not modified. Residual gaps are `REAL_LAYOUT_A_GAP` and `REAL_LAYOUT_B_PARTIAL`, not fixture failures.
 - 2026-07-13 documentation reconciliation: added `docs/ui_integration/21_current_acceptance_status.md`; marked the implementation plan, final audit, handoff, and launch verification as historical snapshots with a current-status pointer; replaced the resolved `MISSING_PIPELINE_DOC` notice with the current real-layout, GUI-evidence, and offline-OSV gaps. Historical evidence remains intact below each notice.
+- 2026-07-13 deterministic renderer-contract validation by `renderer_contract_integrator`: added `tests/rendererContract.test.mjs`, which executes the actual vanilla-DOM `PipelineStudio()` product component without Electron/browser launch or a new dependency. Bridge-backed state restoration, folder selection, error recovery, all 11 tabs/10 core panels, dry-run relocking, disabled submit, copy-only command previews, zero active run/execute/generate/submit/upload controls, and zero command/write bridge calls during render/navigation passed. With OS-level network denial, focused test passed 1/1, the full suite passed 65/65, lint passed, Vite build passed with 39 modules, `git diff --check` passed, and `release/` remained absent. Detailed evidence and limitations are in `docs/ui_integration/22_renderer_contract_validation.md`.
 
 ## Acceptance Evidence Map
 
@@ -63,9 +64,9 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - AC2: VERIFIED for Electron web preferences and navigation policy by direct event mocks plus 6/6 security tests.
 - AC3: VERIFIED by preload exposure scan, main-process wiring tests, and renderer active-import graph checks.
 - AC4: VERIFIED at the code/test layer by queue/validator regressions; live generation or upload was not performed.
-- AC5: PENDING actual Electron GUI evidence for all panels, folder selection, state restoration, errors, and blocked preview.
+- AC5: PARTIAL PASS for deterministic renderer-contract evidence: actual `PipelineStudio()` renders and navigates all 11 tabs/10 core panels, restores bridge state, handles folder selection/error surfaces, and exposes blocked copy-only previews under `tests/rendererContract.test.mjs`. Actual Electron window, native dialog/preload IPC, visual layout, console, media, and screenshot evidence remain PENDING.
 - AC6: VERIFIED for distinct Layout A/B fixtures, malformed/sensitive/limit fail-safe cases, and bounded real-production aggregate probes by `tests/productionReaderLayouts.test.mjs` (8/8) and `docs/ui_integration/20_production_reader_validation.md`. Real candidates remain honestly partial/unknown rather than claimed fixture-equivalent.
-- AC7: PARTIAL PASS for build, 64 tests, reader/security regressions, and diff/status; GUI/runtime scope remains pending.
+- AC7: PARTIAL PASS for build, 65 tests, reader/security/renderer regressions, and diff/status; actual Electron GUI/runtime scope remains pending.
 - AC8: VERIFIED by `docs/ui_integration/21_current_acceptance_status.md` and current-status notices in the plan, final audit, handoff, launch verification, and missing-input records.
 - AC9: PARTIAL PASS for active-source scans and zero external generation/upload; OSV offline database gap remains.
 - AC10: VERIFIED at state-machine/test level; Jessie-visible GUI confirmation remains part of AC5.
