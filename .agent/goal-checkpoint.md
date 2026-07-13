@@ -37,7 +37,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 ## Required Verification
 
 - git status --short --branch && git diff --check
-- npm test -- --runInBand
+- node --test tests/*.test.js tests/*.test.mjs src/lib/pipeline/*.test.mjs
 - npm run build
 - Electron GUI evidence: 10 core panels, folder selection, state reconstruction, error handling, blocked command preview를 캡처/체크 로그로 requirement-by-requirement 확인
 - Layout A/B reader evidence: representative fixture 또는 승인된 local production paths로 reader/normalizer/validator 결과와 fail-safe cases 확인
@@ -79,7 +79,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 
 - Re-run the Ep01 native folder selection manually or with a separately proven macOS dialog harness; keep its current sidebar/preload/data PASS separate from the native BLOCK.
 - Resolve or explicitly accept the offline OSV database gap without enabling network access implicitly.
-- Completion remains blocked on AC5 and the remaining AC7/AC9 runtime evidence; passing code tests alone is insufficient.
+- Completion remains blocked on the AC5 native-selection gap and the AC9 offline OSV gap. Trusted clipboard write success is a separate operational evidence gap; copy-only and zero-execution behavior are verified.
 
 ## Compaction Reentry Rule
 
