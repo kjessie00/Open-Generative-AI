@@ -2,7 +2,9 @@ import samplePipelineState from './mockData.js';
 
 const mockConfig = Object.freeze({
     productionRoot: samplePipelineState.project.root_path,
+    productionParentRoot: '',
     recentProductionRoots: [samplePipelineState.project.root_path],
+    pathProvenanceVersion: 1,
     dryRunMode: true,
     allowSafeCommandExecution: false,
     updatedAt: null,
@@ -45,31 +47,25 @@ export async function getConfig() {
     return { ...mockConfig };
 }
 
-export async function setConfig(config) {
+export async function selectProductionRoot(request) {
     const bridge = getBridge();
-    if (bridge) return bridge.setConfig(config);
-    return { ok: true, source: 'mock', config: { ...mockConfig, ...config, dryRunMode: true, allowSafeCommandExecution: false } };
+    if (bridge) return bridge.selectProductionRoot(request);
+    return { ...unavailable('selectProductionRoot'), canceled: true, rootPath: '', config: mockConfig };
 }
 
-export async function selectProductionRoot(rootPath) {
+export async function listProductionChildren() {
     const bridge = getBridge();
-    if (bridge) return bridge.selectProductionRoot(rootPath);
-    return { ok: true, source: 'mock', rootPath: rootPath || samplePipelineState.project.root_path, config: mockConfig };
+    if (bridge) return bridge.listProductionChildren();
+    return Promise.resolve({ ok: false, source: 'mock', reason: 'mock-fallback', rootPath: '', entries: [] });
 }
 
-export async function listProductionChildren(parentPath) {
+export async function readProductionState() {
     const bridge = getBridge();
-    if (bridge) return bridge.listProductionChildren(parentPath);
-    return Promise.resolve({ ok: false, source: 'mock', reason: 'mock-fallback', rootPath: parentPath || '', entries: [] });
-}
-
-export async function readProductionState(rootPath) {
-    const bridge = getBridge();
-    if (bridge) return bridge.readProductionState(rootPath);
+    if (bridge) return bridge.readProductionState();
     return {
         ok: true,
         source: 'mock',
-        rootPath: rootPath || samplePipelineState.project.root_path,
+        rootPath: samplePipelineState.project.root_path,
         state: samplePipelineState,
     };
 }
@@ -80,13 +76,13 @@ export async function writePlanningFile(payload) {
     return unavailable('writePlanningFile');
 }
 
-export async function listAssets(rootPath) {
+export async function listAssets() {
     const bridge = getBridge();
-    if (bridge) return bridge.listAssets(rootPath);
+    if (bridge) return bridge.listAssets();
     return {
         ok: true,
         source: 'mock',
-        rootPath: rootPath || samplePipelineState.project.root_path,
+        rootPath: samplePipelineState.project.root_path,
         assets: samplePipelineState.assets,
     };
 }
@@ -143,7 +139,6 @@ export function onProgress(callback) {
 export const pipelineClient = Object.freeze({
     hasFilmPipelineBridge,
     getConfig,
-    setConfig,
     selectProductionRoot,
     listProductionChildren,
     readProductionState,

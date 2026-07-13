@@ -84,6 +84,8 @@ const KO = Object.freeze({
     'Planning file saved: {path}': '계획 파일을 저장했습니다: {path}',
     'Save blocked: {reason}': '저장이 차단되었습니다: {reason}',
     'Planning write safety policy rejected the request.': '안전한 계획 파일 경로와 내용인지 확인하세요.',
+    'Folder selection blocked by the local path safety policy.': '로컬 경로 안전 정책에 따라 폴더 선택이 차단되었습니다.',
+    'Local path safety policy blocked the request.': '로컬 경로 안전 정책에 따라 요청이 차단되었습니다.',
 
     // Intake
     'Production intent, route, media requirements, and stop-loss rule. This panel can save planning files only.': '제작 의도, 생성 경로, 미디어 요구사항과 중단 기준을 확인합니다. 이 화면은 계획 파일만 저장할 수 있습니다.',

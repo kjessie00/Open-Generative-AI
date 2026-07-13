@@ -103,6 +103,7 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.doesNotMatch(`${main}\n${windowFactory}`, /shell\.openExternal/);
     assert.match(preload, /exposeInMainWorld\(['"]filmPipeline['"]/);
     assert.match(preload, /copyCommandPreview:[\s\S]*film-pipeline:copy-command-preview/);
+    assert.doesNotMatch(preload, /film-pipeline:set-config|\bsetConfig\b/);
 });
 
 function assertDefaultElectronEntryBoundary(main, preload) {
@@ -184,17 +185,16 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'readProductionState',
         'runSafeCommand',
         'selectProductionRoot',
-        'setConfig',
         'writePlanningFile',
     ]);
 
     await bridge.getConfig();
-    await bridge.setConfig({});
-    await bridge.selectProductionRoot('/tmp/fixture');
-    await bridge.listProductionChildren('/tmp');
-    await bridge.readProductionState('/tmp/fixture');
+    assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
+    await bridge.selectProductionRoot({ mode: 'production' });
+    await bridge.listProductionChildren();
+    await bridge.readProductionState();
     await bridge.writePlanningFile({});
-    await bridge.listAssets('/tmp/fixture');
+    await bridge.listAssets();
     await bridge.readJsonl({});
     await bridge.previewCommand({});
     await bridge.copyCommandPreview({});
@@ -203,7 +203,6 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         invocations.map(([channel]) => channel),
         [
             'film-pipeline:get-config',
-            'film-pipeline:set-config',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
             'film-pipeline:read-production-state',
@@ -215,6 +214,21 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:run-safe-command',
         ],
     );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:select-production-root')[1],
+        [{ mode: 'production' }],
+    );
+    for (const channel of [
+        'film-pipeline:list-production-children',
+        'film-pipeline:read-production-state',
+        'film-pipeline:list-assets',
+    ]) {
+        assert.deepEqual(
+            invocations.find(([candidate]) => candidate === channel)[1],
+            [],
+            `${channel} must not carry a renderer path argument`,
+        );
+    }
 
     const unsubscribe = bridge.onProgress(() => {});
     assert.equal(eventCalls.length, 1);

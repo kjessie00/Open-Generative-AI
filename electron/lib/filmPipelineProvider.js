@@ -12,6 +12,7 @@ const MAX_COMMAND_PREVIEW_BYTES = 256 * 1024;
 const MAX_PLANNING_FILE_BYTES = 1024 * 1024;
 const MAX_PLANNING_FILE_ID_LENGTH = 128;
 const PLANNING_TEMP_PREFIX = '.film-pipeline-planning-';
+const PATH_PROVENANCE_VERSION = 1;
 
 const SIDE_EFFECT_TYPES = new Set([
     'local_planning_write',
@@ -121,6 +122,7 @@ function defaultConfig() {
         productionRoot: '',
         productionParentRoot: '',
         recentProductionRoots: [],
+        pathProvenanceVersion: PATH_PROVENANCE_VERSION,
         dryRunMode: true,
         allowSafeCommandExecution: false,
         updatedAt: null,
@@ -142,16 +144,22 @@ function readJsonIfExists(filePath, fallback) {
 
 function sanitizeConfig(config = {}) {
     const base = defaultConfig();
-    const recent = Array.isArray(config.recentProductionRoots)
+    const hasMainOwnedPathProvenance = config.pathProvenanceVersion === PATH_PROVENANCE_VERSION;
+    const recent = hasMainOwnedPathProvenance && Array.isArray(config.recentProductionRoots)
         ? config.recentProductionRoots.filter((item) => typeof item === 'string').slice(0, 10)
         : base.recentProductionRoots;
 
     return {
         ...base,
         ...config,
-        productionRoot: typeof config.productionRoot === 'string' ? config.productionRoot : base.productionRoot,
-        productionParentRoot: typeof config.productionParentRoot === 'string' ? config.productionParentRoot : base.productionParentRoot,
+        productionRoot: hasMainOwnedPathProvenance && typeof config.productionRoot === 'string'
+            ? config.productionRoot
+            : base.productionRoot,
+        productionParentRoot: hasMainOwnedPathProvenance && typeof config.productionParentRoot === 'string'
+            ? config.productionParentRoot
+            : base.productionParentRoot,
         recentProductionRoots: recent,
+        pathProvenanceVersion: PATH_PROVENANCE_VERSION,
         dryRunMode: config.dryRunMode !== false,
         allowSafeCommandExecution: false,
         updatedAt: new Date().toISOString(),
@@ -465,12 +473,9 @@ function readKnownJson(root, names) {
     return null;
 }
 
-function getConfig() {
-    return readConfig();
-}
-
-function setConfig(config) {
-    return { ok: true, config: writeConfig(config || {}) };
+function getConfig(options = {}) {
+    const readConfigFn = options.readConfigFn || readConfig;
+    return sanitizeConfig(readConfigFn());
 }
 
 function resolveProductionDialogDefaultPath(config = {}, isDirectory = (candidate) => {
@@ -495,35 +500,112 @@ function resolveProductionDialogDefaultPath(config = {}, isDirectory = (candidat
     return '';
 }
 
-async function selectProductionRoot(inputPath) {
-    let selectedPath = inputPath;
-    const config = readConfig();
-    if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
+function pathProvenanceError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+}
+
+function assertTrustedDirectory(directoryPath, code = 'PATH_PROVENANCE_INVALID_DIRECTORY') {
+    if (typeof directoryPath !== 'string' || directoryPath.length === 0 || directoryPath.includes('\0')) {
+        throw pathProvenanceError(code, 'Selected path must be a non-empty directory path');
+    }
+    if (!path.isAbsolute(directoryPath) || path.normalize(directoryPath) !== directoryPath) {
+        throw pathProvenanceError(code, 'Selected path must be absolute and normalized');
+    }
+    let stats;
+    try {
+        stats = fs.lstatSync(directoryPath);
+    } catch {
+        throw pathProvenanceError(code, 'Selected directory does not exist');
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw pathProvenanceError(code, 'Selected path must be a non-symlink directory');
+    }
+    return {
+        path: directoryPath,
+        realPath: fs.realpathSync.native(directoryPath),
+        dev: stats.dev,
+        ino: stats.ino,
+    };
+}
+
+function assertSelectionRequest(request) {
+    if (!request || typeof request !== 'object' || Array.isArray(request)) {
+        throw pathProvenanceError('PATH_SELECTION_INVALID', 'Path selection request is invalid');
+    }
+    const mode = request.mode;
+    const expectedKeys = mode === 'child' ? ['mode', 'rootPath'] : ['mode'];
+    if (!['production', 'parent', 'child'].includes(mode)
+        || Object.keys(request).sort().join(',') !== expectedKeys.sort().join(',')) {
+        throw pathProvenanceError('PATH_SELECTION_INVALID', 'Path selection request is invalid');
+    }
+    return mode;
+}
+
+function assertConfiguredChild(rootPath, config) {
+    const parent = assertTrustedDirectory(
+        config.productionParentRoot,
+        'PRODUCTION_PARENT_NOT_CONFIGURED',
+    );
+    const child = assertTrustedDirectory(rootPath, 'PRODUCTION_CHILD_INVALID');
+    if (path.basename(child.path).startsWith('.')
+        || path.dirname(child.path) !== parent.path
+        || path.dirname(child.realPath) !== parent.realPath) {
+        throw pathProvenanceError(
+            'PRODUCTION_CHILD_NOT_IMMEDIATE',
+            'Selected production must be an immediate real child of the configured parent',
+        );
+    }
+    return child.path;
+}
+
+async function selectProductionRoot(request, options = {}) {
+    const mode = assertSelectionRequest(request);
+    const readConfigFn = options.readConfigFn || readConfig;
+    const writeConfigFn = options.writeConfigFn || writeConfig;
+    const dialogApi = options.dialogApi || dialog;
+    const mainWindow = options.mainWindow === undefined ? getMainWindow() : options.mainWindow;
+    const config = sanitizeConfig(readConfigFn());
+
+    let selectedPath;
+    if (mode === 'child') {
+        selectedPath = assertConfiguredChild(request.rootPath, config);
+    } else {
         const defaultPath = resolveProductionDialogDefaultPath(config);
-        const result = await dialog.showOpenDialog(getMainWindow(), {
-            title: 'Open Production Folder',
+        const result = await dialogApi.showOpenDialog(mainWindow, {
+            title: mode === 'parent' ? 'Open Production Parent Folder' : 'Open Production Folder',
             properties: ['openDirectory'],
             ...(defaultPath ? { defaultPath } : {}),
         });
         if (result.canceled || !result.filePaths?.[0]) {
-            return { ok: false, canceled: true, rootPath: '', config };
+            return { ok: false, canceled: true, mode, rootPath: '', config };
         }
         selectedPath = result.filePaths[0];
+        assertTrustedDirectory(selectedPath, 'NATIVE_SELECTION_INVALID');
     }
 
-    const root = assertDirectory(selectedPath);
-    const recent = [root, ...config.recentProductionRoots.filter((item) => item !== root)].slice(0, 10);
-    const nextConfig = writeConfig({
+    const nextValues = mode === 'parent'
+        ? { productionParentRoot: selectedPath }
+        : {
+            productionRoot: selectedPath,
+            recentProductionRoots: [
+                selectedPath,
+                ...config.recentProductionRoots.filter((item) => item !== selectedPath),
+            ].slice(0, 10),
+        };
+    const nextConfig = writeConfigFn({
         ...config,
-        productionRoot: root,
-        recentProductionRoots: recent,
+        ...nextValues,
+        pathProvenanceVersion: PATH_PROVENANCE_VERSION,
     });
-    return { ok: true, rootPath: root, config: nextConfig };
+    return { ok: true, canceled: false, mode, rootPath: selectedPath, config: nextConfig };
 }
 
-function readProductionState(rootPath) {
+function readProductionState(rootPath, options = {}) {
     const root = assertDirectory(rootPath);
-    const readerState = readProductionFolder(root);
+    const readProductionFolderFn = options.readProductionFolderFn || readProductionFolder;
+    const readerState = readProductionFolderFn(root);
 
     return {
         ok: true,
@@ -603,13 +685,38 @@ function listAssets(rootPath) {
     };
 }
 
+function assertReadableFileInsideRoot(root, resolved) {
+    const realRoot = fs.realpathSync.native(root);
+    const components = path.relative(root, resolved).split(path.sep);
+    let current = root;
+    let stats;
+    for (const [index, component] of components.entries()) {
+        current = path.join(current, component);
+        try {
+            stats = fs.lstatSync(current);
+        } catch {
+            throw pathProvenanceError('READ_PATH_INVALID', 'Read path does not exist');
+        }
+        if (stats.isSymbolicLink()) {
+            throw pathProvenanceError('READ_PATH_SYMLINK', 'Read path must not contain symlinks');
+        }
+        const isLeaf = index === components.length - 1;
+        if ((!isLeaf && !stats.isDirectory()) || (isLeaf && !stats.isFile())) {
+            throw pathProvenanceError('READ_PATH_INVALID', 'Read path has an invalid file type');
+        }
+        const realCurrent = fs.realpathSync.native(current);
+        if (realCurrent !== realRoot && !realCurrent.startsWith(realRoot + path.sep)) {
+            throw pathProvenanceError('READ_ROOT_ESCAPE', 'Read path escapes the configured production root');
+        }
+    }
+    return stats;
+}
+
 function readJsonl(payload) {
     const { rootPath, relativePath } = payload || {};
-    const { root, resolved, relativePath: safeRelativePath } = resolveInsideRoot(rootPath, relativePath);
-    const stats = fs.statSync(resolved);
-    if (!stats.isFile()) {
-        throw new Error('relativePath is not a file');
-    }
+    const root = assertTrustedDirectory(rootPath, 'READ_ROOT_INVALID').path;
+    const { resolved, relativePath: safeRelativePath } = resolveInsideRoot(root, relativePath);
+    const stats = assertReadableFileInsideRoot(root, resolved);
     if (stats.size > MAX_JSONL_BYTES) {
         throw new Error(`JSONL file is too large to read safely: ${stats.size} bytes`);
     }
@@ -634,6 +741,54 @@ function readJsonl(payload) {
         records,
         errors,
     };
+}
+
+function configuredPath(options, field, code) {
+    const config = getConfig(options);
+    return assertTrustedDirectory(config[field], code).path;
+}
+
+function assertNoRendererPathArgument(value) {
+    if (value !== undefined) {
+        throw pathProvenanceError(
+            'RENDERER_PATH_ARGUMENT_FORBIDDEN',
+            'Renderer path arguments are not allowed for this operation',
+        );
+    }
+}
+
+function listConfiguredProductionChildren(options = {}) {
+    const parentRoot = configuredPath(options, 'productionParentRoot', 'PRODUCTION_PARENT_NOT_CONFIGURED');
+    return listProductionChildren(parentRoot);
+}
+
+function readConfiguredProductionState(options = {}) {
+    const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
+    return readProductionState(productionRoot, options);
+}
+
+function listConfiguredAssets(options = {}) {
+    const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
+    return listAssets(productionRoot);
+}
+
+function readConfiguredJsonl(payload, options = {}) {
+    const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
+    if (payload?.rootPath !== undefined && payload.rootPath !== productionRoot) {
+        throw pathProvenanceError('READ_ROOT_MISMATCH', 'Read root does not match the configured production root');
+    }
+    return readJsonl({
+        ...(payload || {}),
+        rootPath: productionRoot,
+    });
+}
+
+function writeConfiguredPlanningFile(payload, options = {}) {
+    const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
+    return writePlanningFile(payload, {
+        ...options,
+        configuredRoot: productionRoot,
+    });
 }
 
 function commandText(commandSpec = {}) {
@@ -781,29 +936,42 @@ function runSafeCommand(commandSpec = {}) {
     };
 }
 
-function register() {
-    ipcMain.handle('film-pipeline:get-config', () => getConfig());
-    ipcMain.handle('film-pipeline:set-config', (_, config) => setConfig(config));
-    ipcMain.handle('film-pipeline:select-production-root', (_, rootPath) => selectProductionRoot(rootPath));
-    ipcMain.handle('film-pipeline:read-production-state', (_, rootPath) => readProductionState(rootPath));
-    ipcMain.handle('film-pipeline:list-production-children', (_, parentPath) => listProductionChildren(parentPath));
-    ipcMain.handle('film-pipeline:write-planning-file', (_, payload) => writePlanningFile(payload, {
-        configuredRoot: readConfig().productionRoot,
-    }));
-    ipcMain.handle('film-pipeline:list-assets', (_, rootPath) => listAssets(rootPath));
-    ipcMain.handle('film-pipeline:read-jsonl', (_, payload) => readJsonl(payload));
-    ipcMain.handle('film-pipeline:preview-command', (_, commandSpec) => previewCommand(commandSpec));
-    ipcMain.handle('film-pipeline:copy-command-preview', (_, commandSpec) => copyCommandPreview(commandSpec));
-    ipcMain.handle('film-pipeline:run-safe-command', (_, commandSpec) => runSafeCommand(commandSpec));
+function register(ipcApi = ipcMain, options = {}) {
+    ipcApi.handle('film-pipeline:get-config', () => getConfig(options));
+    ipcApi.handle('film-pipeline:select-production-root', (_, request) => selectProductionRoot(request, options));
+    ipcApi.handle('film-pipeline:read-production-state', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return readConfiguredProductionState(options);
+    });
+    ipcApi.handle('film-pipeline:list-production-children', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return listConfiguredProductionChildren(options);
+    });
+    ipcApi.handle('film-pipeline:write-planning-file', (_, payload) => writeConfiguredPlanningFile(payload, options));
+    ipcApi.handle('film-pipeline:list-assets', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return listConfiguredAssets(options);
+    });
+    ipcApi.handle('film-pipeline:read-jsonl', (_, payload) => readConfiguredJsonl(payload, options));
+    ipcApi.handle('film-pipeline:preview-command', (_, commandSpec) => previewCommand(commandSpec));
+    ipcApi.handle('film-pipeline:copy-command-preview', (_, commandSpec) => copyCommandPreview(commandSpec));
+    ipcApi.handle('film-pipeline:run-safe-command', (_, commandSpec) => runSafeCommand(commandSpec));
 }
 
 module.exports = {
     register,
+    sanitizeConfig,
+    selectProductionRoot,
     writePlanningFile,
+    writeConfiguredPlanningFile,
     sideEffectClassifier,
     previewCommand,
     copyCommandPreview,
     runSafeCommand,
     listProductionChildren,
+    listConfiguredProductionChildren,
+    readConfiguredProductionState,
+    listConfiguredAssets,
+    readConfiguredJsonl,
     resolveProductionDialogDefaultPath,
 };

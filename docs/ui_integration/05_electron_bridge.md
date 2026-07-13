@@ -1,6 +1,6 @@
 # Electron Film Pipeline Bridge
 
-Date: 2026-07-05
+Date: 2026-07-05; security boundary updated 2026-07-13
 
 Scope: Task D added a safe Electron IPC bridge named `window.filmPipeline`
 plus a renderer client fallback. No Dreamina submit, DeepSearchTeam call,
@@ -24,17 +24,25 @@ generation path was implemented.
 ```js
 window.filmPipeline = {
   getConfig,
-  setConfig,
   selectProductionRoot,
+  listProductionChildren,
   readProductionState,
   writePlanningFile,
   listAssets,
   readJsonl,
   previewCommand,
+  copyCommandPreview,
   runSafeCommand,
   onProgress,
 }
 ```
+
+The current bridge has 11 methods. It deliberately has no `setConfig` method.
+Native selection accepts only `{mode: 'production'}` or `{mode: 'parent'}`;
+sidebar activation accepts `{mode: 'child', rootPath}` and main verifies that
+the candidate is an immediate real non-symlink child of the configured parent.
+The renderer does not supply paths to production-state, child-list, or asset
+read IPC.
 
 The preload layer only forwards IPC calls. It does not expose Node.js, `fs`,
 `child_process`, shell access, cookies, tokens, browser state, or account
@@ -47,12 +55,14 @@ boundary.
 
 Allowed now:
 
-- read and write the local film-pipeline config under Electron `userData`
-- select an existing local production root
+- read the renderer-visible local film-pipeline config under Electron `userData`
+- persist production/parent paths only from a native dialog result or a
+  main-validated immediate sidebar child
 - read shallow production state candidates
 - list local assets by extension
 - read bounded JSONL files under the selected production root
-- write planning files with `.md`, `.txt`, `.json`, or `.jsonl` extensions
+- write only the three exact planning output patterns documented in
+  `29_planning_write_security.md`
 - render a shell-safe preview string for a command
 
 Blocked now:
@@ -115,14 +125,20 @@ wire any live generator or external review path.
 ## Security Boundaries
 
 - Renderer never directly reads or writes the filesystem.
+- Renderer cannot persist `productionRoot` or `productionParentRoot`; legacy
+  configs without main-owned provenance are invalidated and require re-selection.
+- Parent selection does not overwrite the current production root.
+- Configured parent/root read operations are path-bound in main; unsolicited
+  renderer path arguments fail closed.
 - Renderer never receives shell execution capability.
 - `writePlanningFile()` is constrained to paths inside the selected production
-  root and limited to planning-safe text extensions.
+  root, three exact UI output patterns, and a 1 MiB UTF-8 content cap.
 - `readJsonl()` is constrained to paths inside the selected production root and
-  capped at 10 MB.
+  capped at 10 MB; parent and leaf symlinks are rejected.
 - `previewCommand()` performs no side effects.
 - `runSafeCommand()` is intentionally disabled and always blocks.
-- Config writes force `dryRunMode: true` and `allowSafeCommandExecution: false`.
+- Main-owned config writes force `allowSafeCommandExecution: false`; renderer
+  has no public config-write channel.
 
 ## Remaining Work
 

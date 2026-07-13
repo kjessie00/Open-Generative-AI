@@ -154,6 +154,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     const selectedState = structuredClone(samplePipelineState);
     selectedState.project.title = 'Folder Selected Production';
     selectedState.project.root_path = '/tmp/selected-production';
+    let activeRoot = '/tmp/restored-production';
 
     const bridge = {
         async getConfig() {
@@ -167,12 +168,10 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
                 },
             };
         },
-        async setConfig(config) {
-            calls.push(['setConfig', structuredClone(config)]);
-            return { ok: true, config };
-        },
-        async selectProductionRoot() {
-            calls.push(['selectProductionRoot']);
+        async selectProductionRoot(request) {
+            calls.push(['selectProductionRoot', structuredClone(request)]);
+            assert.deepEqual(request, { mode: 'production' });
+            activeRoot = '/tmp/selected-production';
             return {
                 ok: true,
                 canceled: false,
@@ -185,15 +184,15 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
                 },
             };
         },
-        async readProductionState(rootPath) {
-            calls.push(['readProductionState', rootPath]);
+        async readProductionState(...args) {
+            calls.push(['readProductionState', args]);
             return {
                 ok: true,
-                state: rootPath === '/tmp/selected-production' ? selectedState : restoredState,
+                state: activeRoot === '/tmp/selected-production' ? selectedState : restoredState,
             };
         },
-        async listProductionChildren(parentPath) {
-            calls.push(['listProductionChildren', parentPath]);
+        async listProductionChildren(...args) {
+            calls.push(['listProductionChildren', args]);
             return { ok: false, reason: 'READ_PARENT_BLOCKED_FOR_TEST', entries: [] };
         },
         async writePlanningFile(payload) {
@@ -221,9 +220,9 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     await flushRenderer();
     assert.match(studio.textContent, /Restored Production State/);
     assert.deepEqual(
-        calls.filter(([method]) => method === 'readProductionState').map(([, rootPath]) => rootPath),
-        ['/tmp/restored-production'],
-        'saved productionRoot must restore renderer state through the bridge',
+        calls.filter(([method]) => method === 'readProductionState').map(([, args]) => args),
+        [[]],
+        'saved productionRoot must restore renderer state without a renderer-supplied path',
     );
     assert.match(studio.textContent, /안전 모드 · 생성 및 업로드 차단/);
     assert.doesNotMatch(studio.textContent, /Dry-run disabled/);
@@ -261,12 +260,13 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     await flushRenderer();
     assert.match(studio.textContent, /Folder Selected Production/);
     assert.equal(calls.filter(([method]) => method === 'selectProductionRoot').length, 1);
+    assert.deepEqual(calls.find(([method]) => method === 'selectProductionRoot')[1], { mode: 'production' });
 
     const refresh = byText(studio, 'button', '목록 새로고침');
     assert.ok(refresh, 'production refresh control must be rendered in Korean');
     await refresh.dispatchEvent({ type: 'click' });
     await flushRenderer();
-    assert.match(studio.textContent, /상위 폴더를 읽을 수 없습니다: READ_PARENT_BLOCKED_FOR_TEST/);
+    assert.match(studio.textContent, /상위 폴더를 읽을 수 없습니다: 로컬 경로 안전 정책에 따라 요청이 차단되었습니다/);
     assert.ok(byText(studio, 'button', '설정 열기'), 'reader error must expose a Korean recovery action');
 
     const tabs = [
@@ -334,6 +334,112 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'writePlanningFile').length, 0);
     assert.match(studio.textContent, /\/tmp\/selected-production/, 'technical paths must remain unmodified');
+});
+
+test('PipelineStudio preserves native parent and sidebar child UX without renderer config mutation', async (t) => {
+    const alerts = [];
+    const calls = [];
+    const unhandled = [];
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const restoredState = structuredClone(samplePipelineState);
+    restoredState.project.title = 'Main Owned Restored Production';
+    restoredState.project.root_path = '/tmp/restored-production';
+    const childState = structuredClone(samplePipelineState);
+    childState.project.title = 'Main Owned Child Production';
+    childState.project.root_path = '/tmp/production-parent/child-production';
+    let config = {
+        productionRoot: restoredState.project.root_path,
+        productionParentRoot: '',
+        pathProvenanceVersion: 1,
+        dryRunMode: true,
+        allowSafeCommandExecution: false,
+    };
+    let rejectChild = false;
+    const bridge = {
+        async getConfig() {
+            return { config: structuredClone(config) };
+        },
+        async selectProductionRoot(request) {
+            calls.push(['selectProductionRoot', structuredClone(request)]);
+            if (request.mode === 'parent') {
+                config = { ...config, productionParentRoot: '/tmp/production-parent' };
+                return { ok: true, mode: 'parent', rootPath: config.productionParentRoot, config: structuredClone(config) };
+            }
+            if (request.mode === 'child') {
+                if (rejectChild) throw new Error('SECRET_CHILD_PATH_REJECTION');
+                config = { ...config, productionRoot: request.rootPath };
+                return { ok: true, mode: 'child', rootPath: request.rootPath, config: structuredClone(config) };
+            }
+            throw new Error('UNEXPECTED_MODE');
+        },
+        async listProductionChildren(...args) {
+            calls.push(['listProductionChildren', args]);
+            return {
+                ok: true,
+                rootPath: config.productionParentRoot,
+                entries: [{
+                    name: 'child-production',
+                    path: '/tmp/production-parent/child-production',
+                    mtime: '2026-07-13T00:00:00.000Z',
+                    fileCount: 3,
+                    hasMarkdownBrief: true,
+                    hasJsonlLedger: false,
+                }],
+            };
+        },
+        async readProductionState(...args) {
+            calls.push(['readProductionState', args]);
+            return {
+                ok: true,
+                state: config.productionRoot === childState.project.root_path ? childState : restoredState,
+            };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge, { alerts });
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    t.after(() => {
+        process.off('unhandledRejection', onUnhandled);
+        restore();
+    });
+
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    assert.equal(bridge.setConfig, undefined, 'renderer bridge fixture must have no public config mutation method');
+
+    await byText(studio, 'button', '설정').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '상위 폴더 선택').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([, request]) => request?.mode === 'parent')[1], { mode: 'parent' });
+    assert.equal(config.productionRoot, restoredState.project.root_path, 'parent selection must preserve production root');
+    assert.deepEqual(
+        calls.filter(([method]) => method === 'listProductionChildren').map(([, args]) => args),
+        [[]],
+        'refresh after parent selection must not pass a renderer-controlled parent path',
+    );
+
+    const childButton = byText(studio, 'span', 'child-production')?.parentNode;
+    assert.ok(childButton, 'configured immediate child must be reachable in the sidebar');
+    await childButton.dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.match(studio.textContent, /Main Owned Child Production/);
+    assert.deepEqual(
+        calls.find(([, request]) => request?.mode === 'child')[1],
+        { mode: 'child', rootPath: '/tmp/production-parent/child-production' },
+    );
+    assert.ok(
+        calls.filter(([method]) => method === 'readProductionState').every(([, args]) => args.length === 0),
+        'production reads must never receive renderer path arguments',
+    );
+
+    rejectChild = true;
+    const rerenderedChildButton = byText(studio, 'span', 'child-production')?.parentNode;
+    await rerenderedChildButton.dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(alerts, ['로컬 경로 안전 정책에 따라 폴더 선택이 차단되었습니다.']);
+    assert.doesNotMatch(alerts[0], /SECRET_CHILD_PATH_REJECTION/);
+    assert.deepEqual(unhandled, []);
 });
 
 test('PipelineStudio reports planning write rejection in Korean without leaking the thrown error or rejecting the click', async (t) => {

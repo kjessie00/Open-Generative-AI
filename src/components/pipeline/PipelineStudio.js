@@ -68,24 +68,28 @@ export function PipelineStudio() {
     };
     let productions = [];
     let productionsState = { status: 'idle', reason: '' };
-    const knownProductionParent = '/Users/jessiek/StudioProjects/happyVideoFactory/production';
 
     const render = () => {
         container.innerHTML = '';
 
+        const showPathSelectionBlocked = () => window.alert(p('Folder selection blocked by the local path safety policy.'));
+
         const openProductionFolder = async () => {
-            const selected = await pipelineClient.selectProductionRoot();
-            if (!selected?.ok || selected.canceled) return;
-            config = {
-                ...config,
-                ...(selected.config || {}),
-                productionRoot: selected.rootPath || config.productionRoot,
-                dryRunMode: true,
-                allowSafeCommandExecution: false,
-            };
-            const loaded = await pipelineClient.readProductionState(selected.rootPath);
-            state = normalizeState(loaded?.state);
-            render();
+            try {
+                const selected = await pipelineClient.selectProductionRoot({ mode: 'production' });
+                if (!selected?.ok || selected.canceled) return;
+                config = {
+                    ...config,
+                    ...(selected.config || {}),
+                    dryRunMode: true,
+                    allowSafeCommandExecution: false,
+                };
+                const loaded = await pipelineClient.readProductionState();
+                state = normalizeState(loaded?.state);
+                render();
+            } catch {
+                showPathSelectionBlocked();
+            }
         };
 
         const refreshProductions = async () => {
@@ -98,44 +102,51 @@ export function PipelineStudio() {
             }
             productionsState = { status: 'scanning', reason: '' };
             render();
-            const result = await pipelineClient.listProductionChildren(parentPath);
-            if (result?.ok) {
+            try {
+                const result = await pipelineClient.listProductionChildren();
+                if (!result?.ok) throw new Error('LIST_PRODUCTIONS_BLOCKED');
                 productions = Array.isArray(result.entries) ? result.entries : [];
                 productionsState = { status: 'ok', reason: '' };
-            } else {
+            } catch {
                 productions = [];
-                productionsState = { status: 'error', reason: result?.reason || result?.error || 'unknown' };
+                productionsState = { status: 'error', reason: p('Local path safety policy blocked the request.') };
             }
             render();
         };
 
         const pickParentFolder = async () => {
-            const selected = await pipelineClient.selectProductionRoot();
-            if (!selected?.ok || selected.canceled) return;
-            config = {
-                ...config,
-                ...(selected.config || {}),
-                productionParentRoot: selected.rootPath || config.productionParentRoot,
-                dryRunMode: true,
-                allowSafeCommandExecution: false,
-            };
             try {
-                await pipelineClient.setConfig(config);
-            } catch {}
-            await refreshProductions();
+                const selected = await pipelineClient.selectProductionRoot({ mode: 'parent' });
+                if (!selected?.ok || selected.canceled) return;
+                config = {
+                    ...config,
+                    ...(selected.config || {}),
+                    dryRunMode: true,
+                    allowSafeCommandExecution: false,
+                };
+                await refreshProductions();
+            } catch {
+                showPathSelectionBlocked();
+            }
         };
 
         const selectProduction = async (path) => {
             if (!path) return;
             try {
-                const loaded = await pipelineClient.readProductionState(path);
+                const selected = await pipelineClient.selectProductionRoot({ mode: 'child', rootPath: path });
+                if (!selected?.ok) throw new Error('CHILD_SELECTION_BLOCKED');
+                config = {
+                    ...config,
+                    ...(selected.config || {}),
+                    dryRunMode: true,
+                    allowSafeCommandExecution: false,
+                };
+                const loaded = await pipelineClient.readProductionState();
                 state = normalizeState(loaded?.state);
-            } catch {}
-            config = { ...config, productionRoot: path };
-            try {
-                await pipelineClient.setConfig(config);
-            } catch {}
-            render();
+                render();
+            } catch {
+                showPathSelectionBlocked();
+            }
         };
 
         const switchTab = (tabId) => {
@@ -216,26 +227,8 @@ export function PipelineStudio() {
             allowSafeCommandExecution: false,
         };
 
-        if (!config.productionParentRoot && pipelineClient.hasFilmPipelineBridge()) {
-            try {
-                const probe = await pipelineClient.listProductionChildren(knownProductionParent);
-                if (probe?.ok) {
-                    config = { ...config, productionParentRoot: knownProductionParent };
-                    const persisted = await pipelineClient.setConfig(config);
-                    config = {
-                        ...config,
-                        ...(persisted?.config || {}),
-                        dryRunMode: true,
-                        allowSafeCommandExecution: false,
-                    };
-                    productions = Array.isArray(probe.entries) ? probe.entries : [];
-                    productionsState = { status: 'ok', reason: '' };
-                }
-            } catch {}
-        }
-
         if (config.productionRoot) {
-            const loadedState = await pipelineClient.readProductionState(config.productionRoot)
+            const loadedState = await pipelineClient.readProductionState()
                 .catch(() => ({ state: samplePipelineState }));
             state = normalizeState(loadedState?.state);
         } else {
