@@ -113,6 +113,17 @@ export async function previewCommand(commandSpec) {
     };
 }
 
+export async function copyCommandPreview(commandSpec) {
+    const bridge = getBridge();
+    if (bridge) return bridge.copyCommandPreview(commandSpec);
+    return {
+        ...unavailable('copyCommandPreview'),
+        copied: false,
+        verified: false,
+        commandSpec,
+    };
+}
+
 export async function runSafeCommand(commandSpec) {
     const bridge = getBridge();
     if (bridge) return bridge.runSafeCommand(commandSpec);
@@ -140,6 +151,7 @@ export const pipelineClient = Object.freeze({
     listAssets,
     readJsonl,
     previewCommand,
+    copyCommandPreview,
     runSafeCommand,
     onProgress,
 });

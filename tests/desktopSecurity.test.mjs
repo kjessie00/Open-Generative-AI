@@ -101,6 +101,7 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.doesNotMatch(`${main}\n${windowFactory}`, /webSecurity:\s*false/);
     assert.doesNotMatch(`${main}\n${windowFactory}`, /shell\.openExternal/);
     assert.match(preload, /exposeInMainWorld\(['"]filmPipeline['"]/);
+    assert.match(preload, /copyCommandPreview:[\s\S]*film-pipeline:copy-command-preview/);
 });
 
 const importPattern = /(?:import\s*(?:[^'"()]*?\s+from\s*)?|import\s*\(|require\s*\()\s*['"](\.{1,2}\/[^'"]+)['"]/g;

@@ -8,20 +8,24 @@
 
 실제 Electron `BrowserWindow`, preload IPC, 11-tab renderer, 1440×900 및
 1024×640 레이아웃, fixture와 승인된 두 production state를 외부망 차단
-상태에서 검증했다. 실제 브라우저에서만 재현된 세 제품 결함도 bounded
-fix로 수정했다.
+상태에서 검증했다. 실제 브라우저에서만 재현된 제품 결함도 bounded fix로
+수정했다.
 
 - production 목록이 있을 때 nested array를 DOM child로 넘기던 초기 crash
 - CSP 부재로 발생하던 Electron product security warning
 - 긴 production 목록이 11개 기본 탐색 탭을 가리던 sidebar 구조
 - legacy Local Models/Download 표면이 global Settings에서 다시 노출되던 경계
+- native folder sheet가 filesystem root에서 열리던 기본 경로 문제
+- `file:` renderer의 clipboard 권한에 의존하던 command-copy 경계
 
 fixture와 첫 번째 production은 실제 macOS native folder sheet를 통해
-선택되었다. 두 번째 production은 서로 다른 두 native accept 방식 모두
+선택되었다. 두 번째 production은 서로 다른 native accept 방식 모두
 sheet를 닫았지만 이전 root가 config/state에 남았다. 같은 자동화 반복은
 중단했고, 해당 데이터는 승인된 sidebar entry를 통해 preload IPC로
 검증했다. 따라서 두 번째 root의 **native selection만 BLOCK**이며, 데이터
-reader/IPC/UI 검증을 native PASS로 과장하지 않는다.
+reader/IPC/UI 검증을 native PASS로 과장하지 않는다. 반면 trusted command
+copy는 main-process clipboard write/read-back과 실제 macOS click으로 별도
+검증되어 이전 gap이 닫혔다.
 
 ## 승인과 안전 경계
 
@@ -86,7 +90,7 @@ BrowserWindow security preference는 바꾸지 않았고 전체 Electron process
 - 기본 viewport: 1440×900
 - narrow viewport: 1024×640 (`BrowserWindow.minWidth/minHeight`)
 - `window.filmPipeline`: 존재
-- bridge method: 11개
+- bridge method: 12개 (`copyCommandPreview` 포함)
 - mock fallback badge: 없음; `Electron bridge` 표시
 - relaunch 후 저장된 fixture/root state 복원: PASS
 
@@ -116,6 +120,16 @@ expected root path와 524/2/0/0 state를 복원했다.
 - Gangnam: `4a50d8c420a472c85556b9ba985959f3c41cce2c967a4c65f302c934a6ff64d3`
 - Ep01: `8acb885807df93c1be84fc34a93790356c7d83616eebb9afdef2613b34372f35`
 
+위 두 값은 이전 회차 알고리즘의 증거로 보존한다. 이번 gap-closure 회차는
+별도로 relative path, type, size, nanosecond mtime을 정렬한 manifest를
+SHA-256으로 계산했다. 회차 마감 전후 동일 알고리즘 결과가 일치했으며
+cross-algorithm equality는 주장하지 않는다.
+
+- Gangnam: 355 entries,
+  `083c64eaea2add92a4d6f8be492564dbc1332c0ca3ab4585bdb619cf4ac26551`
+- Ep01: 587 entries,
+  `b37144f912602036376069e6eca9c6c382346f13882472e7a1ac0505cceca454`
+
 ## 11-tab / 10-core panel matrix
 
 | tab | core surface | actual click | expected heading | 1440 | 1024 | side effect |
@@ -139,13 +153,17 @@ panel content가 겹치지 않는다. 넓은 table surface는 자체 horizontal 
 
 Queue 실제 DOM에서 `Submit disabled`, `Copy command`, blocker badges를
 확인했고 enabled `run|execute|generate|submit|upload|download|get` control은
-전 tab/dataset/viewport에서 0개였다. synthetic CDP click은 trusted user
-gesture가 아니어서 clipboard permission이 거절되고 `Copy failed`가
-표시되었다. 별도 macOS GUI click 1회는 좌표가 Electron menu bar로
-misroute되어 clipboard 성공을 입증하지 못했으며 반복하지 않았다. 두
-경로 모두 command 실행/bridge run 호출은 0이고 clipboard 내용은 민감정보
-보호를 위해 읽지 않았다. 따라서 **copy-only surface와 zero execution은
-PASS**, trusted clipboard write 성공은 미입증으로 분리한다. reader error의 fail-safe surface는
+전 tab/dataset/viewport에서 0개였다. command copy는 renderer clipboard API를
+사용하지 않고 preload를 거쳐 Electron main process가 normalized preview를
+쓴 뒤 즉시 read-back equality를 확인한다. 256 KiB를 넘으면 fail closed하고
+결과에는 원문 대신 길이와 SHA-256만 반환한다.
+
+실제 macOS `CGEvent` trusted click 1회 결과는 `command-copied`,
+`copied:true`, `verified:true`, `executed:false`, length/bytes `86`, SHA-256
+`7401b0abcbdf800d5d75aa1c278ef1f45c4578755fb6fecc45d505689065cf5c`였다.
+화면 `<code>` preview를 WebCrypto로 독립 계산한 길이/해시와 정확히
+일치했고 `command-blocked` event 0, `runSafeCommand` 호출 0이었다. clipboard
+원문은 로그·문서로 외부화하지 않았다. reader error의 fail-safe surface는
 `tests/rendererContract.test.mjs`의 실제 `PipelineStudio()` contract로 별도
 고정되어 있다.
 
@@ -166,22 +184,28 @@ macOS window/region helper와 loopback CDP `Page.captureScreenshot`을 함께
   `a3c137b74162956ad64f24f848402ee8a95b4dac8215af181aed6bda51c3f6d5`
 - second production 1024×640 CDP capture: SHA-256
   `550254bcd3a6aa53c2ec5e93c9705a013e3700fd7c4257aaf4c3f27cb02c1036`
+- canonical production-parent native sheet capture: SHA-256
+  `811a890f25d3303066a52e3a578d2b0e2d392d10038d091801698c1f751ac822`
+- trusted-copy Queue capture: SHA-256
+  `a5d28ad2e4f03d72e4d158192c6bc82986b304ca3b5301f78aa7dbbc488b09df`
 
 ## 수정과 회귀
 
 변경 파일:
 
-- `src/components/pipeline/PipelineSidebar.js`
-- `src/components/SettingsModal.js`
-- `index.html`
-- `tests/rendererContract.test.mjs`
+- `electron/lib/filmPipelineProvider.js`
+- `electron/preload.js`
+- `src/lib/pipeline/client.js`
+- `src/components/pipeline/PipelineStudio.js`
+- `src/components/pipeline/CommandPreviewCard.js`
 - `tests/desktopSecurity.test.mjs`
+- `tests/filmPipelineNativeClipboard.test.mjs`
 
 회귀 결과:
 
 ```text
-focused desktop/renderer: 8/8 PASS
-full network-denied suite: 68/68 PASS
+focused native/clipboard/security/renderer: 12/12 PASS
+full network-denied suite: 72/72 PASS
 npm run lint: PASS
 npm run build: PASS, Vite 36 modules
 git diff --check: PASS
@@ -191,12 +215,13 @@ release/ absent: PASS
 ## 잔여 blocker
 
 - `NATIVE_FOLDER_SELECTION_ROOT2_GAP`: 두 번째 production은 native sheet에서
-  state가 바뀌지 않았다. sidebar/preload reader는 정상이다. 사용자 직접
-  selection 또는 별도 macOS native-dialog harness가 있어야 native 항목을
-  PASS로 바꿀 수 있다.
-- `TRUSTED_COPY_GESTURE_GAP`: copy-only UI, disabled submit, zero execution은
-  검증했지만 automation 환경에서 trusted clipboard write 성공은 입증하지
-  못했다. clipboard 내용을 읽거나 command를 실행하지 않았다.
+  state가 바뀌지 않았다. 이번 회차에는 canonical parent가 native sheet의
+  default path로 열리는 것까지 증명했지만 AX selection/Return은 parent를
+  반환했다. sidebar/preload reader는 정상이다. 사용자 직접 selection 또는
+  별도 macOS native-dialog harness가 있어야 native 항목을 PASS로 바꿀 수 있다.
 - `OSV_OFFLINE_DB_GAP`: offline OSV database 부재는 본 GUI 회차에서
-  해결하지 않았다.
+  해결하지 않았다. OSV Scanner v2.4.0을 fresh HOME과 deny-network로 실행한
+  결과 1,097 packages/4 filtered 뒤 exit 127,
+  `no offline version of the OSV database is available`로 종료됐다. JSON의
+  vulnerability 0은 scan failure이므로 PASS로 해석하지 않는다.
 - 실제 날짜-run Layout A 완전 표본은 여전히 없다.

@@ -275,6 +275,13 @@ export function PipelineStudio() {
                 const probe = await pipelineClient.listProductionChildren(KNOWN_PRODUCTION_PARENT);
                 if (probe?.ok) {
                     config = { ...config, productionParentRoot: KNOWN_PRODUCTION_PARENT };
+                    const persisted = await pipelineClient.setConfig(config);
+                    config = {
+                        ...config,
+                        ...(persisted?.config || {}),
+                        dryRunMode: true,
+                        allowSafeCommandExecution: false,
+                    };
                     productions = Array.isArray(probe.entries) ? probe.entries : [];
                     productionsState = { status: 'ok', reason: '' };
                 }

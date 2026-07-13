@@ -1,15 +1,12 @@
 import { classifySideEffect, renderShellCommand, allowedStatusLabel } from '../../lib/pipeline/sideEffects.js';
+import { pipelineClient } from '../../lib/pipeline/client.js';
 import { actionButton, card, codeBlock, el, statusBadge } from './ui.js';
 import { SideEffectGate } from './SideEffectGate.js';
 
-async function copyCommand(text, button) {
+async function copyCommand(commandSpec, button) {
     try {
-        if (globalThis.navigator?.clipboard?.writeText) {
-            await globalThis.navigator.clipboard.writeText(text);
-            button.textContent = 'Copied';
-        } else {
-            button.textContent = 'Copy unavailable';
-        }
+        const result = await pipelineClient.copyCommandPreview(commandSpec);
+        button.textContent = result?.copied && result?.verified ? 'Copied' : 'Copy failed';
     } catch {
         button.textContent = 'Copy failed';
     }
@@ -23,7 +20,7 @@ export function CommandPreviewCard({ commandSpec }) {
     const classification = classifySideEffect(commandSpec);
     const copyButton = actionButton('Copy command', {
         variant: 'muted',
-        onClick: () => copyCommand(command, copyButton),
+        onClick: () => copyCommand(commandSpec, copyButton),
     });
 
     const blocked = classification.mode === 'blocked';

@@ -1,4 +1,5 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain } = require('electron');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { readProductionFolder } = require('./productionReader');
@@ -7,6 +8,7 @@ const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_COUNT = 600;
 const MAX_WALK_DEPTH = 8;
+const MAX_COMMAND_PREVIEW_BYTES = 256 * 1024;
 
 const SIDE_EFFECT_TYPES = new Set([
     'local_planning_write',
@@ -92,6 +94,7 @@ const VIP_FALLBACK_KEYWORDS = [
 ];
 
 function getMainWindow() {
+    if (!BrowserWindow || typeof BrowserWindow.getAllWindows !== 'function') return null;
     return BrowserWindow.getAllWindows()[0] || null;
 }
 
@@ -259,21 +262,45 @@ function setConfig(config) {
     return { ok: true, config: writeConfig(config || {}) };
 }
 
+function resolveProductionDialogDefaultPath(config = {}, isDirectory = (candidate) => {
+    try {
+        return fs.statSync(candidate).isDirectory();
+    } catch {
+        return false;
+    }
+}) {
+    const candidates = [
+        config.productionParentRoot,
+        typeof config.productionRoot === 'string' && config.productionRoot.trim()
+            ? path.dirname(config.productionRoot)
+            : '',
+    ];
+
+    for (const candidate of candidates) {
+        if (typeof candidate !== 'string' || !candidate.trim()) continue;
+        const resolved = path.resolve(candidate);
+        if (isDirectory(resolved)) return resolved;
+    }
+    return '';
+}
+
 async function selectProductionRoot(inputPath) {
     let selectedPath = inputPath;
+    const config = readConfig();
     if (typeof selectedPath !== 'string' || !selectedPath.trim()) {
+        const defaultPath = resolveProductionDialogDefaultPath(config);
         const result = await dialog.showOpenDialog(getMainWindow(), {
             title: 'Open Production Folder',
             properties: ['openDirectory'],
+            ...(defaultPath ? { defaultPath } : {}),
         });
         if (result.canceled || !result.filePaths?.[0]) {
-            return { ok: false, canceled: true, rootPath: '', config: readConfig() };
+            return { ok: false, canceled: true, rootPath: '', config };
         }
         selectedPath = result.filePaths[0];
     }
 
     const root = assertDirectory(selectedPath);
-    const config = readConfig();
     const recent = [root, ...config.recentProductionRoots.filter((item) => item !== root)].slice(0, 10);
     const nextConfig = writeConfig({
         ...config,
@@ -490,6 +517,61 @@ function previewCommand(commandSpec = {}) {
     };
 }
 
+function fingerprintCommandPreview(text) {
+    return {
+        length: text.length,
+        byteLength: Buffer.byteLength(text, 'utf8'),
+        sha256: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
+    };
+}
+
+function copyCommandPreview(commandSpec = {}, clipboardApi = clipboard) {
+    const preview = previewCommand(commandSpec);
+    const fingerprint = fingerprintCommandPreview(preview.shellSafeCommand);
+    if (fingerprint.byteLength > MAX_COMMAND_PREVIEW_BYTES) {
+        return {
+            ok: false,
+            copied: false,
+            verified: false,
+            executed: false,
+            error: 'COMMAND_PREVIEW_TOO_LARGE',
+            ...fingerprint,
+        };
+    }
+    if (!clipboardApi || typeof clipboardApi.writeText !== 'function' || typeof clipboardApi.readText !== 'function') {
+        return {
+            ok: false,
+            copied: false,
+            verified: false,
+            executed: false,
+            error: 'CLIPBOARD_UNAVAILABLE',
+            ...fingerprint,
+        };
+    }
+
+    clipboardApi.writeText(preview.shellSafeCommand);
+    const verified = clipboardApi.readText() === preview.shellSafeCommand;
+    const result = {
+        ok: verified,
+        copied: verified,
+        verified,
+        executed: false,
+        error: verified ? '' : 'CLIPBOARD_VERIFY_FAILED',
+        ...fingerprint,
+    };
+    sendProgress({
+        phase: verified ? 'command-copied' : 'command-copy-failed',
+        sideEffectType: preview.classification.detectedType,
+        copied: result.copied,
+        verified: result.verified,
+        executed: false,
+        length: result.length,
+        byteLength: result.byteLength,
+        sha256: result.sha256,
+    });
+    return result;
+}
+
 function runSafeCommand(commandSpec = {}) {
     const preview = previewCommand(commandSpec);
     const classification = preview.classification;
@@ -523,6 +605,7 @@ function register() {
     ipcMain.handle('film-pipeline:list-assets', (_, rootPath) => listAssets(rootPath));
     ipcMain.handle('film-pipeline:read-jsonl', (_, payload) => readJsonl(payload));
     ipcMain.handle('film-pipeline:preview-command', (_, commandSpec) => previewCommand(commandSpec));
+    ipcMain.handle('film-pipeline:copy-command-preview', (_, commandSpec) => copyCommandPreview(commandSpec));
     ipcMain.handle('film-pipeline:run-safe-command', (_, commandSpec) => runSafeCommand(commandSpec));
 }
 
@@ -530,6 +613,8 @@ module.exports = {
     register,
     sideEffectClassifier,
     previewCommand,
+    copyCommandPreview,
     runSafeCommand,
     listProductionChildren,
+    resolveProductionDialogDefaultPath,
 };

@@ -1,6 +1,6 @@
 # Goal Checkpoint
 
-Last updated: 2026-07-13T14:25:00+09:00
+Last updated: 2026-07-13T14:55:55+09:00
 Main executor: Codex Goals
 Supervisor: Pi goal guard / external audit
 
@@ -60,7 +60,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - 2026-07-13 offline dependency audit: network-denied `npm audit --offline --omit=dev` returned zero findings and `npm ls` resolved the production tree. All 1,158 HTTPS resolved lockfile entries had integrity data. OSV identified 1,097 packages but explicitly reported that its npm offline database was unavailable, so `OSV_OFFLINE_DB_GAP` remains. Detailed evidence is in `docs/ui_integration/23_offline_dependency_audit.md`.
 - 2026-07-13 operator-entry reconciliation: replaced the upstream hosted-generation README with the local Cinematic Pipeline Studio runbook, corrected package/index descriptions and page title, and added a desktop security regression that locks the local product metadata. Network-denied full tests remained 65/65; lint and Vite build (39 modules) passed.
 - 2026-07-13 real-layout compatibility by `real_layout_reader_integrator`: preserved Layout A/B and added `gangnam_scene_bundle` and `markdown_scene_pack` variants. Structure-only parsers discard narrative/prompt/report values, sanitize cost CSV and IDs, and expose submit text only as `artifact_present_unverified`. Synthetic golden/negative reader tests passed 10/10; full network-denied tests passed 67/67; lint, Vite build (39 modules), `git diff --check`, and no-release checks passed. The two approved happyVideoFactory roots became B variants with useful structure while retaining storyboard/motion review, dashboard, accepted-seconds, and output-quality blockers; both remained `final_ready:false`, and before/after manifest hashes matched. Evidence: `docs/ui_integration/24_real_layout_compatibility.md`.
-- 2026-07-13 actual Electron GUI acceptance by `electron_gui_acceptance_integrator`: Jessie approved Electron launch/cache, macOS GUI automation/screenshots, and the fixture/two named production roots under external-network denial while keeping generation/upload/external accounts forbidden. The real BrowserWindow, `window.filmPipeline`, relaunch restoration, all 11 tabs/10 core panels, blocked/copy-only controls, 1440×900 and 1024×640 layouts, and zero product console/network errors passed. Runtime-only defects in non-empty production rendering, CSP, legacy Local Models reachability, and sidebar reachability were fixed with regressions. Fixture and the Gangnam root passed actual native selection. Ep01 passed sidebar/preload/data/visual evidence at 524 files but two distinct native accept methods left the prior root in config/state; `NATIVE_FOLDER_SELECTION_ROOT2_GAP` remains. Full network-denied suite passed 68/68; lint and Vite build (36 modules) passed. Evidence: `docs/ui_integration/25_electron_gui_acceptance.md`.
+- 2026-07-13 actual Electron GUI acceptance by `electron_gui_acceptance_integrator`: Jessie approved Electron launch/cache, macOS GUI automation/screenshots, and the fixture/two named production roots under external-network denial while keeping generation/upload/external accounts forbidden. The real BrowserWindow, `window.filmPipeline`, relaunch restoration, all 11 tabs/10 core panels, blocked/copy-only controls, 1440×900 and 1024×640 layouts, and zero product console/network errors passed. Runtime-only defects in non-empty production rendering, CSP, legacy Local Models reachability, and sidebar reachability were fixed with regressions. Fixture and the Gangnam root passed actual native selection. Ep01 passed sidebar/preload/data/visual evidence at 524 files but native automation still returned the parent root; `NATIVE_FOLDER_SELECTION_ROOT2_GAP` remains. The follow-up persisted a canonical native-dialog default path and moved copy to a bounded main-process clipboard IPC. A real macOS trusted click produced verified write/read-back evidence matching the DOM preview hash/length with `executed:false`; `TRUSTED_COPY_GESTURE_GAP` is closed. Full network-denied suite passed 72/72; focused native/clipboard/security/renderer tests passed 12/12; lint and Vite build (36 modules) passed. Evidence: `docs/ui_integration/25_electron_gui_acceptance.md`.
 
 ## Acceptance Evidence Map
 
@@ -68,9 +68,9 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - AC2: VERIFIED for Electron web preferences and navigation policy by direct event mocks plus 6/6 security tests.
 - AC3: VERIFIED by preload exposure scan, main-process wiring tests, and renderer active-import graph checks.
 - AC4: VERIFIED at the code/test layer by queue/validator regressions; live generation or upload was not performed.
-- AC5: PARTIAL PASS with actual Electron evidence: BrowserWindow/preload IPC/relaunch/11 tabs/10 core panels/fixture and Gangnam native selection/blocked preview/1440+1024 visual checks passed. Ep01 data and sidebar IPC passed, but its native sheet did not change config/state after two distinct accept methods; `NATIVE_FOLDER_SELECTION_ROOT2_GAP` remains.
+- AC5: PARTIAL PASS with actual Electron evidence: BrowserWindow/preload IPC/relaunch/11 tabs/10 core panels/fixture and Gangnam native selection/blocked preview/trusted copy/1440+1024 visual checks passed. Ep01 data and sidebar IPC passed, but its native sheet still returned the parent root; `NATIVE_FOLDER_SELECTION_ROOT2_GAP` remains.
 - AC6: VERIFIED for distinct Layout A/B fixtures, two real-format synthetic golden fixtures, malformed/sensitive/limit fail-safe cases, and bounded real-production aggregate probes by `tests/productionReaderLayouts.test.mjs` (10/10), `docs/ui_integration/20_production_reader_validation.md`, and `docs/ui_integration/24_real_layout_compatibility.md`. Real structure is reconstructable but remains explicitly unreviewed/final-not-ready.
-- AC7: VERIFIED for build, 68 tests, reader/security/renderer regressions, diff/status, and actual Electron runtime, with the explicit Ep01 native-selection exception under AC5.
+- AC7: VERIFIED for build, 72 tests, reader/security/renderer regressions, diff/status, and actual Electron runtime, with the explicit Ep01 native-selection exception under AC5.
 - AC8: VERIFIED by `docs/ui_integration/21_current_acceptance_status.md` and current-status notices in the plan, final audit, handoff, launch verification, and missing-input records.
 - AC9: PARTIAL PASS for active-source scans and zero external generation/upload; OSV offline database gap remains.
 - AC10: VERIFIED at state-machine/test level; Jessie-visible GUI confirmation remains part of AC5.
@@ -79,7 +79,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 
 - Re-run the Ep01 native folder selection manually or with a separately proven macOS dialog harness; keep its current sidebar/preload/data PASS separate from the native BLOCK.
 - Resolve or explicitly accept the offline OSV database gap without enabling network access implicitly.
-- Completion remains blocked on the AC5 native-selection gap and the AC9 offline OSV gap. Trusted clipboard write success is a separate operational evidence gap; copy-only and zero-execution behavior are verified.
+- Completion remains blocked on the AC5 native-selection gap and the AC9 offline OSV gap. Trusted clipboard write, copy-only behavior, and zero execution are verified.
 
 ## Compaction Reentry Rule
 

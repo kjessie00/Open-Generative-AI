@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     listAssets: (rootPath) => ipcRenderer.invoke('film-pipeline:list-assets', rootPath),
     readJsonl: (payload) => ipcRenderer.invoke('film-pipeline:read-jsonl', payload),
     previewCommand: (commandSpec) => ipcRenderer.invoke('film-pipeline:preview-command', commandSpec),
+    copyCommandPreview: (commandSpec) => ipcRenderer.invoke('film-pipeline:copy-command-preview', commandSpec),
     runSafeCommand: (commandSpec) => ipcRenderer.invoke('film-pipeline:run-safe-command', commandSpec),
     onProgress: (callback) => {
         const listener = (_, data) => callback(data);
