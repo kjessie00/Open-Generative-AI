@@ -1,10 +1,13 @@
 import { card, el, infoGrid, panelShell, statusBadge } from './ui.js';
 import { p } from './copy.js';
 
-export function PipelineSettingsPanel({ state, config, onPickParent, onRefresh }) {
+export function PipelineSettingsPanel({ state, config, harnessStatus, onPickParent, onRefresh }) {
     const settings = state.settings || {};
     const productionRoot = config?.productionRoot || state.project?.root_path;
     const productionParentRoot = config?.productionParentRoot || '';
+    const harnessReadiness = harnessStatus?.readiness || 'blocked';
+    const harnessLabel = harnessReadiness === 'available' ? p('Available') : harnessReadiness === 'partial' ? p('Partial') : p('Blocked');
+    const harnessBadge = harnessReadiness === 'available' ? 'PASS' : harnessReadiness === 'partial' ? 'WARN' : 'BLOCK';
 
     return panelShell(p('Pipeline Settings'), p('Local pipeline paths and dry-run controls. Dry-run mode is locked on by default.'), [
         card([
@@ -46,6 +49,21 @@ export function PipelineSettingsPanel({ state, config, onPickParent, onRefresh }
             { label: p('ffprobe path'), value: settings.ffprobePath },
             { label: p('Model directories'), value: (settings.modelDirectories || []).join(', ') },
         ], 'lg:grid-cols-2'),
+        card([
+            el('div', { className: 'flex flex-wrap items-center gap-2' }, [
+                el('div', { text: p('happyVideoFactory canonical contract'), className: 'text-sm font-bold text-white' }),
+                statusBadge(harnessLabel, harnessBadge),
+                statusBadge(p('Read-only metadata'), 'PREVIEW'),
+            ]),
+            el('p', {
+                text: p('The main process checks only the fixed allowlist. File content and renderer-provided harness paths are not accepted.'),
+                className: 'mt-2 text-sm leading-6 text-secondary',
+            }),
+            el('div', {
+                text: harnessStatus?.rootPath || '—',
+                className: 'mt-3 break-all rounded-md border border-white/10 bg-black/20 p-3 font-mono text-xs text-secondary',
+            }),
+        ], harnessReadiness === 'available' ? 'border-emerald-400/20' : harnessReadiness === 'partial' ? 'border-yellow-400/20' : 'border-red-400/20'),
         card([
             el('div', { className: 'flex flex-wrap items-center justify-between gap-4' }, [
                 el('div', {}, [

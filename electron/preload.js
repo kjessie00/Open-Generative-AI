@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('filmPipeline', {
     getConfig: () => ipcRenderer.invoke('film-pipeline:get-config'),
+    getHarnessContractStatus: () => ipcRenderer.invoke('film-pipeline:get-harness-contract-status'),
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),
     readProductionState: () => ipcRenderer.invoke('film-pipeline:read-production-state'),

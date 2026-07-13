@@ -24,6 +24,7 @@ generation path was implemented.
 ```js
 window.filmPipeline = {
   getConfig,
+  getHarnessContractStatus,
   selectProductionRoot,
   listProductionChildren,
   readProductionState,
@@ -37,12 +38,17 @@ window.filmPipeline = {
 }
 ```
 
-The current bridge has 11 methods. It deliberately has no `setConfig` method.
+The current bridge has 12 methods. It deliberately has no `setConfig` method.
 Native selection accepts only `{mode: 'production'}` or `{mode: 'parent'}`;
 sidebar activation accepts `{mode: 'child', rootPath}` and main verifies that
 the candidate is an immediate real non-symlink child of the configured parent.
 The renderer does not supply paths to production-state, child-list, or asset
 read IPC.
+
+`getHarnessContractStatus()`도 인자를 받지 않는다. Main process가 고정한
+`/Users/jessiek/StudioProjects/happyVideoFactory` 아래 5개 exact allowlist만
+읽기 전용으로 검사하며 renderer에는 path/existence/size/SHA-256/readiness만
+반환한다. 파일 본문, renderer가 제안한 root, 실행 명세는 반환하지 않는다.
 
 The preload layer only forwards IPC calls. It does not expose Node.js, `fs`,
 `child_process`, shell access, cookies, tokens, browser state, or account
@@ -56,6 +62,8 @@ boundary.
 Allowed now:
 
 - read the renderer-visible local film-pipeline config under Electron `userData`
+- inspect the fixed happyVideoFactory canonical contract allowlist as bounded
+  read-only metadata
 - persist production/parent paths only from a native dialog result or a
   main-validated immediate sidebar child
 - read shallow production state candidates

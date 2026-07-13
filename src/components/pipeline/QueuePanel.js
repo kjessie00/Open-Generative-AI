@@ -94,7 +94,26 @@ function strictBlockerCard(queuePolicy) {
     ], queuePolicy.blockers.length ? 'border-red-400/20' : 'border-emerald-400/20');
 }
 
-export function QueuePanel({ state }) {
+function harnessStatusCard(harnessStatus) {
+    const readiness = harnessStatus?.readiness || 'blocked';
+    const label = readiness === 'available' ? p('Available') : readiness === 'partial' ? p('Partial') : p('Blocked');
+    const badge = readiness === 'available' ? 'PASS' : readiness === 'partial' ? 'WARN' : 'BLOCK';
+    return card([
+        el('div', { className: 'mb-2 flex flex-wrap items-center gap-2' }, [
+            el('div', { text: p('Canonical harness handoff'), className: 'text-sm font-bold text-white' }),
+            statusBadge(label, badge),
+            statusBadge(p('Read-only metadata'), 'PREVIEW'),
+        ]),
+        el('p', {
+            text: readiness === 'available'
+                ? p('The canonical pack validator is available as a copy-only local read preview.')
+                : p('Canonical pack commands remain copy-disabled until the fixed-root contract is complete.'),
+            className: 'text-sm leading-6 text-secondary',
+        }),
+    ], readiness === 'available' ? 'border-emerald-400/20' : readiness === 'partial' ? 'border-yellow-400/20' : 'border-red-400/20');
+}
+
+export function QueuePanel({ state, config, harnessStatus }) {
     const now = new Date();
     const submitRecords = state.submitRecords || [];
     const promptPack = state.promptPacks?.[0];
@@ -113,11 +132,16 @@ export function QueuePanel({ state }) {
     const ledgers = state.queueLedgers || {};
     const nextHeartbeatBlocked = queuePolicy.details?.nextHeartbeatBlocked?.[0] || null;
     const heartbeatBlocked = Boolean(nextHeartbeatBlocked);
-    const commandSpecs = buildPipelineCommandSpecs(state, { now });
+    const commandSpecs = buildPipelineCommandSpecs(state, {
+        now,
+        harnessStatus,
+        configuredProductionRoot: config?.productionRoot || '',
+    });
     const queryCommandSpecs = commandSpecs.filter((commandSpec) => commandSpec.id.startsWith('dreamina_list_task_') || commandSpec.id.startsWith('dreamina_query_result_'));
     const otherCommandSpecs = commandSpecs.filter((commandSpec) => !queryCommandSpecs.includes(commandSpec));
 
     return panelShell(p('Generation Queue'), p('Submit and heartbeat ledgers. Live submit is disabled; UI-only mode only renders preview commands.'), [
+        harnessStatusCard(harnessStatus),
         policyBanner(),
         blockerList([...motionBoardBlockers, ...submitValidation.blockers, ...queuePolicy.blockers]),
         strictBlockerCard(queuePolicy),

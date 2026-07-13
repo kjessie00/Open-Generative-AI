@@ -168,6 +168,20 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
                 },
             };
         },
+        async getHarnessContractStatus(...args) {
+            calls.push(['getHarnessContractStatus', args]);
+            return {
+                ok: true,
+                ready: true,
+                readiness: 'available',
+                readOnly: true,
+                rootPath: '/Users/jessiek/StudioProjects/happyVideoFactory',
+                entries: [
+                    { id: 'pack_builder', ready: true, path: '/Users/jessiek/StudioProjects/happyVideoFactory/scripts/build_short_drama_pipeline_pack.py' },
+                    { id: 'pack_validator', ready: true, path: '/Users/jessiek/StudioProjects/happyVideoFactory/scripts/validate_short_drama_pipeline_pack.py' },
+                ],
+            };
+        },
         async selectProductionRoot(request) {
             calls.push(['selectProductionRoot', structuredClone(request)]);
             assert.deepEqual(request, { mode: 'production' });
@@ -219,6 +233,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
 
     await flushRenderer();
     assert.match(studio.textContent, /Restored Production State/);
+    assert.deepEqual(calls.find(([method]) => method === 'getHarnessContractStatus')[1], []);
     assert.deepEqual(
         calls.filter(([method]) => method === 'readProductionState').map(([, args]) => args),
         [[]],
@@ -314,6 +329,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
 
     await byText(studio, 'button', '생성 대기열').dispatchEvent({ type: 'click' });
     const queueText = studio.textContent;
+    assert.match(queueText, /Canonical 하네스 연결사용 가능읽기 전용 메타데이터/);
     assert.match(queueText, /라이브 제출은 차단/);
     assert.match(queueText, /미리보기 카드만 제공합니다. 실행 버튼은 표시하지 않습니다./);
     assert.match(queueText, /명령 복사/);
@@ -334,6 +350,74 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'writePlanningFile').length, 0);
     assert.match(studio.textContent, /\/tmp\/selected-production/, 'technical paths must remain unmodified');
+});
+
+test('copy-disabled command card attaches no click handler and performs zero clipboard IPC', async (t) => {
+    const calls = [];
+    const bridge = {
+        async copyCommandPreview(commandSpec) {
+            calls.push(commandSpec);
+            return { ok: true, copied: true, verified: true };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { CommandPreviewCard } = await import('../src/components/pipeline/CommandPreviewCard.js');
+
+    const disabled = CommandPreviewCard({
+        commandSpec: {
+            id: 'missing-contract',
+            label: 'Canonical pack validate',
+            command: '',
+            args: [],
+            preview_only: true,
+            side_effect_type: 'local_read',
+            copy_allowed: false,
+            disabled_reason: 'CANONICAL_PACK_INPUT_INCOMPLETE',
+        },
+    });
+    const disabledButton = byText(disabled, 'button', '복사 불가');
+    assert.ok(disabledButton);
+    assert.equal(disabledButton.disabled, true);
+    assert.equal(disabledButton.listeners.has('click'), false, 'disabled copy must have no click listener');
+    await disabledButton.dispatchEvent({ type: 'click' });
+    assert.equal(calls.length, 0, 'disabled copy must perform zero clipboard IPC');
+
+    const usable = CommandPreviewCard({
+        commandSpec: {
+            id: 'canonical-pack-validate',
+            label: 'Canonical pack validate',
+            command: 'python3',
+            args: ['/fixed/validate.py', '/configured/production', '--json'],
+            cwd: '/fixed/harness',
+            preview_only: true,
+            side_effect_type: 'local_read',
+            copy_allowed: true,
+        },
+    });
+    const usableButton = byText(usable, 'button', '명령 복사');
+    assert.ok(usableButton);
+    assert.equal(usableButton.disabled, false);
+    await usableButton.dispatchEvent({ type: 'click' });
+    assert.equal(calls.length, 1, 'usable preview copy must keep the existing copy-only bridge');
+});
+
+test('settings renders partial and blocked fixed-root harness readiness in Korean', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const { PipelineSettingsPanel } = await import('../src/components/pipeline/PipelineSettingsPanel.js');
+    const config = { productionRoot: '/tmp/production', productionParentRoot: '' };
+
+    for (const [readiness, expected] of [['partial', '부분'], ['blocked', '차단']]) {
+        const panel = PipelineSettingsPanel({
+            state: samplePipelineState,
+            config,
+            harnessStatus: { readiness, rootPath: '/fixed/happyVideoFactory' },
+        });
+        assert.match(panel.textContent, new RegExp(`happyVideoFactory canonical 계약${expected}읽기 전용 메타데이터`));
+        assert.match(panel.textContent, /main process는 고정 allowlist만 검사합니다/);
+    }
 });
 
 test('PipelineStudio preserves native parent and sidebar child UX without renderer config mutation', async (t) => {

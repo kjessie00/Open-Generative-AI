@@ -1,5 +1,5 @@
 import { BLOCKERS } from './blockers.js';
-import { basename, joinPath, looksSensitivePath, normalizeSlashes } from './filePathUtils.js';
+import { basename, dirname, joinPath, looksSensitivePath, normalizeSlashes } from './filePathUtils.js';
 
 function nowIso() {
     return new Date().toISOString();
@@ -198,22 +198,48 @@ function normalizeAcceptedSeconds(rawReader) {
 
 function normalizeSubmitRecords(rawReader) {
     const structured = rawReader.parsed?.submitRecords?.records || [];
+    const canonical = rawReader.parsed?.submissionManifest?.records || [];
     const artifacts = rawReader.parsed?.submitArtifacts?.records || [];
-    return [...structured, ...artifacts].map((record) => ({
-        clip_id: record.clip_id || '',
-        subcommand: record.subcommand || '',
-        requested_model: record.requested_model || '',
-        submitted_cli_model: record.submitted_cli_model || record.backend_model || '',
-        submit_id: record.submit_id || '',
-        logid: record.logid || '',
-        credit_count: Number(record.credit_count || 0),
-        status: record.status || '',
-        next_heartbeat_at: record.next_heartbeat_at || '',
-        download_dir: absolutePath(rawReader.rootPath, record.download_dir || ''),
-        command_log_path: absolutePath(rawReader.rootPath, record.command_log_path || ''),
-        downloaded: record.downloaded === true,
-        source_relative_path: record.source_relative_path || '',
+    const canonicalState = rawReader.parsed?.jimengState?.value || {};
+    const downloads = rawReader.parsed?.downloadManifest?.records || [];
+    const canonicalRecords = canonical.length ? canonical : (canonicalState.submitted_indices || []).map((sceneIndex) => ({
+        scene_index: sceneIndex,
+        submit_id: canonicalState.submit_ids?.[String(sceneIndex)] || '',
+        model: canonicalState.model || '',
     }));
+    const records = [...structured, ...canonicalRecords, ...artifacts].map((record) => {
+        const sceneIndex = Number.isSafeInteger(record.scene_index) ? record.scene_index : null;
+        const download = sceneIndex === null ? null : downloads.find((candidate) => candidate.scene_index === sceneIndex);
+        const downloadedByState = sceneIndex !== null && (canonicalState.downloaded_indices || []).includes(sceneIndex);
+        const downloadedPath = absolutePath(rawReader.rootPath, download?.downloaded_paths?.[0] || '');
+        return {
+            clip_id: record.clip_id || record.shot_id || '',
+            subcommand: record.subcommand || '',
+            requested_model: record.requested_model || '',
+            submitted_cli_model: record.submitted_cli_model || record.model || record.model_version || record.backend_model || canonicalState.model || 'unknown',
+            submit_id: record.submit_id || '',
+            logid: record.logid || '',
+            credit_count: Number(record.credit_count || 0),
+            status: record.status || record.gen_status || 'unknown',
+            next_heartbeat_at: record.next_heartbeat_at || '',
+            download_dir: absolutePath(rawReader.rootPath, record.download_dir || '') || dirname(downloadedPath),
+            command_log_path: absolutePath(rawReader.rootPath, record.command_log_path || ''),
+            downloaded: record.downloaded === true || downloadedByState || Boolean(download?.downloaded_paths?.length),
+            source_relative_path: record.source_relative_path || (canonicalRecords.includes(record) ? 'submission_manifest.json' : ''),
+            canonical_scene_index: sceneIndex,
+        };
+    });
+    const seen = new Set();
+    return records.filter((record) => {
+        const key = record.submit_id
+            ? `submit:${record.submit_id}`
+            : record.canonical_scene_index !== null
+                ? `scene:${record.canonical_scene_index}`
+                : `clip:${record.clip_id}:${record.source_relative_path}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 function normalizeHeartbeatRecords(rawReader) {
@@ -343,6 +369,8 @@ export function normalizeProductionReaderState(rawReader) {
     const hasSummaryBrief = Boolean(markdown.brief || markdown.intake);
     const structuralBrief = !hasSummaryBrief && Boolean(markdown.script);
     const sceneBundle = rawReader.parsed?.storySceneBundle?.value || {};
+    const pipelinePackReport = rawReader.parsed?.pipelinePackReport?.value || {};
+    const canonicalRoute = ({ seedance: 'seedance', flow: 'flow_omni', both: 'both' })[pipelinePackReport.target_generator] || '';
     const qaArtifacts = {
         contactSheetPaths: (rawReader.files || []).filter((file) => /contact/i.test(file.name)).map((file) => file.path),
         frameSamplePaths: (rawReader.files || []).filter((file) => /(^|\/)(frames?|qa)\//.test(file.relative_path) && ['.jpg', '.jpeg', '.png', '.webp'].includes(file.extension)).map((file) => file.path),
@@ -379,7 +407,7 @@ export function normalizeProductionReaderState(rawReader) {
             production_id: basename(rootPath),
             title,
             root_path: rootPath,
-            route: rawReader.layout === 'A' || rawReader.variant === 'gangnam_scene_bundle' ? 'seedance' : 'both',
+            route: canonicalRoute || (rawReader.layout === 'A' || rawReader.variant === 'gangnam_scene_bundle' ? 'seedance' : 'both'),
             target_platform: '',
             aspect_ratio: sceneBundle.aspect_ratio || '',
             status: stateBlockers.length ? 'partial_blocked' : 'imported',
@@ -411,7 +439,7 @@ export function normalizeProductionReaderState(rawReader) {
         finalReport: {
             final_video_path: finalVideoPath,
             production_folder: rootPath,
-            generator_route: rawReader.layout === 'A' || rawReader.variant === 'gangnam_scene_bundle' ? 'seedance' : 'both',
+            generator_route: canonicalRoute || (rawReader.layout === 'A' || rawReader.variant === 'gangnam_scene_bundle' ? 'seedance' : 'both'),
             concat_list_path: concatListPath,
             ffprobe_verified: ffprobeExists,
             ffprobe_path: ffprobePath,
@@ -425,7 +453,7 @@ export function normalizeProductionReaderState(rawReader) {
         },
         referenceMediaPaths: assets.map((asset) => asset.path).filter(Boolean),
         queueLedgers: {
-            submit_records: rawReader.parsed?.submitRecords?.path || '',
+            submit_records: rawReader.parsed?.submitRecords?.path || rawReader.parsed?.submissionManifest?.path || '',
             heartbeat_log: rawReader.parsed?.heartbeatLog?.path || '',
         },
         qaArtifacts,
@@ -439,6 +467,19 @@ export function normalizeProductionReaderState(rawReader) {
             ffmpegPath: '',
             ffprobePath: '',
             modelDirectories: [],
+        },
+        canonicalHandoff: {
+            contract: rawReader.canonical?.contract || '',
+            pipeline_pack_report_path: rawReader.parsed?.pipelinePackReport?.path || '',
+            submission_manifest_path: rawReader.parsed?.submissionManifest?.path || '',
+            jimeng_state_path: rawReader.parsed?.jimengState?.path || '',
+            download_manifest_path: rawReader.parsed?.downloadManifest?.path || '',
+            inconsistencies: rawReader.canonical?.inconsistencies || [],
+            validation_input_ready: rawReader.parsed?.pipelinePackReport?.parsed === true
+                && rawReader.markdown?.intake?.exists === true
+                && rawReader.markdown?.script?.exists === true
+                && (rawReader.canonical?.inconsistencies || []).length === 0,
+            final_ready: false,
         },
         fileEvidence: {
             [finalVideoPath]: finalVideoExists,

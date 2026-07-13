@@ -23,27 +23,12 @@ function absolutePath(state, pathValue = '') {
     return joinPath(root, relativeInsideRoot);
 }
 
-function firstAssetPath(state) {
-    const pathValue = state.assets?.find((asset) => asset.path)?.path || 'assets/start_frame.png';
-    return absolutePath(state, pathValue);
-}
-
 function productionId(state) {
     return state.project?.production_id || 'unknown_production';
 }
 
 function rootPath(state) {
     return state.project?.root_path || '';
-}
-
-function goalText(state) {
-    return state.brief?.logline || state.brief?.concept || `Build cinematic pipeline plan for ${state.project?.title || productionId(state)}`;
-}
-
-function targetLane(state) {
-    const route = state.project?.route;
-    if (route === 'flow_omni') return 'flow_omni';
-    return 'seedance';
 }
 
 function absOutput(state, relativePath) {
@@ -62,44 +47,89 @@ function spec(base) {
 }
 
 export function buildContractPlanCommand(state) {
-    const output = absOutput(state, 'pipeline_plan.json');
+    return buildCanonicalPackBuildCommand(state);
+}
+
+export function canonicalGeneratorRoute(route) {
+    return ({
+        seedance: 'seedance',
+        flow_omni: 'flow',
+        both: 'both',
+    })[route] || '';
+}
+
+function harnessEntrypoint(harnessStatus, id) {
+    if (harnessStatus?.readiness !== 'available' || harnessStatus?.ready !== true) return null;
+    const entry = harnessStatus.entries?.find((candidate) => candidate.id === id);
+    return entry?.ready === true && entry?.path ? entry : null;
+}
+
+export function buildCanonicalPackBuildCommand(state, options = {}) {
+    const route = canonicalGeneratorRoute(state.project?.route);
+    const harnessStatus = options.harnessStatus || state.harnessContractStatus;
+    const builder = harnessEntrypoint(harnessStatus, 'pack_builder');
+    const reason = !builder
+        ? 'CANONICAL_HARNESS_CONTRACT_UNAVAILABLE'
+        : !route
+            ? 'UNSUPPORTED_GENERATOR_ROUTE'
+            : 'NEW_PACK_OUTPUT_SAFETY_UNPROVEN';
     return spec({
-        id: 'contract_plan',
-        label: 'Build pipeline plan',
-        command: 'python',
-        args: [
-            'scripts/build_ai_video_pipeline_plan.py',
-            '--production-id', productionId(state),
-            '--goal', goalText(state),
-            '--target-lane', targetLane(state),
-            '--asset', `${firstAssetPath(state)}:image:start_frame`,
-            '--output', output,
-            '--packets-output', absOutput(state, 'agent_work_packets.json'),
-        ],
-        cwd: rootPath(state),
+        id: 'canonical_pack_build',
+        label: 'Canonical pack build',
+        command: '',
+        args: [],
+        cwd: harnessStatus?.rootPath || '',
         side_effect_type: SIDE_EFFECT_TYPES.LOCAL_PLANNING_WRITE,
-        evidence_output_path: output,
+        copy_allowed: false,
+        disabled_reason: reason,
+        disabled_detail: !builder
+            ? 'happyVideoFactory canonical pack 계약이 확인되지 않아 build 명령을 만들지 않았습니다.'
+            : !route
+                ? `지원하지 않는 generator route입니다: ${state.project?.route || 'missing'}`
+                : '현재 선택된 기존 production이 새 빈 출력 폴더임을 main process가 증명하지 못하므로 build preview를 차단합니다. 기존 산출물에 덮어쓰기 옵션을 자동 추가하지 않습니다.',
+        canonical_target_generator: route,
+        production_id: productionId(state),
     });
 }
 
-export function buildContractOnlyRunCommand(state) {
-    const outputDir = absOutput(state, 'pipeline_run');
+export function buildCanonicalPackValidationCommand(state, options = {}) {
+    const harnessStatus = options.harnessStatus || state.harnessContractStatus;
+    const validator = harnessEntrypoint(harnessStatus, 'pack_validator');
+    const configuredRoot = options.configuredProductionRoot || '';
+    const stateRoot = rootPath(state);
+    const usableRoot = Boolean(configuredRoot)
+        && isAbsolutePath(configuredRoot)
+        && configuredRoot === stateRoot;
+    const canonicalInputsReady = state.canonicalHandoff?.validation_input_ready === true;
+    const disabledReason = !validator
+        ? 'CANONICAL_HARNESS_CONTRACT_UNAVAILABLE'
+        : !usableRoot
+            ? 'MAIN_OWNED_PRODUCTION_ROOT_REQUIRED'
+            : !canonicalInputsReady
+                ? 'CANONICAL_PACK_INPUT_INCOMPLETE'
+            : '';
     return spec({
-        id: 'contract_only_run',
-        label: 'Run contract-only pipeline',
-        command: 'python',
-        args: [
-            'scripts/run_ai_video_pipeline.py',
-            '--production-id', productionId(state),
-            '--goal', goalText(state),
-            '--target-lane', targetLane(state),
-            '--asset', `${firstAssetPath(state)}:image:start_frame`,
-            '--output-dir', outputDir,
-        ],
-        cwd: rootPath(state),
-        side_effect_type: SIDE_EFFECT_TYPES.LOCAL_PLANNING_WRITE,
-        evidence_output_path: outputDir,
+        id: 'canonical_pack_validate',
+        label: 'Canonical pack validate',
+        command: validator ? 'python3' : '',
+        args: validator && usableRoot ? [validator.path, configuredRoot, '--json'] : [],
+        cwd: validator ? harnessStatus.rootPath : '',
+        side_effect_type: SIDE_EFFECT_TYPES.LOCAL_READ,
+        evidence_output_path: '',
+        copy_allowed: disabledReason === '',
+        disabled_reason: disabledReason,
+        disabled_detail: disabledReason === 'CANONICAL_HARNESS_CONTRACT_UNAVAILABLE'
+            ? 'canonical validator의 fixed-root hash 계약이 준비되지 않았습니다.'
+            : disabledReason
+                ? disabledReason === 'CANONICAL_PACK_INPUT_INCOMPLETE'
+                    ? 'canonical intake brief, script.txt, pipeline_pack_report.json이 안전하게 복원되어야 validator를 복사할 수 있습니다.'
+                    : 'main process가 소유한 현재 production root와 복원된 프로젝트가 일치해야 합니다.'
+                : '읽기 전용 canonical pack 검증 preview입니다. 결과 파일을 생성한다고 주장하지 않습니다.',
     });
+}
+
+export function buildContractOnlyRunCommand(state, options = {}) {
+    return buildCanonicalPackValidationCommand(state, options);
 }
 
 export function buildDreaminaHelpCommands(state) {
@@ -241,8 +271,8 @@ export function buildFfmpegConcatPreviewCommand(state) {
 export function buildPipelineCommandSpecs(state, options = {}) {
     const now = options.now || new Date();
     return [
-        buildContractPlanCommand(state),
-        buildContractOnlyRunCommand(state),
+        buildCanonicalPackBuildCommand(state, options),
+        buildCanonicalPackValidationCommand(state, options),
         ...buildDeepSearchSceneImageCommandSpecs(state),
         ...buildDreaminaHelpCommands(state),
         ...buildDreaminaQueueCommands(state, now),

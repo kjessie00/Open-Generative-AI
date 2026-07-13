@@ -47,6 +47,20 @@ export async function getConfig() {
     return { ...mockConfig };
 }
 
+export async function getHarnessContractStatus() {
+    const bridge = getBridge();
+    if (bridge) return bridge.getHarnessContractStatus();
+    return {
+        ...unavailable('getHarnessContractStatus'),
+        readOnly: true,
+        readiness: 'blocked',
+        ready: false,
+        reason: 'FILM_PIPELINE_BRIDGE_UNAVAILABLE',
+        rootPath: '',
+        entries: [],
+    };
+}
+
 export async function selectProductionRoot(request) {
     const bridge = getBridge();
     if (bridge) return bridge.selectProductionRoot(request);
@@ -139,6 +153,7 @@ export function onProgress(callback) {
 export const pipelineClient = Object.freeze({
     hasFilmPipelineBridge,
     getConfig,
+    getHarnessContractStatus,
     selectProductionRoot,
     listProductionChildren,
     readProductionState,

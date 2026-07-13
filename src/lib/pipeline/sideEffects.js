@@ -110,7 +110,7 @@ export function classifySideEffect(commandSpec = {}) {
         mode,
         allowed: mode === 'allowed' || mode === 'preview_only',
         executable: false,
-        copyAllowed: true,
+        copyAllowed: commandSpec.copy_allowed !== false,
         blocker: blockers.filter(Boolean)[0] || '',
         blockers: Array.from(new Set(blockers.filter(Boolean))),
         requiredEvidenceOutput: commandSpec.evidence_output_path || '',

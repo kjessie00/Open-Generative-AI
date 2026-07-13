@@ -35,10 +35,16 @@ execution path was added.
 
 The command builders generate these preview-only command families:
 
-- Contract plan:
-  - `python scripts/build_ai_video_pipeline_plan.py --production-id <id> --goal <goal> --target-lane <seedance|flow_omni> --asset <abs_path>:image:start_frame --output <abs_path>/pipeline_plan.json --packets-output <abs_path>/agent_work_packets.json`
-- Contract-only run:
-  - `python scripts/run_ai_video_pipeline.py --production-id <id> --goal <goal> --target-lane <seedance|flow_omni> --asset <abs_path>:image:start_frame --output-dir <abs_path>/pipeline_run`
+- Canonical pack validation:
+  - `python3 /Users/jessiek/StudioProjects/happyVideoFactory/scripts/validate_short_drama_pipeline_pack.py <main-owned-production-root> --json`
+  - `cwd`는 fixed happyVideoFactory root이고 `local_read`/copy-only다.
+  - stdout을 파일 증거로 저장한다고 주장하지 않는다.
+- Canonical pack build:
+  - 현재 UI는 새 출력 폴더가 비어 있음을 main process에서 증명할 수 없으므로
+    명령 자체와 복사를 모두 차단한다.
+  - 기존 production에 덮어쓰기 옵션을 추가하지 않는다.
+  - route mapping은 `seedance -> seedance`, `flow_omni -> flow`,
+    `both -> both`이며 그 외 값은 fail-closed다.
 - Dreamina preflight/help:
   - `dreamina -h`
   - `dreamina user_credit`
@@ -67,6 +73,9 @@ The command builders generate these preview-only command families:
 
 The UI card always displays the rendered command, side-effect type, allowed
 status, required evidence output, blocker list, and copy command control.
+`copy_allowed:false`인 계약/입력 누락 명령은 버튼이 실제 disabled이고 click
+listener도 없어 clipboard IPC가 0회다. Side-effect BLOCK 명령의 기존 copy-only
+정책은 그대로다.
 
 ## Execution Boundary
 
@@ -78,7 +87,7 @@ VIP/fallback model behavior. Command cards are previews only.
 
 - `node --check` passed for the new command/gate modules, `QueuePanel.js`, and
   `electron/lib/filmPipelineProvider.js`.
-- Command-builder smoke test produced 10 preview specs and verified the contract
-  plan/run asset argument is absolute.
-- Queue panel render smoke test completed with mock data.
+- Canonical builder/validator, route, missing input, disabled-copy와 renderer
+  clipboard 0회 계약은 `tests/canonicalHandoffAdapter.test.mjs`와
+  `tests/rendererContract.test.mjs`에서 실제 command/DOM 경로로 검증한다.
 - `git diff --check` passed.

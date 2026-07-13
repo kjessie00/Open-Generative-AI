@@ -6,7 +6,7 @@
 
 ## 현재 결론
 
-로컬 Vite/Electron 제품 경로, Electron 보안 경계, `window.filmPipeline` bridge, dry-run/command-preview 정책, Layout A/B fixture reader, validator 상태 분리는 코드와 자동 검증 기준으로 통과했다. 추가 최소권한 패치로 기본 main lifecycle의 Local AI/Wan2GP provider 등록과 `window.localAI` bridge를 제거했다. 과거 실제 Electron 증거는 `window.filmPipeline` 12개 method였고, 현재 provenance 하드닝 코드는 public `setConfig`를 제거해 VM-검증된 11개 method다. 변경 후 실제 Electron은 이번 회차에 실행하지 않았다. dormant 소스는 기본 active import graph에서 도달 불가다. 외부 생성·업로드·계정 작업은 실행하지 않았다.
+로컬 Vite/Electron 제품 경로, Electron 보안 경계, `window.filmPipeline` bridge, dry-run/command-preview 정책, Layout A/B fixture reader, validator 상태 분리는 코드와 자동 검증 기준으로 통과했다. 추가 최소권한 패치로 기본 main lifecycle의 Local AI/Wan2GP provider 등록과 `window.localAI` bridge를 제거했다. 과거 실제 Electron 증거는 당시 구성의 `window.filmPipeline` 12개 method였고, provenance 하드닝에서 public `setConfig`를 제거한 뒤 11개가 되었다. 현재 코드는 main-owned fixed-root `getHarnessContractStatus`를 추가해 `setConfig` 없는 정확한 12개 method다. 변경 후 실제 Electron은 이번 회차에 실행하지 않았다. dormant 소스는 기본 active import graph에서 도달 불가다. 외부 생성·업로드·계정 작업은 실행하지 않았다.
 
 실제 Electron GUI는 외부망 차단 상태에서 실행되었고 10개 core panel/11-tab, preload IPC, 상태 복원, blocker/copy-only preview, 1440×900 및 1024×640 레이아웃이 검증되었다. fixture와 첫 번째 production의 native folder selection은 PASS다. 두 번째 production은 sidebar/preload로 UI state를 복원했지만 native sheet 자동화가 parent root를 반환하여 `NATIVE_FOLDER_SELECTION_ROOT2_GAP`이 남는다. main-process clipboard IPC와 실제 macOS trusted click은 write/read-back/hash equality 및 `executed:false`로 PASS했다. review/dashboard/accepted-seconds/final-quality는 계속 blocker다.
 
@@ -42,17 +42,29 @@ fallback verifier가 모두 코드 판정 전 cybersecurity classifier에서 실
 독립 verdict가 없으며 자동 verifier를 더 호출하지 않는다. Root도 이 변경을
 최종 security acceptance로 승격할 수 없다.
 
+happyVideoFactory canonical handoff adapter v1은 generic
+`build_ai_video_pipeline_plan.py`/`run_ai_video_pipeline.py` preview를 제거했다.
+Main은 고정 happyVideoFactory root의 exact 5-file allowlist를 읽기 전용
+path/size/SHA-256 metadata로만 반환한다. 기존 canonical Layout A는
+`intake/script.txt`, `pipeline_pack_report.json`, submission/jimeng/download
+manifest를 bounded/sanitized하게 복원한다. Validator는 canonical 입력이 완전하고
+main-owned production root가 일치할 때만 exact absolute command/cwd로 copy할 수
+있다. Existing production build, missing/partial contract/input, unsupported route는
+copy-disabled다. Network-denied full tests 108/108, lint, Vite build 41 modules가
+PASS했다. 실제 production, GUI, live generation은 사용하지 않았다. 상세:
+`docs/ui_integration/31_happy_video_factory_handoff_adapter.md`.
+
 ## 인수 기준 현황
 
 | 기준 | 상태 | 현재 증거 또는 남은 조건 |
 | --- | --- | --- |
 | AC1 active MuAPI 격리 | VERIFIED | `4dac387`; 기본 dev/build/start는 Vite/Electron이며 active MuAPI surface scan 통과 |
 | AC2 Electron 보안 | EXECUTOR PASS / INDEPENDENT BLOCK | 외부 navigation deny-by-default, public config mutation 제거, native/immediate-child provenance와 planning exact allowlist/symlink/content/atomic-write 회귀 PASS; 독립 verifier verdict 없음 |
-| AC3 renderer/main 경계 | EXECUTOR PASS / INDEPENDENT BLOCK | current preload는 `filmPipeline` 11 methods, `setConfig` 없음; main이 configured root/parent selection과 read/write를 소유; 독립 verifier verdict 없음 |
+| AC3 renderer/main 경계 | EXECUTOR PASS / INDEPENDENT BLOCK | current preload는 `filmPipeline` 12 methods, `setConfig` 없음; 새 method도 renderer path 인자 없는 fixed-root read-only metadata이며 main이 configured root/parent selection과 read/write를 소유; 독립 verifier verdict 없음 |
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았고 command preview만 허용 |
 | AC5 실제 GUI | PARTIAL PASS | 기존 실제 window/preload/11-tab/fixture+첫 root native/state/blocked preview/trusted copy와 한국어 4-viewport/AX/axe/focus PASS; provenance 변경 후 open/parent/sidebar/refresh는 deterministic DOM PASS지만 실제 Electron은 미실행; 두 번째 root native selection, 수정 후 console 및 실제 keyboard-only 증거는 BLOCK |
-| AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant golden 10/10 PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
-| AC7 자동 검증 | VERIFIED (명시된 GUI/독립 gaps 제외) | path-provenance 하드닝 후 network-denied 전체 93/93, focused 32/32, lint, build 41 modules, diff check PASS; 기존 실제 GUI runtime 증거는 별도 보존 |
+| AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant golden 10/10 및 canonical script/report/manifest golden·partial·symlink 3개 PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
+| AC7 자동 검증 | VERIFIED (명시된 GUI/독립 gaps 제외) | canonical handoff 후 network-denied 전체 108/108, adapter focused 38/38, lint, build 41 modules PASS; 기존 실제 GUI runtime 증거는 별도 보존 |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
 | AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds를 독립 상태로 유지 |
@@ -62,7 +74,8 @@ fallback verifier가 모두 코드 판정 전 cybersecurity classifier에서 실
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- network-denied 전체 테스트: 93/93 PASS
+- network-denied 전체 테스트: 108/108 PASS
+- canonical handoff focused: targeted self-fix 후 38/38 PASS
 - network-denied provenance/security/renderer focused: 32/32 PASS
 - lint: PASS
 - Vite build: PASS, 41 modules
@@ -80,7 +93,8 @@ fallback verifier가 모두 코드 판정 전 cybersecurity classifier에서 실
 - native/clipboard focused regression: 12/12 PASS
 - active Electron entrypoint focused security regression: 8/8 PASS
 - historical fresh runtime: `window.localAI === undefined`, 당시 `window.filmPipeline` 12 methods, legacy/unsafe enabled control 0, `file:` 7/external request 0, renderer console warning/error 0
-- current preload VM: `window.filmPipeline` 11 methods, public `setConfig` 0건, path-free list/state/assets IPC
+- current preload VM: `window.filmPipeline` 12 methods, public `setConfig` 0건, path-free harness/list/state/assets IPC
+- canonical harness source probe: exact 5/5 `available`; content 반환 0, renderer root 입력 0
 - fresh runtime screenshot (private temp only): SHA-256 `0280c8892a5e6c9dbf9a913ade9d9ec4618a554b6d9564246f68e28da5539e70`
 - trusted copy aggregate: 86 bytes, SHA-256 `7401b0abcbdf800d5d75aa1c278ef1f45c4578755fb6fecc45d505689065cf5c`, `verified:true`, `executed:false`
 
@@ -106,7 +120,7 @@ Jessie가 승인한 `release/`와 `/tmp/open-generative-ai-security-review-20260
 7. planning-write/path-provenance 독립 인수는 BLOCK이다. 첫 verifier와 fallback
    verifier가 모두 코드 판정 전에 classifier에서 실패했고 독립 verdict가 없다.
    자동 verifier는 더 호출하지 않으며 root도 최종 security acceptance하지 않는다.
-8. provenance 변경 후 11-method bridge와 native mode selection은 실제 Electron을
+8. provenance/canonical handoff 변경 후 12-method bridge와 native mode selection은 실제 Electron을
    실행한 회차에서 별도로 확인하기 전까지 runtime PASS로 소급하지 않는다.
 
 본 회차의 GUI 자동화는 Jessie의 current-turn 승인 아래 외부망 차단으로 수행했다. 외부 계정 접근, generation/upload, deploy/release는 실행하지 않았다.

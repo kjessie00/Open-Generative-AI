@@ -5,6 +5,7 @@ import { SideEffectGate } from './SideEffectGate.js';
 import { p } from './copy.js';
 
 async function copyCommand(commandSpec, button) {
+    if (commandSpec.copy_allowed === false) return;
     try {
         const result = await pipelineClient.copyCommandPreview(commandSpec);
         button.textContent = result?.copied && result?.verified ? p('Copied') : p('Copy failed');
@@ -33,9 +34,10 @@ function commandLabel(commandSpec) {
 export function CommandPreviewCard({ commandSpec }) {
     const command = renderShellCommand(commandSpec);
     const classification = classifySideEffect(commandSpec);
-    const copyButton = actionButton(p('Copy command'), {
+    const copyButton = actionButton(classification.copyAllowed ? p('Copy command') : p('Copy unavailable'), {
         variant: 'muted',
-        onClick: () => copyCommand(commandSpec, copyButton),
+        disabled: !classification.copyAllowed,
+        onClick: classification.copyAllowed ? () => copyCommand(commandSpec, copyButton) : undefined,
     });
 
     const blocked = classification.mode === 'blocked';

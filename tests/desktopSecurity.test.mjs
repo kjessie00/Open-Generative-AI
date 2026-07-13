@@ -177,6 +177,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(Object.keys(bridge).sort(), [
         'copyCommandPreview',
         'getConfig',
+        'getHarnessContractStatus',
         'listAssets',
         'listProductionChildren',
         'onProgress',
@@ -189,6 +190,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     ]);
 
     await bridge.getConfig();
+    await bridge.getHarnessContractStatus();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
     await bridge.selectProductionRoot({ mode: 'production' });
     await bridge.listProductionChildren();
@@ -203,6 +205,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         invocations.map(([channel]) => channel),
         [
             'film-pipeline:get-config',
+            'film-pipeline:get-harness-contract-status',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
             'film-pipeline:read-production-state',
@@ -219,6 +222,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         [{ mode: 'production' }],
     );
     for (const channel of [
+        'film-pipeline:get-harness-contract-status',
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',
         'film-pipeline:list-assets',

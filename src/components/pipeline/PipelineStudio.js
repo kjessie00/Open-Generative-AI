@@ -68,6 +68,14 @@ export function PipelineStudio() {
     };
     let productions = [];
     let productionsState = { status: 'idle', reason: '' };
+    let harnessStatus = {
+        readOnly: true,
+        readiness: 'blocked',
+        ready: false,
+        reason: 'status_not_loaded',
+        rootPath: '',
+        entries: [],
+    };
 
     const render = () => {
         container.innerHTML = '';
@@ -164,6 +172,7 @@ export function PipelineStudio() {
             PipelineStatusStrip({ state }),
             PipelineSafetySummary(),
             renderPanel(activeTab, state, config, {
+                harnessStatus,
                 onSavePlanningFile: async (payload) => {
                     try {
                         const result = await pipelineClient.writePlanningFile(payload);
@@ -214,10 +223,17 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        try {
-            const result = await pipelineClient.getConfig();
+        const [configResult, harnessResult] = await Promise.allSettled([
+            pipelineClient.getConfig(),
+            pipelineClient.getHarnessContractStatus(),
+        ]);
+        if (configResult.status === 'fulfilled') {
+            const result = configResult.value;
             loadedConfig = result?.config || result || loadedConfig;
-        } catch {}
+        }
+        if (harnessResult.status === 'fulfilled' && harnessResult.value) {
+            harnessStatus = harnessResult.value;
+        }
         config = {
             ...config,
             ...loadedConfig,

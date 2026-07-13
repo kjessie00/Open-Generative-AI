@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_CANONICAL_JSON_BYTES = 512 * 1024;
+const MAX_CANONICAL_RECORDS = 1000;
 const MAX_WALK_FILES = 1200;
 const MAX_WALK_DEPTH = 8;
 
@@ -79,9 +81,9 @@ function isWithinRoot(root, filePath) {
     return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function safeReadText(filePath) {
+function safeReadText(filePath, maxBytes = MAX_TEXT_BYTES) {
     const stats = fs.statSync(filePath);
-    if (stats.size > MAX_TEXT_BYTES) {
+    if (stats.size > maxBytes) {
         return { ok: false, error: `file too large: ${stats.size} bytes` };
     }
     return { ok: true, content: fs.readFileSync(filePath, 'utf8') };
@@ -249,6 +251,153 @@ function parseJsonFile(root, filePath, label) {
             error: error.message,
         };
     }
+}
+
+function safeToken(value, maxLength = 160) {
+    if (typeof value !== 'string' || value.length > maxLength) return '';
+    return /^[A-Za-z0-9_.:@/+\-]*$/.test(value) ? value : '';
+}
+
+function safeInteger(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function safeBoolean(value) {
+    return typeof value === 'boolean' ? value : null;
+}
+
+function safeCanonicalPath(root, value) {
+    if (typeof value !== 'string' || value.length === 0 || value.includes('\0')
+        || value.split(/[\\/]/).some((component) => isSensitiveName(component))) return '';
+    const candidate = path.isAbsolute(value) ? path.normalize(value) : path.resolve(root, value);
+    return isWithinRoot(root, candidate) ? candidate : '';
+}
+
+function parseCanonicalJson(root, relativePath, label, sanitize) {
+    const filePath = path.join(root, relativePath);
+    let stats;
+    try {
+        stats = fs.lstatSync(filePath);
+    } catch {
+        return { label, path: '', relative_path: relativePath, exists: false, parsed: false, value: null, records: [], error: 'missing' };
+    }
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+        return { label, path: filePath, relative_path: relativePath, exists: true, parsed: false, value: null, records: [], updated_at: stats.mtime.toISOString(), error: 'not a non-symlink regular file' };
+    }
+    const read = safeReadText(filePath, MAX_CANONICAL_JSON_BYTES);
+    const base = {
+        label,
+        path: filePath,
+        relative_path: relativePath,
+        exists: true,
+        parsed: false,
+        value: null,
+        records: [],
+        updated_at: stats.mtime.toISOString(),
+    };
+    if (!read.ok) return { ...base, error: read.error };
+    try {
+        const sanitized = sanitize(JSON.parse(read.content));
+        return { ...base, ...sanitized, parsed: true, error: '' };
+    } catch (error) {
+        return { ...base, error: error.message };
+    }
+}
+
+function sanitizePipelinePackReport(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('pipeline pack report must be an object');
+    const sceneCount = safeInteger(value.scene_count);
+    return {
+        value: {
+            pack_contract_version: safeToken(value.pack_contract_version),
+            canonical_production_id: safeToken(value.canonical_production_id),
+            target_generator: safeToken(value.target_generator),
+            image_provider: safeToken(value.image_provider),
+            video_element_mode: safeToken(value.video_element_mode),
+            plan_only_status: safeToken(value.plan_only_status),
+            scene_count: sceneCount,
+            actual_generation_submitted: safeBoolean(value.actual_generation_submitted),
+            common_ir_enabled: safeBoolean(value.common_ir_enabled),
+        },
+        records: [],
+    };
+}
+
+function sanitizeSubmissionManifest(value) {
+    if (!Array.isArray(value)) throw new Error('submission manifest must be an array');
+    if (value.length > MAX_CANONICAL_RECORDS) throw new Error(`submission manifest exceeds ${MAX_CANONICAL_RECORDS} records`);
+    const records = value.map((record) => {
+        if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('submission manifest entry must be an object');
+        return {
+            scene_index: safeInteger(record.scene_index),
+            segment_index: safeInteger(record.segment_index),
+            clip_id: safeToken(record.clip_id),
+            shot_id: safeToken(record.shot_id),
+            status: safeToken(record.status),
+            gen_status: safeToken(record.gen_status),
+            submitted_cli_model: safeToken(record.submitted_cli_model),
+            model: safeToken(record.model),
+            model_version: safeToken(record.model_version),
+            submit_id: safeToken(record.submit_id),
+            provider: safeToken(record.provider),
+            next_heartbeat_at: safeToken(record.next_heartbeat_at),
+        };
+    });
+    return { value: null, records };
+}
+
+function sanitizeJimengState(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('jimeng state must be an object');
+    const indexArray = (key) => {
+        if (value[key] === undefined) return [];
+        if (!Array.isArray(value[key]) || value[key].length > MAX_CANONICAL_RECORDS) throw new Error(`${key} must be a bounded array`);
+        return value[key].map(safeInteger).filter((item) => item !== null);
+    };
+    const rawSubmitIds = value.submit_ids;
+    if (rawSubmitIds !== undefined && (!rawSubmitIds || typeof rawSubmitIds !== 'object' || Array.isArray(rawSubmitIds))) {
+        throw new Error('submit_ids must be an object');
+    }
+    const submitIds = Object.fromEntries(Object.entries(rawSubmitIds || {})
+        .filter(([key]) => /^\d{1,6}$/.test(key))
+        .slice(0, MAX_CANONICAL_RECORDS)
+        .map(([key, submitId]) => [key, safeToken(submitId)]));
+    return {
+        value: {
+            provider: safeToken(value.provider),
+            model: safeToken(value.model),
+            submitted_at: safeToken(value.submitted_at),
+            last_poll_at: safeToken(value.last_poll_at),
+            submitted_indices: indexArray('submitted_indices'),
+            completed_indices: indexArray('completed_indices'),
+            downloaded_indices: indexArray('downloaded_indices'),
+            failed_indices: indexArray('failed_indices'),
+            submit_ids: submitIds,
+        },
+        records: [],
+    };
+}
+
+function sanitizeDownloadManifest(root, value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('download manifest must be an object');
+    const entries = Object.entries(value);
+    if (entries.length > MAX_CANONICAL_RECORDS) throw new Error(`download manifest exceeds ${MAX_CANONICAL_RECORDS} records`);
+    return {
+        value: null,
+        records: entries.map(([sceneKey, record]) => {
+            if (!/^\d{1,6}$/.test(sceneKey) || !record || typeof record !== 'object' || Array.isArray(record)) {
+                throw new Error('download manifest entry is malformed');
+            }
+            const rawPaths = Array.isArray(record.downloaded_paths) ? record.downloaded_paths : [];
+            return {
+                scene_index: Number(sceneKey),
+                submit_id: safeToken(record.submit_id),
+                provider: safeToken(record.provider),
+                downloaded_at: safeToken(record.downloaded_at),
+                downloaded_paths: rawPaths.slice(0, 20).map((candidate) => safeCanonicalPath(root, candidate)).filter(Boolean),
+            };
+        }),
+    };
 }
 
 function parseImageDashboardJs(root, filePath) {
@@ -575,7 +724,7 @@ function deriveMarkdown(root, layout, files) {
     const markdown = {};
     if (layout === 'A') {
         markdown.intake = markdownRecord(root, findFirst(root, ['intake/brief.md', 'intake/intake.md', 'brief.md']), 'intake');
-        markdown.script = markdownRecord(root, findFirst(root, ['intake/script.md', 'script.md']), 'script');
+        markdown.script = markdownRecord(root, findFirst(root, ['intake/script.txt', 'intake/script.md', 'script.md']), 'script');
         markdown.report = markdownRecord(root, findFirst(root, ['report.md', 'final/report.md']), 'report');
     } else {
         markdown.brief = markdownRecord(root, findFirst(root, ['brief.md', 'SUMMARY.md']), 'brief');
@@ -636,6 +785,10 @@ function readProductionFolder(rootPath, options = {}) {
     const blockersMd = parseBlockers(root, findFirst(root, ['blockers.md', 'qa/blockers.md', 'reviews/blockers.md']) || findByName(files, ['blockers.md']));
     const report = markdownRecord(root, findFirst(root, ['report.md', 'final/report.md', 'edit/report.md']) || findByName(files, ['report.md']), 'report.md');
     const capcutReport = parseReportSummary(root, findFirst(root, ['reports/capcut_report.json']) || findByName(files, ['capcut_report.json']));
+    const pipelinePackReport = parseCanonicalJson(root, 'pipeline_pack_report.json', 'pipeline_pack_report.json', sanitizePipelinePackReport);
+    const submissionManifest = parseCanonicalJson(root, 'submission_manifest.json', 'submission_manifest.json', sanitizeSubmissionManifest);
+    const jimengState = parseCanonicalJson(root, 'jimeng_state.json', 'jimeng_state.json', sanitizeJimengState);
+    const downloadManifest = parseCanonicalJson(root, 'download_manifest.json', 'download_manifest.json', (value) => sanitizeDownloadManifest(root, value));
 
     const storyboardParsed = storyboardJson.parsed || storySceneBundle.parsed || storyboardMarkdown.parsed;
     const motionBoardParsed = motionBoardJson.parsed || motionBoardMarkdown.parsed;
@@ -650,6 +803,35 @@ function readProductionFolder(rootPath, options = {}) {
     if (!imageDashboard.parsed) blockers.push(BLOCKERS.MISSING_IMAGE_DASHBOARD);
     if (!acceptedSeconds.records?.length) blockers.push(BLOCKERS.MISSING_ACCEPTED_SECONDS);
     if (!report?.exists || capcutReport.parsed) blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+    const canonicalRecordsExist = submissionManifest.records.length > 0
+        || (jimengState.value?.submitted_indices?.length || 0) > 0
+        || downloadManifest.records.length > 0;
+    const canonicalInconsistencies = [];
+    for (const record of [pipelinePackReport, submissionManifest, jimengState, downloadManifest]) {
+        if (record.exists && !record.parsed) canonicalInconsistencies.push(`${record.relative_path}:malformed_or_oversized`);
+    }
+    if (pipelinePackReport.parsed
+        && pipelinePackReport.value.actual_generation_submitted === false
+        && canonicalRecordsExist) {
+        canonicalInconsistencies.push('pipeline_report_submission_state_stale');
+    }
+    if (pipelinePackReport.parsed
+        && pipelinePackReport.value.canonical_production_id
+        && pipelinePackReport.value.canonical_production_id !== path.basename(root)) {
+        canonicalInconsistencies.push('canonical_production_id_mismatch');
+    }
+    if (pipelinePackReport.parsed
+        && !['seedance', 'flow', 'both'].includes(pipelinePackReport.value.target_generator)) {
+        canonicalInconsistencies.push('unsupported_target_generator');
+    }
+    if (pipelinePackReport.parsed
+        && (pipelinePackReport.value.scene_count === null
+            || pipelinePackReport.value.actual_generation_submitted === null)) {
+        canonicalInconsistencies.push('pipeline_report_required_metadata_missing');
+    }
+    if (canonicalInconsistencies.length && !blockers.includes(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN)) {
+        blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+    }
     blockers.push(...(blockersMd.blockers || []));
 
     return {
@@ -677,11 +859,21 @@ function readProductionFolder(rootPath, options = {}) {
             blockersMd,
             report,
             capcutReport,
+            pipelinePackReport,
+            submissionManifest,
+            jimengState,
+            downloadManifest,
+        },
+        canonical: {
+            contract: 'happyVideoFactory_short_drama_pipeline_pack',
+            inconsistencies: canonicalInconsistencies,
+            final_ready: false,
         },
         blockers: Array.from(new Set(blockers)),
         security: {
             skipped_sensitive_patterns: SENSITIVE_NAME_PATTERNS.map((pattern) => pattern.toString()),
             max_text_bytes: MAX_TEXT_BYTES,
+            max_canonical_json_bytes: MAX_CANONICAL_JSON_BYTES,
             max_walk_files: walkResult.maxFiles,
             max_walk_depth: walkResult.maxDepth,
             skipped: walkResult.skipped,

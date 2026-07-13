@@ -13,6 +13,40 @@ const MAX_PLANNING_FILE_BYTES = 1024 * 1024;
 const MAX_PLANNING_FILE_ID_LENGTH = 128;
 const PLANNING_TEMP_PREFIX = '.film-pipeline-planning-';
 const PATH_PROVENANCE_VERSION = 1;
+const HAPPY_VIDEO_FACTORY_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory';
+const MAX_HARNESS_CONTRACT_FILE_BYTES = 2 * 1024 * 1024;
+const HARNESS_CONTRACT_ALLOWLIST = Object.freeze([
+    Object.freeze({
+        id: 'pack_builder',
+        relativePath: 'scripts/build_short_drama_pipeline_pack.py',
+        requiredMarkers: ['--brief', '--script', '--production-id', '--output-root', '--target-generator'],
+        liveSideEffect: false,
+    }),
+    Object.freeze({
+        id: 'pack_validator',
+        relativePath: 'scripts/validate_short_drama_pipeline_pack.py',
+        requiredMarkers: ['validate_pipeline_pack', 'production_dir', '--json'],
+        liveSideEffect: false,
+    }),
+    Object.freeze({
+        id: 'room_plan_builder',
+        relativePath: 'scripts/build_short_drama_room_pipeline_plan.py',
+        requiredMarkers: ['build_drama_selection_plan', '--package-dir', '--ledger-output'],
+        liveSideEffect: false,
+    }),
+    Object.freeze({
+        id: 'room_verifier',
+        relativePath: 'scripts/verify_short_drama_room_pipeline.py',
+        requiredMarkers: ['run_drama_room_pipeline_verification', 'selected_takes_contract_matches_edit_render_consumer'],
+        liveSideEffect: false,
+    }),
+    Object.freeze({
+        id: 'canonical_pack_contract',
+        relativePath: 'video_core/short_drama_pipeline/validator.py',
+        requiredMarkers: ['PACK_CONTRACT_VERSION', 'actual_generation_submitted', 'canonical_production_id_mismatch'],
+        liveSideEffect: false,
+    }),
+]);
 
 const SIDE_EFFECT_TYPES = new Set([
     'local_planning_write',
@@ -757,6 +791,154 @@ function assertNoRendererPathArgument(value) {
     }
 }
 
+function harnessContractEntry(rootPath, realRoot, contract) {
+    const components = contract.relativePath.split('/');
+    const absolutePath = path.join(rootPath, ...components);
+    const base = {
+        id: contract.id,
+        path: absolutePath,
+        relativePath: contract.relativePath,
+        exists: false,
+        size: 0,
+        sha256: '',
+        ready: false,
+        reason: 'missing',
+        liveSideEffect: contract.liveSideEffect === true,
+    };
+
+    let parent = rootPath;
+    for (const component of components.slice(0, -1)) {
+        parent = path.join(parent, component);
+        try {
+            const parentStats = fs.lstatSync(parent);
+            if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
+                return { ...base, reason: 'parent_not_directory' };
+            }
+        } catch {
+            return base;
+        }
+    }
+
+    let stats;
+    try {
+        stats = fs.lstatSync(absolutePath);
+    } catch {
+        return base;
+    }
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+        return { ...base, exists: true, size: stats.size, reason: 'not_regular_file' };
+    }
+    if (stats.size > MAX_HARNESS_CONTRACT_FILE_BYTES) {
+        return { ...base, exists: true, size: stats.size, reason: 'file_too_large' };
+    }
+
+    let realPath;
+    try {
+        realPath = fs.realpathSync.native(absolutePath);
+    } catch {
+        return { ...base, exists: true, size: stats.size, reason: 'realpath_failed' };
+    }
+    if (!realPath.startsWith(realRoot + path.sep)) {
+        return { ...base, exists: true, size: stats.size, reason: 'root_escape' };
+    }
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+        return { ...base, exists: true, size: stats.size, reason: 'nofollow_unavailable' };
+    }
+
+    let descriptor;
+    try {
+        descriptor = fs.openSync(absolutePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const openedStats = fs.fstatSync(descriptor);
+        if (!openedStats.isFile() || openedStats.size !== stats.size
+            || openedStats.dev !== stats.dev || openedStats.ino !== stats.ino) {
+            return { ...base, exists: true, size: openedStats.size, reason: 'file_changed' };
+        }
+        const content = fs.readFileSync(descriptor);
+        if (content.byteLength > MAX_HARNESS_CONTRACT_FILE_BYTES) {
+            return { ...base, exists: true, size: content.byteLength, reason: 'file_too_large' };
+        }
+        const text = content.toString('utf8');
+        const malformed = text.includes('\0') || contract.requiredMarkers.some((marker) => !text.includes(marker));
+        if (malformed) {
+            return { ...base, exists: true, size: content.byteLength, reason: 'contract_markers_missing' };
+        }
+        return {
+            ...base,
+            exists: true,
+            size: content.byteLength,
+            sha256: crypto.createHash('sha256').update(content).digest('hex'),
+            ready: true,
+            reason: '',
+        };
+    } catch (error) {
+        return { ...base, exists: true, size: stats.size, reason: error.code || 'read_failed' };
+    } finally {
+        if (descriptor !== undefined) {
+            try {
+                fs.closeSync(descriptor);
+            } catch {}
+        }
+    }
+}
+
+function getHarnessContractStatus(options = {}) {
+    const requestedRoot = options.harnessRoot === undefined ? HAPPY_VIDEO_FACTORY_ROOT : options.harnessRoot;
+    const rootPath = typeof requestedRoot === 'string' ? requestedRoot : '';
+    const blocked = (reason) => ({
+        ok: false,
+        readOnly: true,
+        source: 'main_fixed_allowlist',
+        rootPath,
+        readiness: 'blocked',
+        ready: false,
+        reason,
+        entries: HARNESS_CONTRACT_ALLOWLIST.map((contract) => ({
+            id: contract.id,
+            path: path.join(rootPath, ...contract.relativePath.split('/')),
+            relativePath: contract.relativePath,
+            exists: false,
+            size: 0,
+            sha256: '',
+            ready: false,
+            reason,
+            liveSideEffect: contract.liveSideEffect === true,
+        })),
+    });
+
+    if (typeof requestedRoot !== 'string' || !path.isAbsolute(rootPath) || path.normalize(rootPath) !== rootPath) {
+        return blocked('root_invalid');
+    }
+    let rootStats;
+    try {
+        rootStats = fs.lstatSync(rootPath);
+    } catch {
+        return blocked('root_missing');
+    }
+    if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+        return blocked('root_not_directory');
+    }
+
+    let realRoot;
+    try {
+        realRoot = fs.realpathSync.native(rootPath);
+    } catch {
+        return blocked('root_realpath_failed');
+    }
+    const entries = HARNESS_CONTRACT_ALLOWLIST.map((contract) => harnessContractEntry(rootPath, realRoot, contract));
+    const readyCount = entries.filter((entry) => entry.ready).length;
+    const readiness = readyCount === entries.length ? 'available' : readyCount > 0 ? 'partial' : 'blocked';
+    return {
+        ok: readiness === 'available',
+        readOnly: true,
+        source: 'main_fixed_allowlist',
+        rootPath,
+        readiness,
+        ready: readiness === 'available',
+        reason: readiness === 'available' ? '' : 'required_contract_unavailable',
+        entries,
+    };
+}
+
 function listConfiguredProductionChildren(options = {}) {
     const parentRoot = configuredPath(options, 'productionParentRoot', 'PRODUCTION_PARENT_NOT_CONFIGURED');
     return listProductionChildren(parentRoot);
@@ -867,6 +1049,18 @@ function fingerprintCommandPreview(text) {
 }
 
 function copyCommandPreview(commandSpec = {}, clipboardApi = clipboard) {
+    if (commandSpec.copy_allowed === false) {
+        return {
+            ok: false,
+            copied: false,
+            verified: false,
+            executed: false,
+            error: 'COMMAND_COPY_DISALLOWED',
+            length: 0,
+            byteLength: 0,
+            sha256: '',
+        };
+    }
     const preview = previewCommand(commandSpec);
     const fingerprint = fingerprintCommandPreview(preview.shellSafeCommand);
     if (fingerprint.byteLength > MAX_COMMAND_PREVIEW_BYTES) {
@@ -938,6 +1132,10 @@ function runSafeCommand(commandSpec = {}) {
 
 function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:get-config', () => getConfig(options));
+    ipcApi.handle('film-pipeline:get-harness-contract-status', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getHarnessContractStatus(options);
+    });
     ipcApi.handle('film-pipeline:select-production-root', (_, request) => selectProductionRoot(request, options));
     ipcApi.handle('film-pipeline:read-production-state', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
@@ -974,4 +1172,7 @@ module.exports = {
     listConfiguredAssets,
     readConfiguredJsonl,
     resolveProductionDialogDefaultPath,
+    getHarnessContractStatus,
+    HARNESS_CONTRACT_ALLOWLIST,
+    HAPPY_VIDEO_FACTORY_ROOT,
 };
