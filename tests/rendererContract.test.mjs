@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 class TestNode {
@@ -525,6 +526,31 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
     assert.equal(alerts.at(-1), '새 프로젝트 초안 저장이 차단되었습니다.');
     assert.doesNotMatch(`${studio.textContent}\n${alerts.join('\n')}`, /SECRET_DRAFT_CONTENT_AND_PATH/);
     assert.deepEqual(calls.find(([method]) => method === 'getNewProjectDraftState')[1], []);
+});
+
+test('every provider new-project blocker renders as Korean copy instead of a raw identifier', async (t) => {
+    const providerSource = await readFile(new URL('../electron/lib/newProjectDraftProvider.js', import.meta.url), 'utf8');
+    const providerCodes = [...new Set(providerSource.match(/NEW_PROJECT_[A-Z0-9_]+/g) || [])].sort();
+    assert.ok(providerCodes.length > 0, 'provider must expose a non-empty blocker-code contract');
+
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectDraftForm } = await import('../src/components/pipeline/NewProjectDraftForm.js');
+    const form = NewProjectDraftForm({
+        draftState: {
+            status: 'error',
+            blockers: providerCodes,
+            preview: { copyAllowed: false, shellSafeCommand: '' },
+        },
+        draftValue: {
+            production_id: '', brief: '', script: '', route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 10,
+        },
+    });
+
+    assert.doesNotMatch(form.textContent, /NEW_PROJECT_[A-Z0-9_]+/);
+    assert.match(form.textContent, /초안 폴더가 안전한 비공개 폴더가 아닙니다/);
+    assert.match(form.textContent, /저장된 초안의 무결성 정보를 확인하지 못했습니다/);
+    assert.match(form.textContent, /시스템 클립보드를 사용할 수 없습니다/);
 });
 
 test('settings renders partial and blocked fixed-root harness readiness in Korean', async (t) => {
