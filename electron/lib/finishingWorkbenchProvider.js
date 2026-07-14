@@ -727,7 +727,7 @@ async function readCurrentRun(rootInfo, inputSnapshotId = '') {
     }
 }
 
-async function inspectProduction(context) {
+async function inspectProduction(context, { includeOutputState = true } = {}) {
     const rootInfo = assertRoot(context.config?.productionRoot);
     const documents = {};
     for (const name of CANONICAL_FILES) {
@@ -783,9 +783,6 @@ async function inspectProduction(context) {
             }
         }
     }
-    const outputState = inspectOutputState(rootInfo);
-    blockers.push(...outputState.blockers);
-    const uniqueBlockers = Array.from(new Set(blockers));
     const selectedDuration = (canonical.expectedOrder || []).reduce((sum, entry) => {
         const duration = Number(entry.source_out_sec) - Number(entry.source_in_sec);
         return Number.isFinite(duration) && duration > 0 ? sum + duration : sum;
@@ -816,6 +813,35 @@ async function inspectProduction(context) {
         }])) : null,
     };
     const inputSnapshotId = sha256(stableJson(snapshotCore));
+    const renderPayload = {
+        schema_version: 'film_pipeline.finishing_render_payload.v1',
+        selected_takes: {
+            schema_version: 'short-drama-room-selected-takes-v1',
+            project_id: canonical.projectId,
+            episode_id: canonical.episodeId,
+            takes: renderTakes,
+        },
+        timeline_beats: canonical.timelineBeats,
+        expected_order: canonical.expectedOrder,
+    };
+    const inputBlockers = Array.from(new Set(blockers));
+    if (!includeOutputState) {
+        return {
+            rootInfo,
+            documents,
+            canonical,
+            harness,
+            runtime,
+            sources,
+            inputSnapshotId,
+            runId: inputSnapshotId.slice(0, 24),
+            selectedDuration,
+            blockers: inputBlockers,
+            renderPayload,
+        };
+    }
+    const outputState = inspectOutputState(rootInfo);
+    const uniqueBlockers = Array.from(new Set([...inputBlockers, ...outputState.blockers]));
     const current = await readCurrentRun(rootInfo, inputSnapshotId);
     const securityBlockers = current.status === 'blocked' ? current.blockers : [];
     uniqueBlockers.push(...securityBlockers);
@@ -833,18 +859,22 @@ async function inspectProduction(context) {
         selectedDuration,
         current,
         blockers: finalBlockers,
-        renderPayload: {
-            schema_version: 'film_pipeline.finishing_render_payload.v1',
-            selected_takes: {
-                schema_version: 'short-drama-room-selected-takes-v1',
-                project_id: canonical.projectId,
-                episode_id: canonical.episodeId,
-                takes: renderTakes,
-            },
-            timeline_beats: canonical.timelineBeats,
-            expected_order: canonical.expectedOrder,
-        },
+        renderPayload,
     };
+}
+
+async function assertPostRenderInputSnapshot(context, inspection) {
+    let postRenderInspection;
+    try {
+        postRenderInspection = await inspectProduction(context, { includeOutputState: false });
+    } catch {
+        throw failure('FINISHING_POST_RENDER_INPUT_DRIFT');
+    }
+    if (postRenderInspection.blockers.length > 0
+        || postRenderInspection.inputSnapshotId !== inspection.inputSnapshotId
+        || postRenderInspection.runId !== inspection.runId) {
+        throw failure('FINISHING_POST_RENDER_INPUT_DRIFT');
+    }
 }
 
 function publicCurrent(current) {
@@ -1175,6 +1205,7 @@ function createFinishingWorkbenchProvider(options = {}) {
             const receiptBuffer = Buffer.from(`${JSON.stringify(receiptDocument, null, 2)}\n`);
             writeExclusive(path.join(stagingRoot, 'receipt.json'), receiptBuffer);
             fs.unlinkSync(payloadPath);
+            await assertPostRenderInputSnapshot(context, inspection);
             fsyncDirectory(stagingRoot);
             fs.renameSync(stagingRoot, runRoot);
             published = true;

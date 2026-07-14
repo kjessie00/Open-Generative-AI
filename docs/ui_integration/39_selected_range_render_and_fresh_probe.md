@@ -75,6 +75,22 @@ build_roughcut(...)
 bounded stdout/stderr, timeout, SIGTERM/SIGKILL 경계를 적용한다. 현재 roughcut 계약은
 source에 video와 audio stream이 모두 있어야 한다.
 
+### 렌더 후·게시 전 provenance 재검증
+
+2026-07-14 후속 보강은 `/root/finishing_post_render_drift_integrator_20260714`가
+소유했다. 렌더와 fresh probe가 끝난 뒤 public run directory를 rename하기 직전에,
+실행 직전과 같은 canonical JSON bytes/identity, 선택 source bytes/identity와 probe,
+happyVideoFactory/adapter bytes, resolved Python/ffmpeg/ffprobe identity를 다시 읽어
+동일한 input snapshot인지 확인한다. 이 재검사에서 읽기 실패·blocker·snapshot
+불일치는 모두 path-free `FINISHING_POST_RENDER_INPUT_DRIFT`로 fail-closed 한다.
+
+현재 실행이 만든 `.workbench.lock`, `.staging-*`, roughcut/probe/receipt는 render
+provenance가 아니다. 따라서 post-render 비교는 output state/current를 제외하고 실제
+입력만 계산한다. Source 또는 canonical bytes를 렌더 콜백 중 바꾸는 결정론적 회귀는
+각각 error code 일치, public run/current/receipt 0, staging/lock residue 0, 주입된 입력
+외 regular-file mutation 0을 확인했다. 입력이 고정된 기존 success/current 복원과 실제
+ffmpeg 경로는 그대로 PASS했다.
+
 ### 출력
 
 고정 출력은 production 아래 다음 위치뿐이다.
@@ -132,6 +148,25 @@ numeric 값과 잘못된 SHA-256을 success로 복원하지 않는지, lock-open
 
 전체 suite, lint, build와 diff 검증의 최종 수치는 이 커밋 직전
 `docs/ui_integration/21_current_acceptance_status.md`와 checkpoint에 기록한다.
+
+Post-render drift 후속 검증은 provider 16/16, provider+실제 ffmpeg+UI 20/20,
+전체 network-restricted suite 182/182, lint, Vite build 52 modules를 PASS했다.
+
+### Post-render drift 독립 인수
+
+별도 새 세션의 `/root/finishing_post_render_drift_independent_verifier_20260714`
+(`gpt-5.6-terra` xhigh)는 matching snapshot
+`/private/tmp/open-ga-post-render-verifier-NL1ITDKB/worktree`를 검증해 P0/P1/P2 없음으로
+`PASS`했다. Focused provider+real FFmpeg+UI 20/20, 전체 Node suite 182/182,
+standalone real FFmpeg 1/1, lint, Vite build 52 modules와 시작/종료 staged diff check는
+모두 exit 0이었다. Code/test network primitive 및 electron-builder/package/release 실행
+scan은 0이고, provider/test SHA-256은 각각
+`cf04b0cdbb5f968a4e7a6f41fdd7d67912ecac3c9056b29851175fad74085214`,
+`f337acb9e26ecbc11ad3e84b28ab4bcf6eaa74657c46168e44c156a0c06ced52`로 구현자 제출값과
+일치했다. 기존 5개 scoped 파일 외 canonical source 변경과 actual production/HVF
+write는 없었다. Final recheck-to-rename non-cooperating-writer TOCTOU, post-publication
+recursive cleanup, mutable current canonical contract, G3 및 실제 production/human quality
+approval은 이 독립 PASS 범위 밖이다.
 
 ## 독립 verifier BLOCK과 P2 복구
 
@@ -256,6 +291,8 @@ screenshot BLOCK은 그대로다.
   재생·검토하고 승인해야 한다.
 - 협조 lock은 같은 앱 writer만 직렬화한다. Node/macOS에서 native dirfd/no-replace를
   쓰지 않으므로 마지막 재확인과 rename 사이 비협조 writer TOCTOU는 남는다.
+- Public run rename 뒤 current 게시 또는 검증이 실패했을 때의 기존 recursive cleanup
+  설계와 그 cleanup TOCTOU는 이번 보강에서 바꾸지 않았다.
 - 현재 전환은 `cut`만 지원한다.
 - Source audio가 없는 영상은 현재 계약에서 차단한다.
 - Full restored relaunch screenshot은 BLOCK이다. DOM/main 재검증 PASS와 별도 사실이다.

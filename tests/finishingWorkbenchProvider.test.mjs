@@ -24,6 +24,45 @@ function fileSha256(target) {
     return crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
 }
 
+function snapshotRegularFiles(root) {
+    const snapshot = new Map();
+    const visit = (current) => {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            const target = path.join(current, entry.name);
+            if (entry.isDirectory()) visit(target);
+            else if (entry.isFile()) {
+                snapshot.set(path.relative(root, target), {
+                    sha256: fileSha256(target),
+                    size: fs.statSync(target).size,
+                    mode: fs.statSync(target).mode & 0o777,
+                });
+            }
+        }
+    };
+    visit(root);
+    return snapshot;
+}
+
+function assertOnlyExpectedInputChanged(root, before, changedPath) {
+    const after = snapshotRegularFiles(root);
+    const changedRelative = path.relative(root, changedPath);
+    assert.deepEqual([...after.keys()].sort(), [...before.keys()].sort());
+    assert.notDeepEqual(after.get(changedRelative), before.get(changedRelative));
+    for (const [relativePath, record] of before) {
+        if (relativePath !== changedRelative) assert.deepEqual(after.get(relativePath), record, relativePath);
+    }
+}
+
+function assertNoFinishingPublication(root) {
+    const runsRoot = path.join(root, 'final', 'workbench_runs');
+    const entries = fs.existsSync(runsRoot) ? fs.readdirSync(runsRoot) : [];
+    assert.equal(entries.some((name) => /^[a-f0-9]{24}$/.test(name)), false);
+    assert.equal(entries.includes('current.json'), false);
+    assert.equal(entries.includes('.workbench.lock'), false);
+    assert.equal(entries.some((name) => name.startsWith('.staging-')), false);
+    assert.equal(entries.some((name) => name === 'receipt.json'), false);
+}
+
 function rewriteCurrentEvidence(root, runId, mutateProbe, mutateReceipt = () => {}) {
     const runsRoot = path.join(root, 'final', 'workbench_runs');
     const runRoot = path.join(runsRoot, runId);
@@ -348,6 +387,49 @@ test('render failure cleans lock and staging while preserving canonical files', 
     const runs = path.join(current.root, 'final', 'workbench_runs');
     assert.deepEqual(fs.readdirSync(runs), []);
     assert.deepEqual(fs.readFileSync(path.join(current.root, 'selected_takes.json')), selectedBefore);
+});
+
+test('source drift during render fails closed before run, receipt, or current publication', async (t) => {
+    let current;
+    current = makeFixture(t, {
+        render: async (renderContext) => {
+            fs.appendFileSync(current.sources[0], '-post-render-drift');
+            return current.render(renderContext);
+        },
+    });
+    const before = snapshotRegularFiles(current.base);
+    const plan = await current.provider.plan();
+
+    await assert.rejects(current.provider.execute({
+        planToken: plan.plan_token,
+        confirmed: true,
+        projectId: PROJECT_ID,
+    }), { code: 'FINISHING_POST_RENDER_INPUT_DRIFT' });
+
+    assertNoFinishingPublication(current.root);
+    assertOnlyExpectedInputChanged(current.base, before, current.sources[0]);
+});
+
+test('canonical drift during render fails closed before run, receipt, or current publication', async (t) => {
+    let current;
+    current = makeFixture(t, {
+        render: async (renderContext) => {
+            fs.appendFileSync(path.join(current.root, 'beats.json'), '\n');
+            return current.render(renderContext);
+        },
+    });
+    const changedPath = path.join(current.root, 'beats.json');
+    const before = snapshotRegularFiles(current.base);
+    const plan = await current.provider.plan();
+
+    await assert.rejects(current.provider.execute({
+        planToken: plan.plan_token,
+        confirmed: true,
+        projectId: PROJECT_ID,
+    }), { code: 'FINISHING_POST_RENDER_INPUT_DRIFT' });
+
+    assertNoFinishingPublication(current.root);
+    assertOnlyExpectedInputChanged(current.base, before, changedPath);
 });
 
 test('tampered receipt and output are blockers after relaunch and never imply quality approval', async (t) => {
