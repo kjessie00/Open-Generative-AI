@@ -288,16 +288,21 @@ function planG3ProductionPromotion(context = {}) {
 }
 
 function consumePlan(payload, context = {}) {
-    exactKeys(payload, ['planToken', 'projectIdConfirmation', 'confirmed'], 'G3_PROMOTION_REQUEST_INVALID');
-    const token = boundedText(payload.planToken, 'G3_PROMOTION_TOKEN_INVALID', 128);
-    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw g3Error('G3_PROMOTION_TOKEN_INVALID', 'Plan token is invalid');
-    const rawConfirmation = payload.projectIdConfirmation;
-    const confirmation = safeId(rawConfirmation, 'G3_PROMOTION_CONFIRMATION_INVALID');
-    if (payload.confirmed !== true) throw g3Error('G3_PROMOTION_CONFIRMATION_REQUIRED', 'Explicit confirmation is required');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw g3Error('G3_PROMOTION_REQUEST_INVALID', 'Promotion request is invalid');
+    }
+    const token = payload.planToken;
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+        throw g3Error('G3_PROMOTION_TOKEN_INVALID', 'Plan token is invalid');
+    }
     const store = planStore(context);
     const record = store.get(token);
     store.delete(token);
     if (!record) throw g3Error('G3_PROMOTION_TOKEN_INVALID', 'Plan token is unknown or already used');
+    exactKeys(payload, ['planToken', 'projectIdConfirmation', 'confirmed'], 'G3_PROMOTION_REQUEST_INVALID');
+    const rawConfirmation = payload.projectIdConfirmation;
+    const confirmation = safeId(rawConfirmation, 'G3_PROMOTION_CONFIRMATION_INVALID');
+    if (payload.confirmed !== true) throw g3Error('G3_PROMOTION_CONFIRMATION_REQUIRED', 'Explicit confirmation is required');
     if (record.expiresAtMs <= clockMs(context)) throw g3Error('G3_PROMOTION_TOKEN_EXPIRED', 'Plan token expired');
     if (rawConfirmation !== confirmation || confirmation !== record.projectId) {
         throw g3Error('G3_PROMOTION_CONFIRMATION_MISMATCH', 'Typed project id does not match exactly');

@@ -61,6 +61,16 @@ full quit/relaunch 후 `already_current`를 확인했다. 외부 request/console
 모두 0이다. 별도 panel capture는 이미 최신 badge, target/project/hash/safety 요약과
 반영 button 0건을 보여준다. 상세: `docs/ui_integration/38_g3_production_promotion_cas.md`.
 
+독립 verifier가 `e7926ff`에서 발견한 P2 one-shot 순서 문제도 후속 수정했다. 유효한
+raw token은 이제 exact payload shape, confirmation, expiry와 evidence 검증보다 먼저
+lookup/delete되어 `confirmed:false`, extra field, malformed confirmation을 포함한 모든
+promote 시도에서 즉시 1회 소모된다. Invalid/nonexistent raw token은 다른 유효 plan을
+소모하지 않는다. 제품 수정 전 새 promotion file은 9/12로 정확히 세 replay 회귀가
+실패했고, 수정 후 12/12다. 새 actual Electron main IPC 회차도 invalid attempt, 같은
+token INVALID, fresh plan 정상 반영, 정상 token 재사용 INVALID, relaunch
+`already_current`와 21-method bridge를 PASS했다. 최종 acceptance는 새 follow-up
+commit의 root independent verifier가 별도로 수행해야 한다.
+
 과거 native folder 결과는 보존하지만 현재 21-method build의 native selection
 PASS로 소급하지 않는다. 이번 distinct 회차는 native dialog와 trusted keyboard를
 재시도하지 않았고, mobile stage select는 programmatic DOM change만 PASS했다.
@@ -128,7 +138,7 @@ Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았고 검증된 preview만 복사 가능; 불완전한 ffprobe/concat은 command/copy 모두 disabled |
 | AC5 실제 GUI | PARTIAL PASS | 21-method/11개 한국어 menu/4 viewport/두 root 비-native 증거, Blob-only metadata/save/export restore와 trusted confirmation 기반 fixture promotion/full quit-relaunch·별도 panel 캡처 PASS; current native selection과 actual mobile keyboard-only는 BLOCK |
 | AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant, canonical pack/ledger, selected takes/QC 및 exact delivery manifest/master SHA golden·missing·malformed·oversize·symlink·unsafe/stale/changed path·range·ID/QC conflict matrix PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
-| AC7 자동 검증 | VERIFIED (명시된 독립 gaps 제외) | G3 promotion 포함 focused 40/40, network-denied 전체 158/158, lint, build 50 modules와 actual Electron promotion/relaunch 회차 PASS |
+| AC7 자동 검증 | VERIFIED (명시된 독립 gaps 제외) | G3 promotion 포함 focused 44/44, network-denied 전체 162/162, lint, build 50 modules와 actual Electron one-shot/promotion/relaunch 회차 PASS |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
 | AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds와 canonical deterministic/external/canonical/human/final 상태를 독립 유지 |
@@ -138,8 +148,8 @@ Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- 외부망 제한 환경 전체 테스트: 158/158 PASS
-- G3 production promotion focused: 40/40 PASS
+- 외부망 제한 환경 전체 테스트: 162/162 PASS
+- G3 production promotion focused: 44/44 PASS; P2 follow-up 전용 file은 수정 전 9/12, 수정 후 12/12
 - canonical delivery focused: 첫 실행 35/38, 허용된 1회 국소 self-fix 후 38/38 PASS
 - canonical finishing focused: 첫 실행 44/44 PASS, self-fix 없음
 - canonical handoff focused: targeted self-fix 후 38/38 PASS
@@ -168,6 +178,7 @@ Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 
 - current actual Electron preload: `window.filmPipeline` 정확히 21 methods, public `setConfig` 0건, `window.localAI === undefined`
 - current G3 preview: historical data/CSP 실패 뒤 잘못된 Chromium `atob` receiver를 수정했고 Blob-only metadata-ready, save/export exact private 3 files, 별도 OS 창 캡처와 full quit/relaunch restore PASS
 - current G3 promotion: fixture exact target 생성·mode `0600`·private receipt·trusted confirmation·relaunch already-current PASS; 실제 Jessie production/HVF write는 0건
+- current G3 one-shot follow-up: confirmed false 뒤 same-token INVALID, fresh-plan valid promote, valid-token replay INVALID와 relaunch already-current actual Electron PASS
 - G3 promotion panel capture: SHA-256 `c1bf4687b6e50057115912c2012811e903de63099626b9c2b7d51d98155b5646`
 - canonical harness source probe: exact 5/5 `available`; content 반환 0, renderer root 입력 0
 - fresh runtime screenshot (private temp only): SHA-256 `0280c8892a5e6c9dbf9a913ade9d9ec4618a554b6d9564246f68e28da5539e70`

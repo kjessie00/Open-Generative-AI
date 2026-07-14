@@ -197,7 +197,62 @@ test('token is one-shot, short-lived, and bound to exact typed project confirmat
     const expired = promotion.planG3ProductionPromotion(fx.context);
     fx.setClock(CLOCK + promotion.DEFAULT_PLAN_TTL_MS + 1);
     assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(expired), fx.context), { code: 'G3_PROMOTION_TOKEN_EXPIRED' });
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(expired), fx.context), { code: 'G3_PROMOTION_TOKEN_INVALID' });
     assert.equal(fs.existsSync(path.join(fx.root, 'selected_takes.json')), false);
+});
+
+test('confirmed false consumes the valid raw token before confirmation rejection', (t) => {
+    const fx = fixture(t);
+    const plan = promotion.planG3ProductionPromotion(fx.context);
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan, { confirmed: false }), fx.context), {
+        code: 'G3_PROMOTION_CONFIRMATION_REQUIRED',
+    });
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan), fx.context), {
+        code: 'G3_PROMOTION_TOKEN_INVALID',
+    });
+    assert.equal(fs.existsSync(path.join(fx.root, 'selected_takes.json')), false);
+});
+
+test('extra envelope field consumes the valid raw token before shape rejection', (t) => {
+    const fx = fixture(t);
+    const plan = promotion.planG3ProductionPromotion(fx.context);
+    assert.throws(() => promotion.promoteG3ProductionSelection({
+        ...confirmation(plan),
+        targetPath: path.join(fx.root, 'selected_takes.json'),
+    }, fx.context), { code: 'G3_PROMOTION_REQUEST_INVALID' });
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan), fx.context), {
+        code: 'G3_PROMOTION_TOKEN_INVALID',
+    });
+    assert.equal(fs.existsSync(path.join(fx.root, 'selected_takes.json')), false);
+});
+
+test('malformed confirmation consumes the valid raw token before confirmation parsing rejection', (t) => {
+    const fx = fixture(t);
+    const plan = promotion.planG3ProductionPromotion(fx.context);
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan, {
+        projectIdConfirmation: 'project 01',
+    }), fx.context), { code: 'G3_PROMOTION_CONFIRMATION_INVALID' });
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan), fx.context), {
+        code: 'G3_PROMOTION_TOKEN_INVALID',
+    });
+    assert.equal(fs.existsSync(path.join(fx.root, 'selected_takes.json')), false);
+});
+
+test('invalid and nonexistent raw tokens do not consume an unrelated valid plan', (t) => {
+    const fx = fixture(t);
+    const plan = promotion.planG3ProductionPromotion(fx.context);
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan, { planToken: 'invalid' }), fx.context), {
+        code: 'G3_PROMOTION_TOKEN_INVALID',
+    });
+    const nonexistent = plan.plan_token === 'Z'.repeat(43) ? 'Y'.repeat(43) : 'Z'.repeat(43);
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan, { planToken: nonexistent }), fx.context), {
+        code: 'G3_PROMOTION_TOKEN_INVALID',
+    });
+    const result = promotion.promoteG3ProductionSelection(confirmation(plan), fx.context);
+    assert.equal(result.executed, true);
+    assert.throws(() => promotion.promoteG3ProductionSelection(confirmation(plan), fx.context), {
+        code: 'G3_PROMOTION_TOKEN_INVALID',
+    });
 });
 
 test('forged renderer shape, path fields, and missing explicit confirmation fail before production write', (t) => {
