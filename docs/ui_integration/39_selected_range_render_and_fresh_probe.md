@@ -168,7 +168,29 @@ command와 원시 message는 renderer에 전달하지 않는다.
 수정 후 provider/security/IPC/renderer/UI와 실제 temp ffmpeg focused는 39/39
 PASS했다. 전체 deny-network suite는 180/180, lint와 Vite build 52 modules도
 PASS했다. 이 결과는 독립 verifier의 원본 commit BLOCK 기록을 지우지 않는다.
-Follow-up commit의 최종 독립 인수는 root가 별도로 소유한다.
+
+## Follow-up 최종 독립 인수
+
+`fd0b9a32a7aee729d331a0c5b09603ce2431d674` (`tree
+de4346f927d22dab3ce1448f177726fc335a7e79`, parent
+`a3186621441e4d0df8607f46a5a5aa0815106816`)는 distinct-model fallback verifier
+`gpt-5.6-terra` xhigh가 최종 `PASS`로 인수했다. 독립 numeric/hash/size matrix는
+24/24, lock open/write/fsync/close/EEXIST matrix는 5/5, provider/security/IPC/
+renderer/UI 및 실제 FFmpeg/happyVideoFactory를 포함한 focused contract는 39/39
+PASS다. direct network primitive match는 0건이며 canonical snapshot target 9개와
+happyVideoFactory harness input 7개 hash는 전후 동일하고 snapshot은 clean이었다.
+
+최종 증거는 다음과 같다: `result.json` SHA-256
+`adefd4572bda60684d713a047f8c5483836402972e7904f2e6215eec4cf703e1`,
+`verification-report.md` SHA-256
+`d873ba92daf73d9220818aeeae74a512d3e300b20357753fc0c4b9378ae81618`,
+`commands.tsv` SHA-256
+`6c1b297521b30eaefd0a28f220e57a3b9178b4b8de578f85824f9a7445de11a3`,
+`artifact-hashes.txt` SHA-256
+`0f51f77481656599836b789f2e4ae6cd11eb69074c9f32fa7f20e3fc3f3a3cac`.
+이는 code/evidence acceptance PASS다. 실제 Jessie production 실행, live generation,
+human output-quality approval, planning-write/path-provenance 및 native folder-selection
+acceptance는 이 판정에 포함하지 않는다.
 
 ## 실제 Electron 격리 증거
 
