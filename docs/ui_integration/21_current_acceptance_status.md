@@ -1,31 +1,35 @@
 # Cinematic Pipeline Studio 현재 인수 상태
 
-기준일: 2026-07-13 (Asia/Seoul)
+기준일: 2026-07-14 (Asia/Seoul)
 
 이 문서는 `docs/ui_integration`의 현재 상태 기준점이다. 이전 문서의 작성 당시 사실과 검증 기록은 보존하되, 현재 완료 여부와 남은 차단은 이 문서와 `.agent/goal-checkpoint.md`를 우선한다.
 
 ## 현재 결론
 
-로컬 Vite/Electron 제품 경로, Electron 보안 경계, `window.filmPipeline` bridge, dry-run/command-preview 정책, Layout A/B fixture reader, validator 상태 분리는 코드와 자동 검증 기준으로 통과했다. 추가 최소권한 패치로 기본 main lifecycle의 Local AI/Wan2GP provider 등록과 `window.localAI` bridge를 제거했다. 과거 실제 Electron 증거는 당시 구성의 `window.filmPipeline` 12개 method였고, provenance 하드닝에서 public `setConfig`를 제거한 뒤 11개가 되었다. 현재 코드는 main-owned fixed-root `getHarnessContractStatus`를 추가해 `setConfig` 없는 정확한 12개 method다. 변경 후 실제 Electron은 이번 회차에 실행하지 않았다. dormant 소스는 기본 active import graph에서 도달 불가다. 외부 생성·업로드·계정 작업은 실행하지 않았다.
+로컬 Vite/Electron 제품 경로, Electron 보안 경계, dry-run/command-preview 정책,
+Layout A/B reader와 상태 분리는 코드·자동 검증 기준으로 통과했다. 기본 main
+lifecycle의 Local AI/Wan2GP provider 등록과 `window.localAI` bridge는 제거됐고,
+dormant source는 active import graph에서 도달 불가다.
 
-실제 Electron GUI는 외부망 차단 상태에서 실행되었고 10개 core panel/11-tab, preload IPC, 상태 복원, blocker/copy-only preview, 1440×900 및 1024×640 레이아웃이 검증되었다. fixture와 첫 번째 production의 native folder selection은 PASS다. 두 번째 production은 sidebar/preload로 UI state를 복원했지만 native sheet 자동화가 parent root를 반환하여 `NATIVE_FOLDER_SELECTION_ROOT2_GAP`이 남는다. main-process clipboard IPC와 실제 macOS trusted click은 write/read-back/hash equality 및 `executed:false`로 PASS했다. review/dashboard/accepted-seconds/final-quality는 계속 blocker다.
+현재 build를 외부망 차단 상태의 실제 Electron에서 새로 검증했다. 정확한 19-method
+`window.filmPipeline`, `window.localAI === undefined`, 11개 한국어 메뉴/heading,
+fixture 상태와 두 승인 production의 비-native 읽기, 320×900·768×900·1024×768·
+1440×900 화면의 horizontal overflow/clipped interactive 0건이 PASS했다. Renderer
+external request, generation/submit/upload 실행 control과 외부 side effect도 0건이다.
 
-후속 한국어 UI 실제 검증은 320×900, 768×900, 1024×768,
-1440×900에서 11개 한국어 메뉴와 패널, responsive 구조, AX tree, axe 0건,
-focus 표시와 details 키보드 조작을 확인했다. 다만 이 후속 회차의
-`Log.entryAdded`에는 exact URL이 없는 로컬 `ERR_FILE_NOT_FOUND` 2건이 남아
-`console-clean`은 BLOCK이고, 모바일 select의 키보드 선택 변경도 저장된 최종
-값이 `intake`라 증거 부족으로 BLOCK이다. 상세 증거는
-`docs/ui_integration/27_korean_gui_acceptance.md`를 따른다.
+G3는 실제 renderer control에 untrusted bubbling `input`/`change`를 보내 후보와
+편집 값을 선택했고, preload/main IPC가 `g3-preview-loaded`를 정확히 한 번
+`executed:false`로 반환하는 데까지 PASS했다. 그러나 renderer가 만든
+`data:video/...` source를 `index.html`의 CSP `media-src 'self' blob: file:`이
+거부했다. Video는 error code 4, `readyState:0`, `networkState:3`으로 metadata-ready에
+도달하지 못했다. Stop rule에 따라 save/export click과 파일은 0건이고 full
+quit/relaunch restore는 N/A다. 상세 증거는
+`docs/ui_integration/36_current_electron_runtime_acceptance.md`를 따른다.
 
-GUI 후속 코드 하드닝에서는 mock 상대 artifact 경로가 샷 기록과 최종 보고서의
-`img[src]`로 각각 생성되던 가장 강한 원인 가설을 제거했다. 상대/HTTP source는
-경로 메타데이터만 표시하고, absolute local/file/data/blob source만 미리보기를
-유지한다. 실제 DOM에서 두 렌더 표면의 negative/positive case와 mobile select의
-`storyboard` change/heading 전환이 PASS했다. 다만 exact URL이 없는 과거 오류와
-수정 후 실제 Electron console, 실제 macOS 키보드-only 조작은 새 GUI 회차 없이
-소급 PASS로 바꾸지 않는다. 상세 증거는
-`docs/ui_integration/28_media_preview_hardening.md`를 따른다.
+과거 native folder 결과는 보존하지만 현재 19-method build의 native selection
+PASS로 소급하지 않는다. 이번 distinct 회차는 native dialog와 trusted keyboard를
+재시도하지 않았고, mobile stage select는 programmatic DOM change만 PASS했다.
+따라서 current native selection과 actual keyboard-only interaction은 BLOCK이다.
 
 계획 파일 쓰기 IPC는 writer와 root provenance를 모두 최소권한으로 하드닝했다.
 Public config mutation을 제거하고 production/parent는 native dialog 결과 또는
@@ -85,11 +89,11 @@ Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 
 | --- | --- | --- |
 | AC1 active MuAPI 격리 | VERIFIED | `4dac387`; 기본 dev/build/start는 Vite/Electron이며 active MuAPI surface scan 통과 |
 | AC2 Electron 보안 | EXECUTOR PASS / INDEPENDENT BLOCK | 외부 navigation deny-by-default, public config mutation 제거, native/immediate-child provenance와 planning exact allowlist/symlink/content/atomic-write 회귀 PASS; 독립 verifier verdict 없음 |
-| AC3 renderer/main 경계 | EXECUTOR PASS / INDEPENDENT BLOCK | current preload는 `filmPipeline` 12 methods, `setConfig` 없음; 새 method도 renderer path 인자 없는 fixed-root read-only metadata이며 main이 configured root/parent selection과 read/write를 소유; 독립 verifier verdict 없음 |
+| AC3 renderer/main 경계 | EXECUTOR PASS / INDEPENDENT BLOCK | current actual Electron preload는 정확히 `filmPipeline` 19 methods, `setConfig` 없음; G3 renderer→preload→main preview IPC도 `executed:false`로 도달했으며 main이 selection/read/write를 소유; 독립 verifier verdict 없음 |
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았고 검증된 preview만 복사 가능; 불완전한 ffprobe/concat은 command/copy 모두 disabled |
-| AC5 실제 GUI | PARTIAL PASS | 기존 실제 window/preload/11-tab/fixture+첫 root native/state/blocked preview/trusted copy와 한국어 4-viewport/AX/axe/focus PASS; provenance 변경 후 open/parent/sidebar/refresh는 deterministic DOM PASS지만 실제 Electron은 미실행; 두 번째 root native selection, 수정 후 console 및 실제 keyboard-only 증거는 BLOCK |
+| AC5 실제 GUI | PARTIAL PASS | current exact 19-method window/preload, 11개 한국어 menu/heading, fixture와 두 root의 비-native 상태 복원, 4 viewport PASS; G3는 main preview IPC 뒤 CSP media rejection으로 decoder BLOCK, save/export/relaunch N/A; current native selection과 actual mobile keyboard-only는 BLOCK |
 | AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant, canonical pack/ledger, selected takes/QC 및 exact delivery manifest/master SHA golden·missing·malformed·oversize·symlink·unsafe/stale/changed path·range·ID/QC conflict matrix PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
-| AC7 자동 검증 | VERIFIED (명시된 GUI/독립 gaps 제외) | canonical delivery 후 network-denied 전체 123/123, delivery focused 38/38, lint, build 41 modules PASS; 기존 실제 GUI runtime 증거는 별도 보존 |
+| AC7 자동 검증 | VERIFIED (명시된 GUI/독립 gaps 제외) | network-denied 전체 141/141, G3 focused 29/29, lint, build 47 modules PASS; current exact 19-method GUI runtime 증거와 CSP blocker를 별도 보존 |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
 | AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds와 canonical deterministic/external/canonical/human/final 상태를 독립 유지 |
@@ -99,13 +103,13 @@ Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- network-denied 전체 테스트: 123/123 PASS
+- network-denied 전체 테스트: 141/141 PASS
 - canonical delivery focused: 첫 실행 35/38, 허용된 1회 국소 self-fix 후 38/38 PASS
 - canonical finishing focused: 첫 실행 44/44 PASS, self-fix 없음
 - canonical handoff focused: targeted self-fix 후 38/38 PASS
 - network-denied provenance/security/renderer focused: 32/32 PASS
 - lint: PASS
-- Vite build: PASS, 41 modules
+- Vite build: PASS, 47 modules
 - `git diff --check`: PASS
 - 상세 reader 증거: `docs/ui_integration/20_production_reader_validation.md`
 - 실제 포맷 호환성 증거: `docs/ui_integration/24_real_layout_compatibility.md`
@@ -119,10 +123,12 @@ Electron/GUI, ffmpeg/ffprobe 또는 production write는 사용하지 않았다. 
 - renderer path provenance 경계: `docs/ui_integration/30_renderer_path_provenance.md`
 - canonical finishing state: `docs/ui_integration/32_canonical_finishing_state.md`
 - canonical delivery evidence: `docs/ui_integration/33_canonical_delivery_evidence.md`
+- current Electron runtime acceptance: `docs/ui_integration/36_current_electron_runtime_acceptance.md`
 - native/clipboard focused regression: 12/12 PASS
 - active Electron entrypoint focused security regression: 8/8 PASS
 - historical fresh runtime: `window.localAI === undefined`, 당시 `window.filmPipeline` 12 methods, legacy/unsafe enabled control 0, `file:` 7/external request 0, renderer console warning/error 0
-- current preload VM: `window.filmPipeline` 12 methods, public `setConfig` 0건, path-free harness/list/state/assets IPC
+- current actual Electron preload: `window.filmPipeline` 정확히 19 methods, public `setConfig` 0건, `window.localAI === undefined`
+- current G3 preview: renderer event/rebound와 main IPC PASS; CSP `data:` media rejection으로 decoder BLOCK, save/export/relaunch N/A
 - canonical harness source probe: exact 5/5 `available`; content 반환 0, renderer root 입력 0
 - fresh runtime screenshot (private temp only): SHA-256 `0280c8892a5e6c9dbf9a913ade9d9ec4618a554b6d9564246f68e28da5539e70`
 - trusted copy aggregate: 86 bytes, SHA-256 `7401b0abcbdf800d5d75aa1c278ef1f45c4578755fb6fecc45d505689065cf5c`, `verified:true`, `executed:false`
@@ -133,24 +139,30 @@ Jessie가 승인한 `release/`와 `/tmp/open-generative-ai-security-review-20260
 
 - `gangnam_shorts_system_income_20260707`: Layout B / `gangnam_scene_bundle`, 293 files, storyboard/prompt/queue/report 구조 복원, `final_ready:false`
 - `ep01_apologist`: Layout B / `markdown_scene_pack`, 524 files, storyboard/motion/prompt/media 구조 복원, `final_ready:false`
-- 두 경로 모두 probe 전후 manifest hash가 동일하다.
+- 두 경로 모두 별도 격리 profile의 current actual Electron 비-native 읽기에서 같은
+  file count와 `final_ready:false`를 복원했고 unsafe enabled control은 0건이었다.
+- 두 경로 모두 runtime 전후 aggregate manifest hash가 동일하다.
 - 잔여 표식: `REAL_LAYOUT_A_GAP`, `STRUCTURAL_REVIEW_EVIDENCE_GAP`
 
 위 결과는 실제 작업 폴더를 탐색 가능한 UI state로 복원한다는 증거다. 구조 존재를 review/quality PASS로 승격하지 않으며 상세 blocker는 `24_real_layout_compatibility.md`를 따른다.
 
 ## 남은 작업과 승인 경계
 
-1. 두 번째 production의 native folder selection은 사용자 직접 선택 또는 별도 macOS dialog harness로 재검증한다.
-2. 완전한 실제 날짜-run Layout A가 생기면 aggregate-only read-only probe를 수행한다.
-3. OSV 취약점 검사는 오프라인 DB가 제공되면 재실행하거나 `SCANNER_GAP`을 명시적으로 수용한다. fresh HOME deny-network OSV v2.4.0은 1,097 packages/4 filtered 뒤 exit 127과 `no offline version of the OSV database is available`을 반환했다.
-4. 후속 한국어 GUI의 로컬 `ERR_FILE_NOT_FOUND` 2건은 가장 강한 상대 media source 코드 가설을 제거했지만, exact URL을 보존하는 승인된 read-only GUI 회차에서 수정 후 결과를 분류한다. 그 전에는 전체 `console-clean`을 주장하지 않는다.
-5. 모바일 작업 단계 select의 DOM change/heading 계약은 PASS다. 실제 macOS 키보드-only 변경은 값과 heading을 같은 저장 증거로 재검증한다.
-6. remote push는 수행하지 않았다. `main`의 로컬 커밋과 원격 상태는 별도 사실로 취급한다.
-7. planning-write/path-provenance 독립 인수는 BLOCK이다. 첫 verifier와 fallback
+1. G3 preview transport와 CSP 계약을 일치시킨 뒤 actual Electron에서
+   metadata-ready, mode `0700`/`0600` save/export files, 비승격 export shape/hash와
+   full quit/relaunch restore를 재검증한다.
+2. Current 19-method build의 native folder selection은 별도 macOS dialog
+   harness나 사용자 직접 선택으로 재검증한다. 과거 fixture/Gangnam native PASS와
+   현재 비-native production read PASS를 current native PASS로 승격하지 않는다.
+3. 완전한 실제 날짜-run Layout A가 생기면 aggregate-only read-only probe를 수행한다.
+4. OSV 취약점 검사는 오프라인 DB가 제공되면 재실행하거나 `SCANNER_GAP`을 명시적으로 수용한다. fresh HOME deny-network OSV v2.4.0은 1,097 packages/4 filtered 뒤 exit 127과 `no offline version of the OSV database is available`을 반환했다.
+5. 현재 G3 preview의 정확한 console blocker는 CSP의 `data:` media rejection이다.
+   수정 후 새 log capture 전에는 preview path의 `console-clean`을 주장하지 않는다.
+6. 모바일 작업 단계 select의 programmatic DOM change/heading 계약은 PASS다. 실제 macOS keyboard-only 변경은 값과 heading을 같은 저장 증거로 재검증한다.
+7. remote push는 수행하지 않았다. `main`의 로컬 커밋과 원격 상태는 별도 사실로 취급한다.
+8. planning-write/path-provenance 독립 인수는 BLOCK이다. 첫 verifier와 fallback
    verifier가 모두 코드 판정 전에 classifier에서 실패했고 독립 verdict가 없다.
    자동 verifier는 더 호출하지 않으며 root도 최종 security acceptance하지 않는다.
-8. provenance/canonical handoff 변경 후 12-method bridge와 native mode selection은 실제 Electron을
-   실행한 회차에서 별도로 확인하기 전까지 runtime PASS로 소급하지 않는다.
 9. 실제 production의 selected takes/QC는 이번 슬라이스에서 읽지 않았다. 실제
    finishing quality를 주장하려면 별도 승인된 read-only production 회차와 GUI
    증거가 필요하다.
