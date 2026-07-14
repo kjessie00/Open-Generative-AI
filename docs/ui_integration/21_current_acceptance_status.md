@@ -1,8 +1,43 @@
 # Cinematic Pipeline Studio 현재 인수 상태
 
-기준일: 2026-07-14 (Asia/Seoul)
+기준일: 2026-07-15 (Asia/Seoul)
 
 이 문서는 `docs/ui_integration`의 현재 상태 기준점이다. 이전 문서의 작성 당시 사실과 검증 기록은 보존하되, 현재 완료 여부와 남은 차단은 이 문서와 `.agent/goal-checkpoint.md`를 우선한다.
+
+## 2026-07-15 canonical data migration 현재 상태
+
+Jessie의 승인에 따라 `selected_takes.json`과 finishing `current.json`의 mutable
+canonical 계약을 종료했다. 현재 제품 권위는
+`production/.film-pipeline-state-v1/{selected-takes,finishing-current}/` 아래
+content-addressed payload/commit graph다. 두 JSON은 namespace 이관 뒤 mode `0600`
+재생성 cache이며, graph가 있으면 reader/G3/finishing restoration이 cache로 fallback하지
+않는다.
+
+G3는 graph head를 계획 근거로 묶고, 첫 mutation의 legacy root import와 changed child
+append, 같은 payload cache repair, sibling fork fail-closed를 구현했다. Production
+reader/normalizer/UI는 `selected_takes.commit_graph`와 commit/payload ID를 provenance로
+전달한다. Finishing은 immutable public run 게시 뒤 current-state commit을 append하고
+cache를 마지막에 동기화한다. 게시 후 error path의 public run recursive delete는
+제거했다. Canonical commit 성공과 cache stale warning은 별도 결과다.
+
+현재 focused storage/G3/reader/finishing/UI/real-ffmpeg 통합은 72/72 PASS다. 외부망
+차단 full Node는 최종 200/200, lint와 Vite 53-module build, diff check가 PASS했고
+added-line network/package/release execution scan은 0이다. Exact
+schema/path/code/migration matrix와 잔여 경계는
+`docs/ui_integration/40_content_addressed_commit_graph.md`를 우선한다. 실제 Jessie
+production migration, 실제 production render, 사람 영상 품질 승인은 수행하거나
+주장하지 않는다. 아래 2026-07-14 BLOCK/PASS 문장은 당시 기록으로 보존한다.
+
+최종 독립 검증은 writer Sol `019f619b-3175-7d73-ac06-ef15eacf6d90`의 tracked patch
+SHA-256 `8bd118b2b1e4f7dc01a681a3fe090bc278d9aed7145cd2b11b509e32adcd5c8c`와
+snapshot `/private/tmp/open-ga-canonical-graph-verifier-U0CHeC/worktree`를 기준으로 했다.
+첫 Terra xhigh `019f61be-4a05-7143-876c-2a7054eefec4`는 store 8/8과 static/source
+불변은 PASS했으나 snapshot의 `node_modules/electron` 부재 때문에 combined 42/44,
+`UNVERIFIABLE (infra)`, P1 verifier environment였다. 2026-07-15T02:51:51+0900
+read-only `NODE_PATH`로 Electron 33.4.11을 해석한 뒤 fresh Terra xhigh
+`019f61c2-1cda-7852-b22f-2e63b125444f`가 외부망 차단 G3+finishing 36/36과
+C/D/E를 PASS했고 P0/P1/P2는 없었다. Correction과 source 변경은 없었으며 첫 환경
+실패 기록도 삭제하지 않는다.
 
 ## 현재 결론
 

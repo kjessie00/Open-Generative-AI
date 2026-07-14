@@ -12,6 +12,7 @@ import { validateFinalReady } from '../src/lib/pipeline/validators.js';
 
 const require = createRequire(import.meta.url);
 const { readProductionFolder } = require('../electron/lib/productionReader.js');
+const canonicalStore = require('../electron/lib/contentAddressedCommitStore.js');
 
 const SELECTED_SCHEMA = 'short-drama-room-selected-takes-v1';
 const QC_SCHEMA = 'short-drama-room-qc-report-v1';
@@ -120,7 +121,7 @@ test('golden canonical selected takes and QC become provenance-rich finishing in
     assert.equal(raw.parsed.selectedTakes.parsed, true);
     assert.equal(raw.parsed.qcReport.parsed, true);
     assert.deepEqual(Object.keys(raw.parsed.selectedTakes.records[0]).sort(), [
-        'beat_id', 'provenance', 'provider', 'range_valid', 'record_ready', 'shot_id', 'source_exists',
+        'beat_id', 'canonical_commit_id', 'canonical_payload_hash', 'provenance', 'provider', 'range_valid', 'record_ready', 'shot_id', 'source_exists',
         'source_in_sec', 'source_out_sec', 'source_reason', 'take_id', 'transition_duration_sec',
         'transition_type', 'video_path',
     ].sort());
@@ -139,6 +140,52 @@ test('golden canonical selected takes and QC become provenance-rich finishing in
     assert.equal(validateFinalReady(state).ok, false);
     assert.equal(serialized.includes('PRIVATE FINDING MUST NOT LEAK'), false);
     assert.equal(serialized.includes('SYNTHETIC SCRIPT MUST NOT ENTER FINISHING STATE'), false);
+});
+
+test('selected-takes graph wins over tampered or missing compatibility cache and exposes commit provenance', (t) => {
+    const { root } = fixture(t);
+    writeGolden(root);
+    const graphValue = selectedDoc(root, [selectedTake(root, 'SH01', { take_id: 'graph_take_01' })]);
+    const committed = canonicalStore.appendValue(root, canonicalStore.NAMESPACES.SELECTED_TAKES, graphValue, {
+        expectedParent: null,
+        codePrefix: 'SELECTED_TAKES_GRAPH',
+    });
+
+    for (const cacheState of ['tampered', 'missing']) {
+        if (cacheState === 'tampered') fs.writeFileSync(path.join(root, 'selected_takes.json'), '{bad');
+        else fs.rmSync(path.join(root, 'selected_takes.json'), { force: true });
+        const raw = readProductionFolder(root);
+        const state = normalizeProductionReaderState(raw);
+        assert.equal(raw.parsed.selectedTakes.parsed, true, cacheState);
+        assert.equal(raw.parsed.selectedTakes.source_authority, 'content_addressed_commit_graph');
+        assert.equal(raw.parsed.selectedTakes.canonical_commit_id, committed.headCommitId);
+        assert.equal(raw.parsed.selectedTakes.canonical_payload_hash, committed.payloadHash);
+        assert.equal(raw.parsed.selectedTakes.records[0].take_id, 'graph_take_01');
+        assert.equal(state.acceptedSeconds[0].canonical_provenance, 'selected_takes.commit_graph');
+        assert.equal(state.acceptedSeconds[0].canonical_commit_id, committed.headCommitId);
+        assert.equal(state.canonicalHandoff.selected_takes_authority, 'content_addressed_commit_graph');
+        assert.equal(state.canonicalHandoff.selected_takes_path, '');
+    }
+});
+
+test('invalid selected-takes graph never falls back to a valid compatibility cache', (t) => {
+    const { root } = fixture(t);
+    writeGolden(root);
+    canonicalStore.appendValue(root, canonicalStore.NAMESPACES.SELECTED_TAKES, selectedDoc(root), {
+        expectedParent: null,
+        codePrefix: 'SELECTED_TAKES_GRAPH',
+    });
+    const paths = canonicalStore.graphPaths(root, canonicalStore.NAMESPACES.SELECTED_TAKES, {
+        codePrefix: 'SELECTED_TAKES_GRAPH',
+    });
+    const [commitName] = fs.readdirSync(paths.commitRoot);
+    fs.chmodSync(path.join(paths.commitRoot, commitName), 0o644);
+
+    const raw = readProductionFolder(root);
+    assert.equal(raw.parsed.selectedTakes.parsed, false);
+    assert.equal(raw.parsed.selectedTakes.source_authority, 'content_addressed_commit_graph');
+    assert.equal(raw.parsed.selectedTakes.error, 'SELECTED_TAKES_GRAPH_RECORD_MODE_INVALID');
+    assert.equal(raw.canonical.finishing_inconsistencies.includes('SELECTED_TAKES_GRAPH_RECORD_MODE_INVALID'), true);
 });
 
 test('invalid, negative, reversed, non-finite-like, and missing-source ranges never count as accepted', (t) => {

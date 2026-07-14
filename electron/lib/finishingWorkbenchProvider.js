@@ -3,6 +3,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+    NAMESPACES,
+    appendValue,
+    compatibilityBuffer,
+    inspectGraph,
+    syncCompatibilityCache,
+} = require('./contentAddressedCommitStore');
 
 const FINISHING_OUTPUT_CONTRACT_VERSION = 'film_pipeline.finishing_workbench.v1';
 const FINISHING_PROBE_SCHEMA = 'film_pipeline.finishing_probe.v1';
@@ -22,6 +29,9 @@ const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SENSITIVE_SEGMENT_PATTERN = /(^|[._-])(auth|cookie|credential|keychain|secret|session|token)([._-]|$)/i;
 const DEFAULT_ADAPTER_PATH = path.resolve(__dirname, '../../scripts/run_selected_range_roughcut.py');
 const DEFAULT_HARNESS_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory';
+const SELECTED_GRAPH_PREFIX = 'FINISHING_SELECTED_TAKES_GRAPH';
+const CURRENT_GRAPH_PREFIX = 'FINISHING_CURRENT_GRAPH';
+const CURRENT_CACHE_PREFIX = 'FINISHING_CURRENT';
 
 const CANONICAL_FILES = Object.freeze([
     'beats.json',
@@ -500,7 +510,8 @@ function validateCanonicalShape(documents) {
     if (!projectId || !episodeId || [beats, manifest, qc].some((doc) => doc.project_id !== projectId || doc.episode_id !== episodeId)) {
         add('FINISHING_PROJECT_METADATA_MISMATCH');
     }
-    if (documents['qc_report.json'].mtimeMs < documents['selected_takes.json'].mtimeMs) add('FINISHING_QC_STALE');
+    if (!documents['selected_takes.json'].graph
+        && documents['qc_report.json'].mtimeMs < documents['selected_takes.json'].mtimeMs) add('FINISHING_QC_STALE');
     if (beats.beats.length !== manifest.shots.length || selected.takes.length !== beats.beats.length
         || qc.shot_qc.length !== selected.takes.length) add('FINISHING_CANONICAL_COVERAGE_MISMATCH');
 
@@ -602,7 +613,11 @@ function outputPaths(root) {
     return { finalRoot, runsRoot, currentPath: path.join(runsRoot, 'current.json'), lockPath: path.join(runsRoot, '.workbench.lock') };
 }
 
-function inspectOutputState(rootInfo) {
+function inspectCurrentGraph(rootInfo) {
+    return inspectGraph(rootInfo.root, NAMESPACES.FINISHING_CURRENT, { codePrefix: CURRENT_GRAPH_PREFIX });
+}
+
+function inspectOutputState(rootInfo, currentGraph = null) {
     const paths = outputPaths(rootInfo.root);
     const blockers = [];
     const records = [];
@@ -622,6 +637,10 @@ function inspectOutputState(rootInfo) {
         for (const name of names) {
             const target = path.join(paths.runsRoot, name);
             const stats = fs.lstatSync(target);
+            if (name === 'current.json' && currentGraph?.exists) {
+                records.push({ name: 'current.json', type: 'compatibility_cache_ignored_when_graph_exists' });
+                continue;
+            }
             if (stats.isSymbolicLink()) blockers.push('FINISHING_OUTPUT_SYMLINK_FORBIDDEN');
             if (name.startsWith('.staging-')) blockers.push('FINISHING_PARTIAL_PUBLICATION_PRESENT');
             else if (name === '.workbench.lock') blockers.push('FINISHING_CONCURRENT_LOCKED');
@@ -634,15 +653,25 @@ function inspectOutputState(rootInfo) {
 }
 
 async function readCurrentRun(rootInfo, inputSnapshotId = '') {
-    const { paths } = inspectOutputState(rootInfo);
-    if (!fs.existsSync(paths.currentPath)) return { status: 'empty', blockers: [], current: null };
     try {
-        const pointerRecord = readStrictJson(paths.currentPath, MAX_JSON_BYTES, 'FINISHING_CURRENT_POINTER');
-        const pointer = pointerRecord.value;
+        const graph = inspectCurrentGraph(rootInfo);
+        const { paths } = inspectOutputState(rootInfo, graph);
+        let pointer;
+        let authority;
+        if (graph.exists) {
+            pointer = graph.payload;
+            authority = 'content_addressed_commit_graph';
+        } else {
+            if (!fs.existsSync(paths.currentPath)) {
+                return { status: 'empty', blockers: [], current: null, pointer: null, graph };
+            }
+            pointer = readStrictJson(paths.currentPath, MAX_JSON_BYTES, 'FINISHING_CURRENT_POINTER').value;
+            authority = 'legacy_compatibility_file';
+        }
         if (!exactKeys(pointer, ['schema_version', 'run_id', 'receipt_sha256', 'updated_at'])
             || pointer.schema_version !== FINISHING_POINTER_SCHEMA || !RUN_ID_PATTERN.test(pointer.run_id)
             || !/^[a-f0-9]{64}$/.test(pointer.receipt_sha256) || typeof pointer.updated_at !== 'string') {
-            throw failure('FINISHING_CURRENT_POINTER_INVALID');
+            throw failure(graph.exists ? 'FINISHING_CURRENT_GRAPH_PAYLOAD_INVALID' : 'FINISHING_CURRENT_POINTER_INVALID');
         }
         const runRoot = path.join(paths.runsRoot, pointer.run_id);
         assertPathComponents(rootInfo, runRoot, { directory: true });
@@ -720,18 +749,52 @@ async function readCurrentRun(rootInfo, inputSnapshotId = '') {
                 fresh_probe_verified: true,
                 output_quality_approved: false,
                 render_completed_at: receipt.render_completed_at,
+                canonical_authority: authority,
+                canonical_commit_id: graph.headCommitId || '',
+                canonical_payload_hash: graph.payloadHash || '',
             },
+            pointer,
+            graph,
         };
     } catch (error) {
-        return { status: 'blocked', blockers: [publicErrorCode(error, 'FINISHING_CURRENT_ARTIFACT_INVALID')], current: null };
+        return {
+            status: 'blocked',
+            blockers: [publicErrorCode(error, 'FINISHING_CURRENT_ARTIFACT_INVALID')],
+            current: null,
+            pointer: null,
+            graph: { exists: false },
+        };
     }
+}
+
+function readSelectedTakesDocument(rootInfo) {
+    const graph = inspectGraph(rootInfo.root, NAMESPACES.SELECTED_TAKES, { codePrefix: SELECTED_GRAPH_PREFIX });
+    if (!graph.exists) {
+        return readStrictJson(path.join(rootInfo.root, 'selected_takes.json'), MAX_JSON_BYTES, 'FINISHING_SELECTED_TAKES_JSON');
+    }
+    const buffer = compatibilityBuffer(graph.payload, SELECTED_GRAPH_PREFIX);
+    return {
+        buffer,
+        sha256: sha256(buffer),
+        size: buffer.byteLength,
+        mtimeMs: 0,
+        identity: `commit:${graph.headCommitId}`,
+        value: graph.payload,
+        graph: {
+            authority: 'content_addressed_commit_graph',
+            commitId: graph.headCommitId,
+            payloadHash: graph.payloadHash,
+        },
+    };
 }
 
 async function inspectProduction(context, { includeOutputState = true } = {}) {
     const rootInfo = assertRoot(context.config?.productionRoot);
     const documents = {};
     for (const name of CANONICAL_FILES) {
-        documents[name] = readStrictJson(path.join(rootInfo.root, name), MAX_JSON_BYTES, `FINISHING_${name.replace(/\W/g, '_').toUpperCase()}`);
+        documents[name] = name === 'selected_takes.json'
+            ? readSelectedTakesDocument(rootInfo)
+            : readStrictJson(path.join(rootInfo.root, name), MAX_JSON_BYTES, `FINISHING_${name.replace(/\W/g, '_').toUpperCase()}`);
     }
     const canonical = validateCanonicalShape(documents);
     const blockers = [...canonical.blockers];
@@ -795,6 +858,11 @@ async function inspectProduction(context, { includeOutputState = true } = {}) {
             sha256: documents[name].sha256,
             size: documents[name].size,
             identity: documents[name].identity,
+            ...(documents[name].graph ? {
+                authority: documents[name].graph.authority,
+                commit_id: documents[name].graph.commitId,
+                payload_hash: documents[name].graph.payloadHash,
+            } : { authority: 'legacy_compatibility_file' }),
         }])),
         expected_order: canonical.expectedOrder || [],
         sources: sources.map((source) => ({
@@ -840,7 +908,12 @@ async function inspectProduction(context, { includeOutputState = true } = {}) {
             renderPayload,
         };
     }
-    const outputState = inspectOutputState(rootInfo);
+    let currentGraph;
+    try { currentGraph = inspectCurrentGraph(rootInfo); } catch (error) {
+        currentGraph = { exists: false, error: publicErrorCode(error, 'FINISHING_CURRENT_GRAPH_INVALID') };
+    }
+    const outputState = inspectOutputState(rootInfo, currentGraph);
+    if (currentGraph.error) outputState.blockers.push(currentGraph.error);
     const uniqueBlockers = Array.from(new Set([...inputBlockers, ...outputState.blockers]));
     const current = await readCurrentRun(rootInfo, inputSnapshotId);
     const securityBlockers = current.status === 'blocked' ? current.blockers : [];
@@ -895,6 +968,9 @@ function publicWorkspace(inspection) {
         episode_id: inspection.canonical.episodeId || '',
         selected_range_count: inspection.canonical.expectedOrder?.length || 0,
         selected_duration_seconds: Number(inspection.selectedDuration.toFixed(3)),
+        selected_takes_authority: inspection.documents['selected_takes.json']?.graph?.authority || 'legacy_compatibility_file',
+        selected_takes_commit_id: inspection.documents['selected_takes.json']?.graph?.commitId || '',
+        selected_takes_payload_hash: inspection.documents['selected_takes.json']?.graph?.payloadHash || '',
         input_ready: inspection.sources.length > 0 && inspection.sources.length === inspection.canonical.expectedOrder?.length,
         qc_ready: !inspection.blockers.includes('FINISHING_QC_NOT_READY') && !inspection.blockers.includes('FINISHING_QC_STALE'),
         harness_ready: Boolean(inspection.harness),
@@ -929,6 +1005,9 @@ function blockedWorkspace(error) {
         episode_id: '',
         selected_range_count: 0,
         selected_duration_seconds: 0,
+        selected_takes_authority: '',
+        selected_takes_commit_id: '',
+        selected_takes_payload_hash: '',
         input_ready: false,
         qc_ready: false,
         harness_ready: false,
@@ -1016,27 +1095,6 @@ function assertRenderSummary(summary, inspection) {
     }
 }
 
-function atomicWriteCurrent(paths, pointer, randomBytes) {
-    const currentExists = fs.existsSync(paths.currentPath);
-    if (currentExists) {
-        const stats = fs.lstatSync(paths.currentPath);
-        if (stats.isSymbolicLink() || !stats.isFile()) throw failure('FINISHING_CURRENT_POINTER_UNSAFE');
-    }
-    const temp = path.join(paths.runsRoot, `.current-${process.pid}-${randomBytes(8).toString('hex')}`);
-    let renamed = false;
-    try {
-        writeExclusive(temp, Buffer.from(`${JSON.stringify(pointer, null, 2)}\n`));
-        fs.renameSync(temp, paths.currentPath);
-        renamed = true;
-        fs.chmodSync(paths.currentPath, 0o600);
-        fsyncDirectory(paths.runsRoot);
-    } finally {
-        if (!renamed) {
-            try { fs.unlinkSync(temp); } catch {}
-        }
-    }
-}
-
 function createFinishingWorkbenchProvider(options = {}) {
     const context = {
         config: options.config || {},
@@ -1050,6 +1108,9 @@ function createFinishingWorkbenchProvider(options = {}) {
         randomBytes: options.randomBytes || crypto.randomBytes,
         planStore: options.planStore || defaultPlanStore,
         planTtlMs: options.planTtlMs || PLAN_TTL_MS,
+        currentGraphLinkSync: options.currentGraphLinkSync,
+        currentGraphBeforeCommitPublish: options.currentGraphBeforeCommitPublish,
+        currentCacheRenameSync: options.currentCacheRenameSync,
     };
 
     async function getWorkspace() {
@@ -1210,14 +1271,48 @@ function createFinishingWorkbenchProvider(options = {}) {
             fs.renameSync(stagingRoot, runRoot);
             published = true;
             fsyncDirectory(paths.runsRoot);
-            atomicWriteCurrent(paths, {
+            const pointer = {
                 schema_version: FINISHING_POINTER_SCHEMA,
                 run_id: inspection.runId,
                 receipt_sha256: sha256(receiptBuffer),
                 updated_at: completedAt,
-            }, context.randomBytes);
+            };
+            const graphOptions = {
+                expectedParent: null,
+                codePrefix: CURRENT_GRAPH_PREFIX,
+                randomBytes: context.randomBytes,
+                linkSync: context.currentGraphLinkSync,
+                beforeCommitPublish: context.currentGraphBeforeCommitPublish,
+            };
+            let currentGraph = inspection.current.graph || { exists: false };
+            let canonicalCommitted = false;
+            let legacyImported = false;
+            if (!currentGraph.exists && inspection.current.pointer) {
+                currentGraph = appendValue(inspection.rootInfo.root, NAMESPACES.FINISHING_CURRENT, inspection.current.pointer, graphOptions);
+                canonicalCommitted = currentGraph.appended;
+                legacyImported = currentGraph.appended;
+            }
+            if (!currentGraph.exists || stableJson(currentGraph.payload) !== stableJson(pointer)) {
+                currentGraph = appendValue(inspection.rootInfo.root, NAMESPACES.FINISHING_CURRENT, pointer, {
+                    ...graphOptions,
+                    expectedParent: currentGraph.exists ? currentGraph.headCommitId : null,
+                });
+                canonicalCommitted = canonicalCommitted || currentGraph.appended;
+            }
             const verified = await readCurrentRun(inspection.rootInfo, inspection.inputSnapshotId);
             if (verified.status !== 'success' || !verified.current) throw failure('FINISHING_PUBLICATION_VERIFY_FAILED');
+            const warnings = [];
+            let cacheSynchronized = false;
+            try {
+                syncCompatibilityCache(inspection.rootInfo.root, 'final/workbench_runs/current.json', pointer, {
+                    codePrefix: CURRENT_CACHE_PREFIX,
+                    randomBytes: context.randomBytes,
+                    renameSync: context.currentCacheRenameSync,
+                });
+                cacheSynchronized = true;
+            } catch {
+                warnings.push('FINISHING_CURRENT_CACHE_STALE');
+            }
             return {
                 ok: true,
                 schema_version: FINISHING_OUTPUT_CONTRACT_VERSION,
@@ -1234,11 +1329,16 @@ function createFinishingWorkbenchProvider(options = {}) {
                 output_quality_approved: false,
                 quality_notice: '렌더 실행 성공 ≠ 영상 품질 승인',
                 render_completed_at: completedAt,
+                canonical_committed: canonicalCommitted,
+                canonical_commit_id: currentGraph.headCommitId,
+                canonical_payload_hash: currentGraph.payloadHash,
+                legacy_current_imported: legacyImported,
+                cache_synchronized: cacheSynchronized,
+                warning: warnings[0] || '',
+                warnings,
             };
         } catch (error) {
-            if (published) {
-                try { fs.rmSync(runRoot, { recursive: true, force: true }); } catch {}
-            } else {
+            if (!published) {
                 try { fs.rmSync(stagingRoot, { recursive: true, force: true }); } catch {}
             }
             throw failure(publicErrorCode(error, 'FINISHING_EXECUTION_FAILED'));

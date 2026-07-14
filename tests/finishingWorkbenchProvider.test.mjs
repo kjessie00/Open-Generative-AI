@@ -12,6 +12,7 @@ const {
     FINISHING_OUTPUT_CONTRACT_VERSION,
     runBoundedProcess,
 } = require('../electron/lib/finishingWorkbenchProvider.js');
+const canonicalStore = require('../electron/lib/contentAddressedCommitStore.js');
 
 const PROJECT_ID = 'synthetic_project';
 const EPISODE_ID = 'episode_01';
@@ -201,9 +202,27 @@ function makeFixture(t, overrides = {}) {
         nowMs: overrides.nowMs || (() => Date.parse('2026-07-14T04:00:00.000Z')),
         randomBytes: (size) => Buffer.alloc(size, 7),
         planStore: new Map(),
+        currentGraphLinkSync: overrides.currentGraphLinkSync,
+        currentGraphBeforeCommitPublish: overrides.currentGraphBeforeCommitPublish,
+        currentCacheRenameSync: overrides.currentCacheRenameSync,
     });
     t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-    return { base, root, harnessRoot, adapterPath, sources, binaries, mediaProbe, render, provider };
+    const reopen = (reopenOverrides = {}) => createFinishingWorkbenchProvider({
+        config: { productionRoot: root },
+        harnessRoot,
+        adapterPath,
+        runtimeResolver: reopenOverrides.runtimeResolver || (async () => binaries),
+        mediaProbe: reopenOverrides.mediaProbe || mediaProbe,
+        render: reopenOverrides.render || render,
+        now: reopenOverrides.now || (() => new Date('2026-07-14T04:00:00.000Z')),
+        nowMs: reopenOverrides.nowMs || (() => Date.parse('2026-07-14T04:00:00.000Z')),
+        randomBytes: (size) => Buffer.alloc(size, 11),
+        planStore: new Map(),
+        currentGraphLinkSync: reopenOverrides.currentGraphLinkSync,
+        currentGraphBeforeCommitPublish: reopenOverrides.currentGraphBeforeCommitPublish,
+        currentCacheRenameSync: reopenOverrides.currentCacheRenameSync,
+    });
+    return { base, root, harnessRoot, adapterPath, sources, binaries, mediaProbe, render, provider, reopen };
 }
 
 test('pathless plan binds canonical beat order and exposes no privileged execution data', async (t) => {
@@ -632,6 +651,138 @@ test('exact confirmed execution atomically publishes a private current run and r
     assert.equal(noOpPlan.status, 'already_current');
     assert.equal(noOpPlan.already_current, true);
     assert.equal(noOpPlan.plan_token, '');
+});
+
+test('selected-takes graph input wins over tampered cache and is bound into public provenance', async (t) => {
+    const current = makeFixture(t);
+    const selectedPath = path.join(current.root, 'selected_takes.json');
+    const selected = JSON.parse(fs.readFileSync(selectedPath, 'utf8'));
+    const committed = canonicalStore.appendValue(current.root, canonicalStore.NAMESPACES.SELECTED_TAKES, selected, {
+        expectedParent: null,
+        codePrefix: 'FINISHING_SELECTED_TAKES_GRAPH',
+    });
+    fs.writeFileSync(selectedPath, '{bad cache');
+
+    const plan = await current.provider.plan();
+    assert.equal(plan.ready, true);
+    assert.equal(plan.selected_takes_authority, 'content_addressed_commit_graph');
+    assert.equal(plan.selected_takes_commit_id, committed.headCommitId);
+    assert.equal(plan.selected_takes_payload_hash, committed.payloadHash);
+    const result = await current.provider.execute({
+        planToken: plan.plan_token,
+        confirmed: true,
+        projectId: PROJECT_ID,
+    });
+    assert.equal(result.status, 'success');
+    assert.equal(fs.readFileSync(selectedPath, 'utf8'), '{bad cache', 'finishing does not rewrite the selected-takes compatibility cache');
+});
+
+test('current graph restores over missing or symlinked current cache with commit provenance', async (t) => {
+    const current = makeFixture(t);
+    const plan = await current.provider.plan();
+    const result = await current.provider.execute({ planToken: plan.plan_token, confirmed: true, projectId: PROJECT_ID });
+    const currentPath = path.join(current.root, 'final', 'workbench_runs', 'current.json');
+    fs.unlinkSync(currentPath);
+    let workspace = await current.reopen().getWorkspace();
+    assert.equal(workspace.status, 'success');
+    assert.equal(workspace.current_run.run_id, result.run_id);
+    assert.equal(workspace.current_run.canonical_authority, 'content_addressed_commit_graph');
+    assert.equal(workspace.current_run.canonical_commit_id, result.canonical_commit_id);
+
+    const outside = path.join(current.base, 'tampered-current.json');
+    fs.writeFileSync(outside, '{bad');
+    fs.symlinkSync(outside, currentPath);
+    workspace = await current.reopen().getWorkspace();
+    assert.equal(workspace.status, 'success');
+    assert.equal(workspace.current_run.canonical_payload_hash, result.canonical_payload_hash);
+    assert.equal(fs.readFileSync(outside, 'utf8'), '{bad');
+});
+
+test('invalid current graph never falls back to a valid current compatibility cache', async (t) => {
+    const current = makeFixture(t);
+    const plan = await current.provider.plan();
+    await current.provider.execute({ planToken: plan.plan_token, confirmed: true, projectId: PROJECT_ID });
+    const paths = canonicalStore.graphPaths(current.root, canonicalStore.NAMESPACES.FINISHING_CURRENT, {
+        codePrefix: 'FINISHING_CURRENT_GRAPH',
+    });
+    const [commitName] = fs.readdirSync(paths.commitRoot);
+    fs.chmodSync(path.join(paths.commitRoot, commitName), 0o644);
+    const workspace = await current.reopen().getWorkspace();
+    assert.equal(workspace.status, 'blocked');
+    assert.equal(workspace.current_run, null);
+    assert.equal(workspace.blockers.includes('FINISHING_CURRENT_GRAPH_RECORD_MODE_INVALID'), true);
+});
+
+test('finishing cache failure after canonical commit reports stale cache and retains successful run', async (t) => {
+    const current = makeFixture(t, {
+        currentCacheRenameSync() { throw new Error('injected current cache failure'); },
+    });
+    const plan = await current.provider.plan();
+    const result = await current.provider.execute({ planToken: plan.plan_token, confirmed: true, projectId: PROJECT_ID });
+    assert.equal(result.status, 'success');
+    assert.equal(result.canonical_committed, true);
+    assert.equal(result.cache_synchronized, false);
+    assert.equal(result.warning, 'FINISHING_CURRENT_CACHE_STALE');
+    assert.equal(fs.existsSync(path.join(current.root, 'final', 'workbench_runs', 'current.json')), false);
+    assert.equal(fs.existsSync(path.join(current.root, 'final', 'workbench_runs', result.run_id)), true);
+    const graph = canonicalStore.inspectGraph(current.root, canonicalStore.NAMESPACES.FINISHING_CURRENT, {
+        codePrefix: 'FINISHING_CURRENT_GRAPH',
+    });
+    assert.equal(graph.headCommitId, result.canonical_commit_id);
+    assert.equal((await current.reopen().getWorkspace()).status, 'success');
+});
+
+test('published run remains immutable after post-publication graph failure', async (t) => {
+    const current = makeFixture(t, {
+        currentGraphLinkSync() {
+            const error = new Error('injected graph link failure');
+            error.code = 'EIO';
+            throw error;
+        },
+    });
+    const plan = await current.provider.plan();
+    await assert.rejects(current.provider.execute({
+        planToken: plan.plan_token,
+        confirmed: true,
+        projectId: PROJECT_ID,
+    }), { code: 'FINISHING_CURRENT_GRAPH_PUBLISH_FAILED' });
+    const runsRoot = path.join(current.root, 'final', 'workbench_runs');
+    const publishedRuns = fs.readdirSync(runsRoot).filter((name) => /^[a-f0-9]{24}$/.test(name));
+    assert.equal(publishedRuns.length, 1);
+    assert.deepEqual(fs.readdirSync(path.join(runsRoot, publishedRuns[0])).sort(), [
+        'fresh_probe.json', 'receipt.json', 'roughcut.mp4',
+    ]);
+    assert.equal(fs.existsSync(path.join(runsRoot, '.workbench.lock')), false);
+    assert.equal(fs.readdirSync(runsRoot).some((name) => name.startsWith('.staging-')), false);
+});
+
+test('first changed finishing mutation imports valid legacy current as root before appending child', async (t) => {
+    const current = makeFixture(t);
+    const firstPlan = await current.provider.plan();
+    const first = await current.provider.execute({ planToken: firstPlan.plan_token, confirmed: true, projectId: PROJECT_ID });
+    const namespaceRoot = canonicalStore.graphPaths(current.root, canonicalStore.NAMESPACES.FINISHING_CURRENT, {
+        codePrefix: 'FINISHING_CURRENT_GRAPH',
+    }).namespaceRoot;
+    fs.rmSync(namespaceRoot, { recursive: true });
+
+    const selectedPath = path.join(current.root, 'selected_takes.json');
+    const selected = JSON.parse(fs.readFileSync(selectedPath, 'utf8'));
+    selected.takes[0].selected_at = '2026-07-14T00:02:00+09:00';
+    writeJson(selectedPath, selected);
+    const later = new Date(fs.statSync(selectedPath).mtimeMs + 1_000);
+    fs.utimesSync(path.join(current.root, 'qc_report.json'), later, later);
+
+    const secondProvider = current.reopen();
+    const secondPlan = await secondProvider.plan();
+    assert.equal(secondPlan.status, 'ready');
+    const second = await secondProvider.execute({ planToken: secondPlan.plan_token, confirmed: true, projectId: PROJECT_ID });
+    assert.notEqual(second.run_id, first.run_id);
+    assert.equal(second.legacy_current_imported, true);
+    const graph = canonicalStore.inspectGraph(current.root, canonicalStore.NAMESPACES.FINISHING_CURRENT, {
+        codePrefix: 'FINISHING_CURRENT_GRAPH',
+    });
+    assert.equal(graph.commitCount, 2);
+    assert.equal(graph.headCommitId, second.canonical_commit_id);
 });
 
 test('unsupported transition and out-of-bounds source range fail closed before token issuance', async (t) => {

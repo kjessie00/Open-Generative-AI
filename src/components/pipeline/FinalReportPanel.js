@@ -4,6 +4,7 @@ import { localMediaSource } from '../../lib/pipeline/mediaSources.js';
 import { blockerList, card, dataTable, el, infoGrid, panelShell, statusBadge } from './ui.js';
 import { FinishingWorkbenchPanel } from './FinishingWorkbenchPanel.js';
 import { p } from './copy.js';
+import { isCanonicalSelectedTakesProvenance } from '../../lib/pipeline/canonicalProvenance.js';
 
 function checklistItem(label, ok, blocker = BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN) {
     return card([
@@ -50,7 +51,7 @@ function downloadedFileForClip(state, clipId) {
 }
 
 function acceptedSecondsText(record) {
-    const canonicalReady = record?.canonical_provenance !== 'selected_takes.json'
+    const canonicalReady = !isCanonicalSelectedTakesProvenance(record?.canonical_provenance)
         || (record.accepted === true && record.source_exists === true && Boolean(record.canonical_alias_source));
     if (!record?.source_file || !(record.out_time > record.in_time) || !canonicalReady) return p('not recorded');
     return `${record.in_time}-${record.out_time}s · ${record.reviewer_confidence || p('confidence not recorded')}`;
@@ -144,7 +145,7 @@ export function FinalReportPanel({
     const acceptedClipIds = new Set((state.acceptedSeconds || []).filter((record) => (
         record.source_file
         && record.out_time > record.in_time
-        && (record.canonical_provenance !== 'selected_takes.json'
+        && (!isCanonicalSelectedTakesProvenance(record.canonical_provenance)
             || (record.accepted === true && record.source_exists === true && Boolean(record.canonical_alias_source)))
     )).map((record) => record.clip_id));
     const finalVideoPath = finalReport.final_video_path;

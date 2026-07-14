@@ -1,5 +1,6 @@
 import { BLOCKERS } from './blockers.js';
 import { basename, dirname, joinPath, looksSensitivePath, normalizeSlashes } from './filePathUtils.js';
+import { isCanonicalSelectedTakesProvenance } from './canonicalProvenance.js';
 
 function nowIso() {
     return new Date().toISOString();
@@ -252,7 +253,9 @@ function normalizeCanonicalSelectedRanges(rawReader) {
             transition_type: record.transition_type,
             transition_duration_sec: record.transition_duration_sec,
             canonical_alias_source: clipId ? 'shot_manifest.json+timeline_builder.clip_<shot_id>' : '',
-            canonical_provenance: 'selected_takes.json',
+            canonical_provenance: record.provenance || 'selected_takes.json',
+            canonical_commit_id: record.canonical_commit_id || '',
+            canonical_payload_hash: record.canonical_payload_hash || '',
             source_evidence: record.source_exists ? 'non_symlink_regular_file' : record.source_reason,
         };
     });
@@ -519,7 +522,7 @@ export function normalizeProductionReaderState(rawReader) {
     };
     const qaRecords = normalizeQaRecords(rawReader, storyboard, acceptedSeconds);
     const reviewGates = buildReviewGates(rawReader, stateBlockers, rawReader.parsed?.imageDashboard, promptPacks, acceptedSeconds, storyboard);
-    const canonicalSelectedRanges = acceptedSeconds.filter((record) => record.canonical_provenance === 'selected_takes.json');
+    const canonicalSelectedRanges = acceptedSeconds.filter((record) => isCanonicalSelectedTakesProvenance(record.canonical_provenance));
     const selectedRangesReady = canonicalSelectedRanges.filter((record) => record.accepted === true);
     const canonicalQcRecords = qaRecords.filter((record) => record.canonical_provenance === 'qc_report.json');
     const aliasReady = canonicalSelectedRanges.length > 0
@@ -617,6 +620,9 @@ export function normalizeProductionReaderState(rawReader) {
             download_manifest_path: rawReader.parsed?.downloadManifest?.path || '',
             shot_manifest_path: rawReader.parsed?.shotManifest?.path || '',
             selected_takes_path: rawReader.parsed?.selectedTakes?.path || '',
+            selected_takes_authority: rawReader.canonical?.selected_takes_authority || 'legacy_compatibility_file',
+            selected_takes_commit_id: rawReader.canonical?.selected_takes_commit_id || '',
+            selected_takes_payload_hash: rawReader.canonical?.selected_takes_payload_hash || '',
             qc_report_path: rawReader.parsed?.qcReport?.path || '',
             delivery_manifest_path: deliveryManifest.verified === true ? deliveryManifest.path : '',
             delivery_verified: deliveryManifest.verified === true,

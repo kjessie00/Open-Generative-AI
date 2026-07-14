@@ -1,4 +1,5 @@
 import { BLOCKERS } from './blockers.js';
+import { isCanonicalSelectedTakesProvenance } from './canonicalProvenance.js';
 
 export const HEARTBEAT_MIN_INTERVAL_MS = 20 * 60 * 1000;
 
@@ -140,7 +141,7 @@ function acceptedRangeHasEvidence(record, projectState = {}) {
         && Number.isFinite(outTime)
         && outTime > inTime;
     if (!basicRange) return false;
-    if (record.canonical_provenance !== 'selected_takes.json') return true;
+    if (!isCanonicalSelectedTakesProvenance(record.canonical_provenance)) return true;
     return record.accepted === true
         && record.source_exists === true
         && hasText(record.canonical_shot_id)
@@ -740,7 +741,7 @@ export function validateFinalReady(projectState) {
         details.missingAcceptedSeconds = missingAcceptedSeconds;
     }
     const canonicalIdentifierMismatches = acceptedSeconds
-        .filter((record) => record.canonical_provenance === 'selected_takes.json')
+        .filter((record) => isCanonicalSelectedTakesProvenance(record.canonical_provenance))
         .filter((record) => !record.clip_id || !expectedClipIds.includes(record.clip_id) || !acceptedRangeHasEvidence(record, projectState))
         .map((record) => record.canonical_shot_id || 'unknown_shot');
     if (canonicalIdentifierMismatches.length) {

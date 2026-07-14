@@ -1,6 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const {
+    STORE_DIRECTORY,
+    NAMESPACES,
+    inspectGraph,
+} = require('./contentAddressedCommitStore');
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_CANONICAL_JSON_BYTES = 512 * 1024;
@@ -142,6 +147,7 @@ function walkFiles(root, options = {}) {
         file_limit: 0,
         read_error: 0,
     };
+    const skippedPaths = { symlink: [] };
     const errors = [];
     let truncated = false;
 
@@ -170,7 +176,7 @@ function walkFiles(root, options = {}) {
                 skipped.file_limit += 1;
                 break;
             }
-            if (entry.name === '.git' || entry.name === 'node_modules') {
+            if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === STORE_DIRECTORY) {
                 skipped.ignored_directory += 1;
                 continue;
             }
@@ -185,6 +191,7 @@ function walkFiles(root, options = {}) {
             }
             if (entry.isSymbolicLink()) {
                 skipped.symlink += 1;
+                if (skippedPaths.symlink.length < 100) skippedPaths.symlink.push(safeRelative(root, fullPath));
                 continue;
             }
             if (entry.isDirectory()) {
@@ -215,7 +222,7 @@ function walkFiles(root, options = {}) {
     }
 
     walk(root, 0);
-    return { files, skipped, truncated, errors, maxDepth, maxFiles };
+    return { files, skipped, skippedPaths, truncated, errors, maxDepth, maxFiles };
 }
 
 function findFirst(root, relativeCandidates) {
@@ -348,6 +355,32 @@ function parseCanonicalJson(root, relativePath, label, sanitize) {
     if (!read.ok) return { ...base, error: read.error };
     try {
         const sanitized = sanitize(JSON.parse(read.content));
+        return { ...base, ...sanitized, parsed: true, error: '' };
+    } catch (error) {
+        return { ...base, error: error.message };
+    }
+}
+
+function parseCanonicalGraph(root, graph, label, sanitize) {
+    const relativePath = `${STORE_DIRECTORY}/${NAMESPACES.SELECTED_TAKES}`;
+    const base = {
+        label,
+        path: '',
+        relative_path: relativePath,
+        exists: true,
+        parsed: false,
+        value: null,
+        records: [],
+        source_authority: 'content_addressed_commit_graph',
+        canonical_commit_id: graph?.headCommitId || '',
+        canonical_payload_hash: graph?.payloadHash || '',
+    };
+    if (!graph?.exists) {
+        const error = graph?.error || 'SELECTED_TAKES_GRAPH_INVALID';
+        return { ...base, issues: [error], error };
+    }
+    try {
+        const sanitized = sanitize(graph.payload);
         return { ...base, ...sanitized, parsed: true, error: '' };
     } catch (error) {
         return { ...base, error: error.message };
@@ -800,7 +833,7 @@ function sanitizeShotManifest(value) {
     };
 }
 
-function sanitizeSelectedTakes(root, value) {
+function sanitizeSelectedTakes(root, value, provenance = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('selected takes must be an object');
     if (!Array.isArray(value.takes)) throw new Error('selected takes must contain a takes array');
     if (value.takes.length > MAX_CANONICAL_RECORDS) throw new Error(`selected takes exceeds ${MAX_CANONICAL_RECORDS} records`);
@@ -863,7 +896,9 @@ function sanitizeSelectedTakes(root, value) {
             range_valid: rangeValid,
             record_ready: Boolean(shotId && beatId && takeId && provider && rangeValid && transitionValid
                 && hiddenContractFieldsValid && source.exists),
-            provenance: 'selected_takes.json',
+            provenance: provenance.source || 'selected_takes.json',
+            canonical_commit_id: provenance.commitId || '',
+            canonical_payload_hash: provenance.payloadHash || '',
         };
     });
     const schemaVersion = safeToken(value.schema_version);
@@ -1355,7 +1390,19 @@ function readProductionFolder(rootPath, options = {}) {
     const jimengState = parseCanonicalJson(root, 'jimeng_state.json', 'jimeng_state.json', sanitizeJimengState);
     const downloadManifest = parseCanonicalJson(root, 'download_manifest.json', 'download_manifest.json', (value) => sanitizeDownloadManifest(root, value));
     const shotManifest = parseCanonicalJson(root, 'shot_manifest.json', 'shot_manifest.json', sanitizeShotManifest);
-    const selectedTakes = parseCanonicalJson(root, 'selected_takes.json', 'selected_takes.json', (value) => sanitizeSelectedTakes(root, value));
+    let selectedGraph;
+    try {
+        selectedGraph = inspectGraph(root, NAMESPACES.SELECTED_TAKES, { codePrefix: 'SELECTED_TAKES_GRAPH' });
+    } catch (error) {
+        selectedGraph = { exists: false, error: error.code || 'SELECTED_TAKES_GRAPH_INVALID' };
+    }
+    const selectedTakes = selectedGraph.exists || selectedGraph.error
+        ? parseCanonicalGraph(root, selectedGraph, 'selected takes commit graph', (value) => sanitizeSelectedTakes(root, value, {
+            source: 'selected_takes.commit_graph',
+            commitId: selectedGraph.headCommitId,
+            payloadHash: selectedGraph.payloadHash,
+        }))
+        : parseCanonicalJson(root, 'selected_takes.json', 'selected_takes.json', (value) => sanitizeSelectedTakes(root, value));
     const qcReport = parseCanonicalJson(root, 'qc_report.json', 'qc_report.json', sanitizeQcReport);
     const deliveryManifest = detected.layout === 'A'
         ? parseCanonicalDeliveryManifest(root)
@@ -1494,6 +1541,9 @@ function readProductionFolder(rootPath, options = {}) {
             delivery_inconsistencies: Array.from(new Set(deliveryInconsistencies)),
             delivery_ready: deliveryManifest.verified === true,
             final_ready: false,
+            selected_takes_authority: selectedTakes.source_authority || 'legacy_compatibility_file',
+            selected_takes_commit_id: selectedTakes.canonical_commit_id || '',
+            selected_takes_payload_hash: selectedTakes.canonical_payload_hash || '',
         },
         blockers: Array.from(new Set(blockers)),
         security: {
@@ -1504,6 +1554,7 @@ function readProductionFolder(rootPath, options = {}) {
             max_walk_files: walkResult.maxFiles,
             max_walk_depth: walkResult.maxDepth,
             skipped: walkResult.skipped,
+            skipped_paths: walkResult.skippedPaths,
             skipped_total: Object.values(walkResult.skipped).reduce((sum, value) => sum + value, 0),
             walk_truncated: walkResult.truncated,
             walk_errors: walkResult.errors,

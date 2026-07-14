@@ -1,5 +1,6 @@
 import { el, statusBadge } from './ui.js';
 import { p } from './copy.js';
+import { isCanonicalSelectedTakesProvenance } from '../../lib/pipeline/canonicalProvenance.js';
 
 function deriveFileStatus(state) {
     return state.fileStatus || {
@@ -13,7 +14,7 @@ function deriveFileStatus(state) {
         ].filter(Boolean).length,
         review_passed: (state.reviewGates || []).filter((gate) => gate.status === 'PASS').length,
         quality_accepted: (state.acceptedSeconds || []).filter((record) => (
-            record.canonical_provenance === 'selected_takes.json'
+            isCanonicalSelectedTakesProvenance(record.canonical_provenance)
                 ? record.accepted === true && record.source_exists === true && Boolean(record.clip_id)
                 : record.accepted === true || (record.source_file && record.out_time > record.in_time)
         )).length,

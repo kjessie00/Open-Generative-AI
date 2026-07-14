@@ -2,6 +2,21 @@
 
 기준일: 2026-07-14 (Asia/Seoul)
 
+## 2026-07-15 current-state publication 정정
+
+아래의 mutable `current.json` pointer 설명은 2026-07-14 역사다. 현재 finishing
+restoration 권위는
+`production/.film-pipeline-state-v1/finishing-current/`의 immutable payload/commit
+graph이며 `final/workbench_runs/current.json`은 mode `0600` 호환 cache다.
+
+Execute는 public content-derived run을 게시한 뒤 legacy current root import가 필요하면
+먼저 수행하고 새 current payload를 child/root로 append·검증한 다음 cache를 동기화한다.
+Graph가 있으면 missing/malformed/symlink cache를 restoration 근거로 읽지 않는다.
+Canonical commit 뒤 cache 실패는 `FINISHING_CURRENT_CACHE_STALE`로 분리한다. Public run
+rename 뒤 graph/cache/verification error가 나도 run을 재귀 삭제하지 않는다. 따라서 이
+문서 아래의 “recursive cleanup/mutable current 미해결” 문장은 해결 전 역사로 보존되며,
+현재 exact 계약과 잔여 TOCTOU는 `40_content_addressed_commit_graph.md`를 따른다.
+
 구현·검증·통합 담당: `/root/finishing_render_integrator_20260714`
 
 ## 결론

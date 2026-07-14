@@ -1,5 +1,9 @@
 import { actionButton, card, el, statusBadge } from './ui.js';
 
+function shortHash(value) {
+    return /^[a-f0-9]{64}$/.test(value || '') ? `${value.slice(0, 12)}…` : 'legacy';
+}
+
 function stateBadge(workspace, execution) {
     if (execution?.status === 'executing') return statusBadge('선택 구간 렌더 중', 'WARN');
     if (execution?.status === 'success') return statusBadge('렌더·새 probe 검증 완료', 'PASS');
@@ -45,7 +49,7 @@ export function FinishingWorkbenchPanel({
             stateBadge(workspace, execution),
         ]),
         el('p', {
-            text: 'canonical 비트 순서와 selected_takes 구간을 다시 검증한 뒤 happyVideoFactory 편집 엔진으로 고정된 workbench 실행본을 만듭니다. source 경로·명령·실행 파일은 화면에 노출되지 않습니다.',
+            text: 'canonical 비트 순서와 selected-takes commit graph 구간을 다시 검증한 뒤 happyVideoFactory 편집 엔진으로 고정된 workbench 실행본을 만듭니다. JSON 호환 cache는 권위 근거나 화면 입력으로 사용하지 않습니다. source 경로·명령·실행 파일은 화면에 노출되지 않습니다.',
             className: 'max-w-4xl text-sm leading-6 text-secondary',
         }),
         el('p', {
@@ -61,6 +65,7 @@ export function FinishingWorkbenchPanel({
         definition('입력 / QC', `${workspace.input_ready ? '준비' : '차단'} / ${workspace.qc_ready ? '준비' : '차단'}`),
         definition('하네스 / 실행 도구', `${workspace.harness_ready ? '준비' : '차단'} / ${workspace.runtime_ready ? '준비' : '차단'}`),
         definition('고정 출력 계약', workspace.output_contract?.location),
+        definition('선택 상태 provenance', `${workspace.selected_takes_authority || 'legacy'} · ${shortHash(workspace.selected_takes_commit_id)}`),
         definition('Python', workspace.tool_status?.python),
         definition('ffmpeg', workspace.tool_status?.ffmpeg),
         definition('ffprobe', workspace.tool_status?.ffprobe),
@@ -74,6 +79,7 @@ export function FinishingWorkbenchPanel({
                 definition('렌더 / 선택 길이', `${workspace.current_run.output_duration_seconds}초 / ${workspace.current_run.selected_duration_seconds}초`),
                 definition('출력 크기 / hash', `${workspace.current_run.output_size_bytes} bytes · ${workspace.current_run.output_sha256_short}`),
                 definition('새 probe / 품질 승인', `${workspace.current_run.fresh_probe_verified ? 'PASS' : 'BLOCK'} / 승인 안 됨`),
+                definition('현재 상태 provenance', `${workspace.current_run.canonical_authority || 'legacy'} · ${shortHash(workspace.current_run.canonical_commit_id)}`),
             ]),
         ]));
     }

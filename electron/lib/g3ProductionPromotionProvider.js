@@ -20,12 +20,17 @@ const {
 } = require('./g3ReviewCandidateStore');
 const { contextState } = require('./g3ReviewDraftProvider');
 const {
+    NAMESPACES,
+    appendValue,
+    inspectGraph,
+    syncCompatibilityCache,
+} = require('./contentAddressedCommitStore');
+const {
     acquirePromotionLock,
     ensurePromotionRoot,
     exactPromotionPaths,
     privateAtomicWrite,
     readTarget,
-    replaceSelectedTakes,
     sameTargetSnapshot,
 } = require('./g3PromotionStore');
 
@@ -35,6 +40,8 @@ const PENDING_SCHEMA = 'film_pipeline.g3_promotion_pending.v1';
 const DEFAULT_PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_TTL_MS = 10 * 60 * 1000;
 const SESSION_PLAN_STORE = new Map();
+const SELECTED_GRAPH_PREFIX = 'G3_SELECTED_TAKES_GRAPH';
+const SELECTED_CACHE_PREFIX = 'G3_SELECTED_TAKES';
 
 function clockMs(context = {}) {
     const value = context.promotionNowMs ? context.promotionNowMs() : Date.now();
@@ -181,10 +188,32 @@ function promotionInputs(context = {}) {
     }
     const selectedTakes = validateSelectedTakes(parseJson(selectedRead.buffer, 'G3_PROMOTION_SELECTED_TAKES_NONCANONICAL'), internal.source);
     const envelope = validateExportEnvelope(parseJson(exportRead.buffer, 'G3_PROMOTION_EXPORT_NONCANONICAL'), internal, selectedTakes);
+    const graph = inspectGraph(internal.rootInfo.root, NAMESPACES.SELECTED_TAKES, {
+        codePrefix: SELECTED_GRAPH_PREFIX,
+    });
     const targetPath = path.join(internal.rootInfo.root, 'selected_takes.json');
-    const target = readTarget(targetPath);
-    if (target.exists) {
-        validateSelectedTakes(parseJson(target.buffer, 'G3_PROMOTION_TARGET_NONCANONICAL'), internal.source, 'G3_PROMOTION_TARGET_NONCANONICAL');
+    let target;
+    let targetError = '';
+    try {
+        target = readTarget(targetPath);
+    } catch (error) {
+        if (!graph.exists) throw error;
+        targetError = error.code || 'G3_SELECTED_TAKES_CACHE_UNSAFE';
+        target = { exists: false, sha256: '', size: 0, mode: 0, identity: null, buffer: null };
+    }
+    let legacySelectedTakes = null;
+    if (graph.exists) {
+        validateSelectedTakes(graph.payload, internal.source, 'G3_SELECTED_TAKES_GRAPH_PAYLOAD_NONCANONICAL');
+    } else if (target.exists) {
+        legacySelectedTakes = validateSelectedTakes(
+            parseJson(target.buffer, 'G3_PROMOTION_TARGET_NONCANONICAL'),
+            internal.source,
+            'G3_PROMOTION_TARGET_NONCANONICAL',
+        );
+    }
+    let cacheFresh = false;
+    if (!targetError && target.exists && target.mode === 0o600) {
+        try { cacheFresh = util.isDeepStrictEqual(parseJson(target.buffer, 'G3_SELECTED_TAKES_CACHE_MALFORMED'), selectedTakes); } catch { /* stale cache */ }
     }
     return {
         internal,
@@ -194,6 +223,10 @@ function promotionInputs(context = {}) {
         selectedTakes,
         envelope,
         target,
+        targetError,
+        cacheFresh,
+        legacySelectedTakes,
+        graph,
     };
 }
 
@@ -208,6 +241,12 @@ function evidence(inputs) {
         selectedTakesSha256: inputs.selectedRead.sha256,
         exportSha256: inputs.exportRead.sha256,
         target: inputs.target,
+        targetError: inputs.targetError,
+        graph: inputs.graph.exists ? {
+            exists: true,
+            headCommitId: inputs.graph.headCommitId,
+            payloadHash: inputs.graph.payloadHash,
+        } : { exists: false, headCommitId: '', payloadHash: '' },
     };
 }
 
@@ -216,7 +255,8 @@ function sameEvidence(record, current) {
         && record.projectId === current.projectId && record.episodeId === current.episodeId
         && record.draftSha256 === current.draftSha256 && record.selectedTakesSha256 === current.selectedTakesSha256
         && record.exportSha256 === current.exportSha256 && util.isDeepStrictEqual(record.sourceSnapshot, current.sourceSnapshot)
-        && sameTargetSnapshot(record.target, current.target);
+        && util.isDeepStrictEqual(record.graph, current.graph)
+        && (record.graph.exists || (record.targetError === current.targetError && sameTargetSnapshot(record.target, current.target)));
 }
 
 function blockedPlan(error) {
@@ -235,6 +275,9 @@ function blockedPlan(error) {
         target_state: '확인 불가',
         selected_takes_sha256: '',
         current_target_sha256: '',
+        graph_head_commit_id: '',
+        graph_payload_hash: '',
+        cache_fresh: false,
         safety_summary: ['승격 계획을 안전하게 만들지 못했습니다.', 'production 파일은 변경되지 않았습니다.'],
         blockers: [code],
         executed: false,
@@ -256,27 +299,39 @@ function planG3ProductionPromotion(context = {}) {
         }
         if (!token) throw g3Error('G3_PROMOTION_TOKEN_UNAVAILABLE', 'Could not allocate an opaque plan token');
         const current = evidence(inputs);
-        const alreadyCurrent = inputs.target.exists && inputs.target.sha256 === inputs.selectedRead.sha256;
+        const alreadyCurrent = inputs.graph.exists
+            ? util.isDeepStrictEqual(inputs.graph.payload, inputs.selectedTakes)
+            : Boolean(inputs.legacySelectedTakes && util.isDeepStrictEqual(inputs.legacySelectedTakes, inputs.selectedTakes));
+        const ready = !alreadyCurrent || !inputs.cacheFresh || !inputs.graph.exists;
         store.set(token, { ...current, expiresAtMs });
         return {
             ok: true,
             schema_version: PLAN_SCHEMA,
-            status: alreadyCurrent ? 'already_current' : 'ready',
-            ready: !alreadyCurrent,
+            status: alreadyCurrent && inputs.graph.exists && inputs.cacheFresh ? 'already_current'
+                : alreadyCurrent && inputs.graph.exists ? 'cache_repair_ready'
+                    : alreadyCurrent ? 'migration_ready' : 'ready',
+            ready,
             already_current: alreadyCurrent,
             plan_token: token,
             expires_at: new Date(expiresAtMs).toISOString(),
             project_id: current.projectId,
             episode_id: current.episodeId,
             shot_count: inputs.selectedTakes.takes.length,
-            target_state: alreadyCurrent ? '이미 최신' : inputs.target.exists ? '기존 canonical 파일 교체 예정' : '새 canonical 파일 생성 예정',
+            target_state: alreadyCurrent && inputs.graph.exists && inputs.cacheFresh ? 'commit graph와 호환 cache가 이미 최신'
+                : alreadyCurrent ? 'legacy 상태를 commit graph로 이관하고 cache 동기화 예정'
+                    : inputs.graph.exists ? '현재 graph head에 새 선택 commit 추가 예정'
+                        : inputs.target.exists ? 'legacy root import 후 새 선택 commit 추가 예정' : '새 root commit 생성 예정',
             selected_takes_sha256: current.selectedTakesSha256,
             current_target_sha256: inputs.target.sha256,
+            graph_head_commit_id: current.graph.headCommitId,
+            graph_payload_hash: current.graph.payloadHash,
+            cache_fresh: inputs.cacheFresh,
             safety_summary: [
                 '현재 source, 기계 QC, 사람 선택 초안과 내보낸 canonical 파일을 다시 검증했습니다.',
-                alreadyCurrent
-                    ? 'production의 selected_takes.json이 이미 이 내보내기와 같습니다.'
-                    : '확인 시 production의 selected_takes.json 한 파일만 원자적으로 반영합니다.',
+                alreadyCurrent && inputs.graph.exists
+                    ? 'canonical commit graph는 이미 이 선택과 같으며 필요하면 호환 cache만 복구합니다.'
+                    : '확인 시 production 소유 immutable payload/commit graph에 append합니다.',
+                'selected_takes.json은 이관 뒤 재생성 가능한 mode 0600 호환 cache일 뿐입니다.',
                 '생성·업로드·외부 검토·ledger 작업은 실행하지 않습니다.',
             ],
             blockers: [],
@@ -332,7 +387,8 @@ function promoteG3ProductionSelection(payload, context = {}) {
         const inputs = promotionInputs(context);
         const current = evidence(inputs);
         if (!sameEvidence(record, current)) throw g3Error('G3_PROMOTION_PLAN_STALE', 'Promotion evidence changed after planning');
-        if (current.selectedTakesSha256 === current.target.sha256 && current.target.exists) {
+        const canonicalAlreadyCurrent = inputs.graph.exists && util.isDeepStrictEqual(inputs.graph.payload, inputs.selectedTakes);
+        if (canonicalAlreadyCurrent && inputs.cacheFresh) {
             return {
                 ok: true,
                 promoted: false,
@@ -341,8 +397,13 @@ function promoteG3ProductionSelection(payload, context = {}) {
                 project_id: current.projectId,
                 episode_id: current.episodeId,
                 selected_takes_sha256: current.selectedTakesSha256,
+                graph_head_commit_id: inputs.graph.headCommitId,
+                graph_payload_hash: inputs.graph.payloadHash,
+                canonical_committed: false,
+                cache_synchronized: false,
                 receipt_written: false,
                 warning: '',
+                warnings: [],
             };
         }
         const promotedAt = operationIso(context);
@@ -352,46 +413,93 @@ function promoteG3ProductionSelection(payload, context = {}) {
             episode_id: current.episodeId,
             selected_takes_sha256: current.selectedTakesSha256,
             previous_target_sha256: current.target.sha256,
+            previous_graph_head_commit_id: current.graph.headCommitId,
             planned_at: promotedAt,
             status: 'prepared_not_committed',
         };
         privateAtomicWrite(paths.pendingPath, jsonBuffer(pending), context);
         let backupWritten = false;
-        if (current.target.exists) {
+        if (!inputs.targetError && current.target.exists) {
             privateAtomicWrite(paths.backupPath, current.target.buffer, context);
             backupWritten = true;
         }
-        const written = replaceSelectedTakes(inputs.internal.rootInfo, inputs.selectedRead.buffer, current.target, context);
+        const graphOptions = {
+            expectedParent: null,
+            codePrefix: SELECTED_GRAPH_PREFIX,
+            randomBytes: context.promotionRandomBytes,
+            linkSync: context.canonicalGraphLinkSync,
+            beforeCommitPublish: context.canonicalGraphBeforeCommitPublish,
+        };
+        let graph = inputs.graph;
+        let canonicalCommitted = false;
+        let legacyImported = false;
+        if (!graph.exists && inputs.legacySelectedTakes) {
+            graph = appendValue(inputs.internal.rootInfo.root, NAMESPACES.SELECTED_TAKES, inputs.legacySelectedTakes, graphOptions);
+            canonicalCommitted = graph.appended;
+            legacyImported = graph.appended;
+        }
+        const desiredAlreadyHead = graph.exists && util.isDeepStrictEqual(graph.payload, inputs.selectedTakes);
+        if (!desiredAlreadyHead) {
+            graph = appendValue(inputs.internal.rootInfo.root, NAMESPACES.SELECTED_TAKES, inputs.selectedTakes, {
+                ...graphOptions,
+                expectedParent: graph.exists ? graph.headCommitId : null,
+            });
+            canonicalCommitted = canonicalCommitted || graph.appended;
+        }
+        const warnings = [];
+        let cacheSynchronized = false;
+        let cacheRecord = null;
+        try {
+            cacheRecord = syncCompatibilityCache(inputs.internal.rootInfo.root, 'selected_takes.json', inputs.selectedTakes, {
+                codePrefix: SELECTED_CACHE_PREFIX,
+                randomBytes: context.promotionRandomBytes,
+                renameSync: context.promotionRenameFile,
+            });
+            cacheSynchronized = true;
+        } catch {
+            warnings.push('G3_SELECTED_TAKES_CACHE_STALE');
+        }
         const receipt = {
             schema_version: RECEIPT_SCHEMA,
             project_id: current.projectId,
             episode_id: current.episodeId,
-            selected_takes_sha256: written.sha256,
+            selected_takes_sha256: current.selectedTakesSha256,
             previous_target_sha256: current.target.sha256,
-            target_mode: written.mode,
+            graph_head_commit_id: graph.headCommitId,
+            graph_payload_hash: graph.payloadHash,
+            previous_graph_head_commit_id: current.graph.headCommitId,
+            legacy_imported: legacyImported,
+            canonical_committed: canonicalCommitted,
+            cache_synchronized: cacheSynchronized,
+            cache_sha256: cacheRecord?.sha256 || '',
+            target_mode: cacheRecord?.mode || 0,
             backup_written: backupWritten,
             promoted_at: promotedAt,
             executed: true,
         };
         let receiptWritten = false;
-        let warning = '';
         try {
             privateAtomicWrite(paths.receiptPath, jsonBuffer(receipt), context);
             safeRemovePending(paths.pendingPath);
             receiptWritten = true;
         } catch {
-            warning = 'G3_PROMOTION_RECEIPT_WRITE_FAILED';
+            warnings.push('G3_PROMOTION_RECEIPT_WRITE_FAILED');
         }
         return {
             ok: true,
-            promoted: true,
-            already_current: false,
-            executed: true,
+            promoted: !canonicalAlreadyCurrent,
+            already_current: util.isDeepStrictEqual(graph.payload, inputs.selectedTakes),
+            executed: canonicalCommitted || cacheSynchronized,
             project_id: current.projectId,
             episode_id: current.episodeId,
-            selected_takes_sha256: written.sha256,
+            selected_takes_sha256: current.selectedTakesSha256,
+            graph_head_commit_id: graph.headCommitId,
+            graph_payload_hash: graph.payloadHash,
+            canonical_committed: canonicalCommitted,
+            cache_synchronized: cacheSynchronized,
             receipt_written: receiptWritten,
-            warning,
+            warning: warnings[0] || '',
+            warnings,
         };
     } finally {
         releaseLock();

@@ -7,6 +7,8 @@ function shortHash(value) {
 
 function planBadge(plan) {
     if (plan.status === 'loading') return statusBadge('확인 중', 'UNREVIEWED');
+    if (plan.status === 'migration_ready') return statusBadge('graph 이관 확인 대기', 'WARN');
+    if (plan.status === 'cache_repair_ready') return statusBadge('호환 cache 복구 확인 대기', 'WARN');
     if (plan.already_current) return statusBadge('이미 production과 동일', 'PASS');
     if (plan.ready) return statusBadge('명시적 확인 대기', 'WARN');
     return statusBadge('승격 차단', 'BLOCK');
@@ -23,7 +25,7 @@ export function G3PromotionPanel({ plan = {}, onRefresh, onPromote }) {
             planBadge(plan),
         ]),
         el('p', {
-            text: '사람이 내보낸 선택을 현재 production의 canonical selected_takes.json 한 파일에만 반영합니다. 기계 QC는 근거이며 사람의 선택이나 최종 영상 품질을 대신하지 않습니다.',
+            text: '사람이 내보낸 선택을 production 소유 immutable payload/commit graph에 append합니다. selected_takes.json은 재생성 가능한 호환 cache이며, 기계 QC는 사람의 선택이나 최종 영상 품질을 대신하지 않습니다.',
             className: 'text-xs leading-5 text-secondary',
         }),
     ]));
@@ -32,7 +34,7 @@ export function G3PromotionPanel({ plan = {}, onRefresh, onPromote }) {
         ['현재 target', plan.target_state || '확인 불가'],
         ['프로젝트 확인 문자열', plan.project_id || '—'],
         ['선택 샷', Number.isFinite(plan.shot_count) ? `${plan.shot_count}개` : '—'],
-        ['내보내기 / 현재 hash', `${shortHash(plan.selected_takes_sha256)} / ${shortHash(plan.current_target_sha256)}`],
+        ['내보내기 / graph payload', `${shortHash(plan.selected_takes_sha256)} / ${shortHash(plan.graph_payload_hash)}`],
     ].map(([label, value]) => el('div', { className: 'border-l border-white/10 pl-3' }, [
         el('dt', { text: label, className: 'text-xs text-secondary' }),
         el('dd', { text: value, className: 'mt-1 break-words text-sm font-semibold text-white' }),
@@ -54,7 +56,7 @@ export function G3PromotionPanel({ plan = {}, onRefresh, onPromote }) {
 
     const refresh = actionButton('승격 계획 다시 확인', { variant: 'muted', onClick: onRefresh });
     section.appendChild(refresh);
-    if (!plan.ready || plan.already_current) return section;
+    if (!plan.ready) return section;
 
     const confirmationInput = el('input', {
         className: 'mt-2 min-h-11 w-full rounded-md border border-white/10 bg-black/40 px-3 text-sm text-white',
@@ -93,7 +95,7 @@ export function G3PromotionPanel({ plan = {}, onRefresh, onPromote }) {
             confirmationInput,
         ]),
         el('p', {
-            text: '대상과 source/export가 계획 이후 조금이라도 바뀌면 반영은 자동 차단됩니다.',
+            text: 'graph head와 source/export가 계획 이후 조금이라도 바뀌면 반영은 자동 차단됩니다.',
             className: 'text-xs leading-5 text-secondary',
             attrs: { id: 'g3-promotion-confirmation-help' },
         }),

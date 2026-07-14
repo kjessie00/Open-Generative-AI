@@ -11,6 +11,9 @@ export function emptyFinishingWorkspace(status = 'loading') {
         episode_id: '',
         selected_range_count: 0,
         selected_duration_seconds: 0,
+        selected_takes_authority: '',
+        selected_takes_commit_id: '',
+        selected_takes_payload_hash: '',
         input_ready: false,
         qc_ready: false,
         harness_ready: false,
@@ -53,6 +56,9 @@ export function normalizeFinishingWorkspace(value, fallbackStatus = 'blocked') {
             fresh_probe_verified: value.current_run.fresh_probe_verified === true,
             output_quality_approved: false,
             render_completed_at: safeText(value.current_run.render_completed_at, 64),
+            canonical_authority: safeText(value.current_run.canonical_authority, 64),
+            canonical_commit_id: /^[a-f0-9]{64}$/.test(value.current_run.canonical_commit_id || '') ? value.current_run.canonical_commit_id : '',
+            canonical_payload_hash: /^[a-f0-9]{64}$/.test(value.current_run.canonical_payload_hash || '') ? value.current_run.canonical_payload_hash : '',
         }
         : null;
     return {
@@ -68,6 +74,9 @@ export function normalizeFinishingWorkspace(value, fallbackStatus = 'blocked') {
         episode_id: safeText(value.episode_id, 128),
         selected_range_count: Number.isInteger(value.selected_range_count) ? value.selected_range_count : 0,
         selected_duration_seconds: Number.isFinite(value.selected_duration_seconds) ? value.selected_duration_seconds : 0,
+        selected_takes_authority: safeText(value.selected_takes_authority, 64),
+        selected_takes_commit_id: /^[a-f0-9]{64}$/.test(value.selected_takes_commit_id || '') ? value.selected_takes_commit_id : '',
+        selected_takes_payload_hash: /^[a-f0-9]{64}$/.test(value.selected_takes_payload_hash || '') ? value.selected_takes_payload_hash : '',
         input_ready: value.input_ready === true,
         qc_ready: value.qc_ready === true,
         harness_ready: value.harness_ready === true,

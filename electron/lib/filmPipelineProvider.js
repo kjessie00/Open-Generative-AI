@@ -1251,6 +1251,9 @@ function finishingWorkbench(options = {}) {
         randomBytes: options.finishingRandomBytes,
         planStore: options.finishingPlanStore,
         planTtlMs: options.finishingPlanTtlMs,
+        currentGraphLinkSync: options.finishingCurrentGraphLinkSync,
+        currentGraphBeforeCommitPublish: options.finishingCurrentGraphBeforeCommitPublish,
+        currentCacheRenameSync: options.finishingCurrentCacheRenameSync,
     });
 }
 

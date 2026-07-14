@@ -3,6 +3,7 @@ import { validateFinalReady } from '../../lib/pipeline/validators.js';
 import { blockerList, card, dataTable, el, infoGrid, panelShell, pathList, statusBadge } from './ui.js';
 import { p } from './copy.js';
 import { G3ReviewWorkspace } from './G3ReviewWorkspace.js';
+import { isCanonicalSelectedTakesProvenance } from '../../lib/pipeline/canonicalProvenance.js';
 
 function qaBadge(value) {
     return statusBadge(value ? p('ok') : p('blocked'), value ? 'PASS' : 'BLOCK');
@@ -14,7 +15,7 @@ function qaVerdictBadge(record) {
 }
 
 function rangeIsAccepted(record) {
-    if (record.canonical_provenance === 'selected_takes.json') {
+    if (isCanonicalSelectedTakesProvenance(record.canonical_provenance)) {
         return record.accepted === true && record.source_exists === true && Boolean(record.clip_id);
     }
     return record.accepted === true || Boolean(record.source_file && record.out_time > record.in_time);

@@ -382,9 +382,9 @@ export function PipelineStudio() {
                         g3Workspace = normalizeG3ReviewState(loadedG3);
                         g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
                         window.alert(result?.already_current
-                            ? 'production selected_takes.json이 이미 현재 선택과 같습니다.'
+                            ? 'production의 canonical selected-takes commit graph가 이미 현재 선택과 같습니다.'
                             : result?.promoted && result?.executed
-                                ? '확인한 사람 선택을 production selected_takes.json에 반영했습니다.'
+                                ? '확인한 사람 선택을 production의 canonical commit graph에 반영했습니다.'
                                 : 'G3 production 반영이 차단되었습니다.');
                     } catch {
                         g3PromotionPlan = staleG3PromotionPlan('G3_PROMOTION_FAILED');

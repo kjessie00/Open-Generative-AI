@@ -2,6 +2,22 @@
 
 기준일: 2026-07-14 (Asia/Seoul)
 
+## 2026-07-15 canonical 계약 정정
+
+이 문서 아래의 exact `selected_takes.json` CAS 설명은 2026-07-14 당시 역사다. Jessie가
+승인한 후속 전환에서 authoritative state는
+`production/.film-pipeline-state-v1/selected-takes/`의 immutable payload/parent-linked
+commit graph가 됐다. `selected_takes.json`은 mode `0600` 호환 cache다.
+
+현재 G3 plan은 graph head/payload identity를 source/export evidence와 함께 묶는다. 첫
+확인 mutation은 유효한 legacy file을 root로 import한 뒤 변경 선택을 child로 append한다.
+동일 payload는 commit no-op이면서 missing/stale safe cache를 복구할 수 있다. Canonical
+commit 뒤 cache write 실패는 `G3_SELECTED_TAKES_CACHE_STALE` warning이며 rollback으로
+표현하지 않는다. Private backup/pending/receipt는 audit evidence이지 canonical history가
+아니다. Exact schema/path/code/test는
+`docs/ui_integration/40_content_addressed_commit_graph.md`가 현재 계약이다. 아래 기존
+BLOCK/PASS와 actual Electron 기록은 수정하지 않는다.
+
 ## 결론
 
 G3 사람이 선택해 private export한 canonical `selected_takes.json`을 현재 main-owned

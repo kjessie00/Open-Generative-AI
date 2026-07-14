@@ -153,7 +153,10 @@ function candidateToken(secret, rootFingerprint, candidate) {
 function inventoryFromReader(rootInfo, readerState, context = {}) {
     const blockers = [];
     if (readerState?.security?.walk_truncated) blockers.push('G3_PRODUCTION_SCAN_TRUNCATED');
-    if ((readerState?.security?.skipped?.symlink || 0) > 0) blockers.push('G3_PRODUCTION_SCAN_SKIPPED_SYMLINKS');
+    const candidateSymlinks = readerState?.security?.skipped_paths?.symlink || [];
+    if (candidateSymlinks.some((relativePath) => APPROVED_CANDIDATE_PREFIXES.some((prefix) => (
+        String(relativePath).split(path.sep).join('/').startsWith(prefix)
+    )))) blockers.push('G3_PRODUCTION_SCAN_SKIPPED_SYMLINKS');
     const paths = Array.from(new Set((readerState?.files || [])
         .map((file) => String(file.relative_path || '').split(path.sep).join('/'))
         .filter((relativePath) => APPROVED_CANDIDATE_PREFIXES.some((prefix) => relativePath.startsWith(prefix)))
