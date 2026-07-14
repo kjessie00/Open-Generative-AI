@@ -20,6 +20,28 @@ function writeJson(target, value) {
     fs.writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
+function fileSha256(target) {
+    return crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+}
+
+function rewriteCurrentEvidence(root, runId, mutateProbe, mutateReceipt = () => {}) {
+    const runsRoot = path.join(root, 'final', 'workbench_runs');
+    const runRoot = path.join(runsRoot, runId);
+    const probePath = path.join(runRoot, 'fresh_probe.json');
+    const receiptPath = path.join(runRoot, 'receipt.json');
+    const pointerPath = path.join(runsRoot, 'current.json');
+    const probe = JSON.parse(fs.readFileSync(probePath, 'utf8'));
+    mutateProbe(probe);
+    writeJson(probePath, probe);
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    receipt.probe_sha256 = fileSha256(probePath);
+    mutateReceipt(receipt);
+    writeJson(receiptPath, receipt);
+    const pointer = JSON.parse(fs.readFileSync(pointerPath, 'utf8'));
+    pointer.receipt_sha256 = fileSha256(receiptPath);
+    writeJson(pointerPath, pointer);
+}
+
 function makeFixture(t, overrides = {}) {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'open-ga-finishing-provider-'));
     const root = path.join(base, PROJECT_ID);
@@ -340,6 +362,90 @@ test('tampered receipt and output are blockers after relaunch and never imply qu
         assert.equal(restored.output_quality_approved, false);
         assert.equal(restored.blockers.some((blocker) => /HASH|RECEIPT|CURRENT/.test(blocker)), true, `${targetName}:${restored.blockers}`);
     }
+});
+
+test('malformed persisted numeric, hash, and size evidence never restores fresh-probe success', async (t) => {
+    const cases = [
+        {
+            name: 'duration-string',
+            mutateProbe: (probe) => { probe.duration_seconds = 'not-a-number'; },
+        },
+        {
+            name: 'serialized-non-finite-duration',
+            mutateProbe: (probe) => {
+                probe.duration_seconds = null;
+                probe.selected_duration_seconds = null;
+            },
+            mutateReceipt: (receipt) => { receipt.selected_duration_seconds = null; },
+        },
+        {
+            name: 'negative-range-count',
+            mutateProbe: () => {},
+            mutateReceipt: (receipt) => { receipt.selected_range_count = -1; },
+        },
+        {
+            name: 'fractional-output-size',
+            mutateProbe: (probe) => { probe.output_size_bytes = 1.5; },
+            mutateReceipt: (receipt) => { receipt.output_size_bytes = 1.5; },
+        },
+        {
+            name: 'invalid-output-hash',
+            mutateProbe: (probe) => { probe.output_sha256 = 'not-a-hash'; },
+            mutateReceipt: (receipt) => { receipt.output_sha256 = 'not-a-hash'; },
+        },
+    ];
+
+    for (const currentCase of cases) {
+        const current = makeFixture(t);
+        const plan = await current.provider.plan();
+        const result = await current.provider.execute({
+            planToken: plan.plan_token,
+            confirmed: true,
+            projectId: PROJECT_ID,
+        });
+        rewriteCurrentEvidence(
+            current.root,
+            result.run_id,
+            currentCase.mutateProbe,
+            currentCase.mutateReceipt,
+        );
+        const workspace = await current.provider.getWorkspace();
+        assert.equal(workspace.status, 'blocked', currentCase.name);
+        assert.equal(workspace.current_run, null, currentCase.name);
+        assert.equal(workspace.output_quality_approved, false, currentCase.name);
+        assert.equal(workspace.blockers.some((code) => /^FINISHING_[A-Z0-9_]+$/.test(code)), true, currentCase.name);
+        assert.equal(JSON.stringify(workspace).includes(current.root), false, currentCase.name);
+    }
+});
+
+test('lock-open EACCES is normalized to a path-free public finishing error', async (t) => {
+    const current = makeFixture(t);
+    const plan = await current.provider.plan();
+    const originalOpenSync = fs.openSync;
+    let caught;
+    fs.openSync = function openSyncWithDeniedLock(target, ...args) {
+        if (String(target).endsWith('.workbench.lock')) {
+            throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), { code: 'EACCES' });
+        }
+        return originalOpenSync.call(fs, target, ...args);
+    };
+    try {
+        await current.provider.execute({
+            planToken: plan.plan_token,
+            confirmed: true,
+            projectId: PROJECT_ID,
+        });
+    } catch (error) {
+        caught = error;
+    } finally {
+        fs.openSync = originalOpenSync;
+    }
+
+    assert.equal(caught?.code, 'FINISHING_LOCK_ACQUIRE_FAILED');
+    assert.equal(caught?.message, 'FINISHING_LOCK_ACQUIRE_FAILED: FINISHING_LOCK_ACQUIRE_FAILED');
+    assert.equal(caught?.message.includes(current.root), false);
+    assert.doesNotMatch(caught?.message || '', /EACCES|permission denied|open '/i);
+    assert.equal(fs.existsSync(path.join(current.root, 'final', 'workbench_runs', '.workbench.lock')), false);
 });
 
 test('bounded subprocess terminates a timeout without using a shell', async () => {

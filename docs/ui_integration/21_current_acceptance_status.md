@@ -138,7 +138,7 @@ happyVideoFactory의 `build_timeline(measure_durations=False)`와 `build_roughcu
 mode `0700`/`0600`, lock/staging/fsync/atomic rename으로만 게시한다. Canonical
 master/delivery/report/QC/selected/ledger는 수정하지 않는다.
 
-Provider 12/12, semantic UI 3/3, 실제 synthetic ffmpeg/ffprobe 1/1이 PASS했다.
+Provider 14/14, semantic UI 3/3, 실제 synthetic ffmpeg/ffprobe 1/1이 PASS했다.
 외부망 차단 actual Electron fixture도 24-method bridge, pathless plan, 실제 확인 UI,
 3단계 progress, 2.5초 선택 합계와 2.5초 output/fresh probe, canonical 불변, 허용
 output 4파일만 생성, graceful full quit/relaunch와 current DOM 복원을 PASS했다.
@@ -148,17 +148,33 @@ output 4파일만 생성, graceful full quit/relaunch와 current DOM 복원을 P
 않았고 output quality는 `false`다. 상세:
 `docs/ui_integration/39_selected_range_render_and_fresh_probe.md`.
 
+독립 verifier는 원본 finishing commit `a318662`을 P2 두 건으로 BLOCK했다. Persisted
+probe의 string duration이 fresh success로 복원됐고, lock-open `EACCES` raw message에
+fixture 절대 경로가 남았다. Result/report SHA-256은 각각
+`414b38acb008ac88e4ae0774deed4ba169a064e8df7158c7e78fb1208b9041a2`,
+`728dd3cbb31e4fc57a1e39695f364dc48d2ef3106862b81177312c7647705035`다.
+
+두 회귀를 먼저 추가한 provider pre-fix는 12/14로 정확히 두 test가 실패했다.
+Receipt/probe의 성공 판정 duration/count/size/hash를 positive finite, bounded integer,
+exact SHA-256와 receipt/probe 상호 일치로 고정하고, cooperative lock
+open/write/fsync/close의 raw error를 pathless `FINISHING_*`로 정규화한 뒤 14/14와
+focused 39/39가 PASS했다. 단 한 번의 새 Electron functional 회차도 24 methods,
+2.5초=2.5초, quality false, external/console 0, graceful relaunch restore를 PASS했다.
+새 screenshot은 만들지 않았고 기존 full restored screenshot BLOCK을 유지한다.
+원본 독립 BLOCK 기록은 보존하며 follow-up commit의 최종 독립 인수는 아직 root
+판정 전이다.
+
 ## 인수 기준 현황
 
 | 기준 | 상태 | 현재 증거 또는 남은 조건 |
 | --- | --- | --- |
 | AC1 active MuAPI 격리 | VERIFIED | `4dac387`; 기본 dev/build/start는 Vite/Electron이며 active MuAPI surface scan 통과 |
 | AC2 Electron 보안 | EXECUTOR PASS / INDEPENDENT BLOCK | 외부 navigation deny-by-default, public config mutation 제거, native/immediate-child provenance와 planning exact allowlist/symlink/content/atomic-write 회귀 PASS; 독립 verifier verdict 없음 |
-| AC3 renderer/main 경계 | EXECUTOR PASS / INDEPENDENT BLOCK | current actual Electron preload는 정확히 `filmPipeline` 24 methods, `setConfig` 없음; G3 preview/promotion과 pathless finishing plan/execute는 main-owned root/read/write/runtime을 사용하고 renderer 실행 payload는 exact 3 fields; 독립 planning-write/path-provenance verifier verdict 없음 |
+| AC3 renderer/main 경계 | EXECUTOR PASS / FOLLOW-UP INDEPENDENT PENDING | current actual Electron preload는 정확히 `filmPipeline` 24 methods, `setConfig` 없음; pathless finishing plan/execute, strict persisted evidence와 pathless lock errors를 회귀 검증함. 원본 finishing 독립 verdict는 P2 2건 BLOCK이고 follow-up 판정 전이며, 별도 planning-write/path-provenance 독립 verdict도 없음 |
 | AC4 side-effect 차단 | VERIFIED (code/test) | live generation/upload는 연결하지 않았다. 과거 불완전 ffprobe/concat은 제거했고, 별도 명시 확인된 local cut/fresh-probe workbench만 고정 adapter로 실행한다. |
 | AC5 실제 GUI | PARTIAL PASS | 24-method/11개 한국어 menu/4 viewport/두 root 비-native 증거, Blob-only metadata/save/export restore, fixture promotion, selected-range render와 full quit/relaunch DOM 복원 PASS; current native selection, actual mobile keyboard-only, full restored relaunch screenshot은 BLOCK |
 | AC6 production reader | VERIFIED (fixture/real/fail-safe) | Layout A/B와 실제 variant, canonical pack/ledger, selected takes/QC 및 exact delivery manifest/master SHA golden·missing·malformed·oversize·symlink·unsafe/stale/changed path·range·ID/QC conflict matrix PASS; 실제 두 경로 구조 복원 및 final fail-closed 확인 |
-| AC7 자동 검증 | VERIFIED (명시된 독립 gaps 제외) | Finishing focused 16/16, network-denied 전체 178/178, lint, build 52 modules와 actual Electron render/fresh-probe/functional relaunch 회차 PASS |
+| AC7 자동 검증 | VERIFIED (명시된 독립 gaps 제외) | Finishing focused 39/39, network-denied 전체 180/180, lint, build 52 modules와 actual Electron render/fresh-probe/functional relaunch 회차 PASS |
 | AC8 문서 정합성 | VERIFIED | 본 상태 문서와 각 역사 문서의 현재 상태 안내로 기준점을 일치시킴 |
 | AC9 secret/외부 side effect | PARTIAL PASS | active-source와 reader 방어 통과, 외부 실행 0건; npm offline audit은 0건이나 OSV DB 부재는 `SCANNER_GAP` |
 | AC10 상태 분리 | VERIFIED (code/test) | planning/submission/review/quality/dashboard/backend/accepted-seconds와 canonical deterministic/external/canonical/human/final 상태를 독립 유지 |
@@ -168,8 +184,8 @@ output 4파일만 생성, graceful full quit/relaunch와 current DOM 복원을 P
 - P0 보안 통합 commit: `4dac3871202b8c1e6dc057d0e53e513ff7fa1678`
 - 보안 인수 기록 commit: `86655d7e`
 - Layout A/B reader commit: `93f35a3cfafd72e6da8c0c6ab9e6eb0957b6ceec`
-- 외부망 제한 환경 전체 테스트: 178/178 PASS
-- finishing provider/UI/actual ffmpeg focused: 12/12 + 3/3 + 1/1 PASS
+- 외부망 제한 환경 전체 테스트: 180/180 PASS
+- finishing provider/UI/actual ffmpeg focused: 14/14 + 3/3 + 1/1 PASS; 통합 focused 39/39 PASS
 - G3 production promotion focused: 44/44 PASS; P2 follow-up 전용 file은 수정 전 9/12, 수정 후 12/12
 - canonical delivery focused: 첫 실행 35/38, 허용된 1회 국소 self-fix 후 38/38 PASS
 - canonical finishing focused: 첫 실행 44/44 PASS, self-fix 없음
@@ -201,7 +217,7 @@ output 4파일만 생성, graceful full quit/relaunch와 current DOM 복원을 P
 - current G3 preview: historical data/CSP 실패 뒤 잘못된 Chromium `atob` receiver를 수정했고 Blob-only metadata-ready, save/export exact private 3 files, 별도 OS 창 캡처와 full quit/relaunch restore PASS
 - current G3 promotion: fixture exact target 생성·mode `0600`·private receipt·trusted confirmation·relaunch already-current PASS; 실제 Jessie production/HVF write는 0건
 - current G3 one-shot follow-up: confirmed false 뒤 same-token INVALID, fresh-plan valid promote, valid-token replay INVALID와 relaunch already-current actual Electron PASS
-- current finishing workbench: synthetic exact 2.5초 range render/fresh probe, immutable canonical inputs, 4개 fixed output, functional relaunch restore PASS; full restored relaunch screenshot BLOCK
+- current finishing workbench: P2 numeric-schema/lock-error pre-fix 12/14, post-fix 14/14; synthetic exact 2.5초 range render/fresh probe, immutable canonical inputs, 4개 fixed output, 새 functional relaunch restore PASS; full restored relaunch screenshot BLOCK
 - G3 promotion panel capture: SHA-256 `c1bf4687b6e50057115912c2012811e903de63099626b9c2b7d51d98155b5646`
 - canonical harness source probe: exact 5/5 `available`; content 반환 0, renderer root 입력 0
 - fresh runtime screenshot (private temp only): SHA-256 `0280c8892a5e6c9dbf9a913ade9d9ec4618a554b6d9564246f68e28da5539e70`

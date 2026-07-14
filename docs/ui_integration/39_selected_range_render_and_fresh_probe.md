@@ -114,7 +114,7 @@ Native input, checkbox, fieldset, progress와 button을 사용하고 정보 grid
 
 Focused 검증:
 
-- provider/security: 12/12 PASS
+- provider/security: 14/14 PASS
 - 한국어 semantic UI DOM: 3/3 PASS
 - 실제 ffmpeg/ffprobe synthetic media: 1/1 PASS
 
@@ -122,7 +122,9 @@ Provider matrix는 pathless plan, canonical 순서, token 소비, 원자 게시/
 권한, 전환/범위, 만료, selected/QC/beats/shot/source/harness/binary/output drift,
 source parent symlink, lock/partial/malformed/symlink pointer, JSON/source/output 상한,
 stdout/stderr 상한, timeout, render failure cleanup, receipt/output tamper와 등록 IPC
-shape를 포함한다.
+shape를 포함한다. 후속 회귀는 persisted receipt/probe의 string/null/negative/fractional
+numeric 값과 잘못된 SHA-256을 success로 복원하지 않는지, lock-open `EACCES`가
+절대 경로 없는 `FINISHING_LOCK_ACQUIRE_FAILED`로 정규화되는지도 확인한다.
 
 실제 media test는 source 배열을 beat 순서와 반대로 저장하고 blue/red frame을
 샘플링해 canonical beat 순서를 검증한다. Source 전체 4.8초가 아니라 선택 합계
@@ -130,6 +132,43 @@ shape를 포함한다.
 
 전체 suite, lint, build와 diff 검증의 최종 수치는 이 커밋 직전
 `docs/ui_integration/21_current_acceptance_status.md`와 checkpoint에 기록한다.
+
+## 독립 verifier BLOCK과 P2 복구
+
+독립 verifier는 원본 통합 commit `a3186621441e4d0df8607f46a5a5aa0815106816`을
+별도 immutable snapshot에서 확인한 뒤 P2 두 건으로 인수를 BLOCK했다.
+
+- `P2-PROBE-NUMERIC-SCHEMA`: persisted probe의 `duration_seconds`가
+  `"not-a-number"`여도 `success`와 `fresh_probe_verified:true`가 복원됨
+- `P2-LOCK-ERROR-NORMALIZATION`: lock open `EACCES`의 raw code/message에 fixture
+  절대 경로가 남음
+
+독립 결과:
+
+```text
+/private/tmp/open-ga-finishing-verifier-evidence-20260714TaLYgp2B3/result.json
+SHA-256 414b38acb008ac88e4ae0774deed4ba169a064e8df7158c7e78fb1208b9041a2
+
+/private/tmp/open-ga-finishing-verifier-evidence-20260714TaLYgp2B3/verification-report.md
+SHA-256 728dd3cbb31e4fc57a1e39695f364dc48d2ef3106862b81177312c7647705035
+```
+
+두 회귀를 먼저 추가한 pre-fix provider 회차는 정확히 12/14였고 두 새 test만
+실패했다. 최소 수정 후 14/14다. Receipt는 positive finite selected duration,
+1..1,000 정수 range count, 1..16 GiB 정수 output size와 exact SHA-256을 요구한다.
+Probe도 positive finite output/selected duration, receipt와 같은 selected duration,
+고정 tolerance, bounded integer size와 exact SHA-256을 요구한다. 따라서 JS 숫자
+coercion이나 `NaN` 비교의 false branch로 success를 만들 수 없다.
+
+Cooperative lock open/write/fsync/close는 한 경계에서 처리한다. Race `EEXIST`는
+`FINISHING_CONCURRENT_LOCKED`, 그 외 raw filesystem error는 고정
+`FINISHING_LOCK_ACQUIRE_FAILED`로 바꾸고 부분 lock을 정리한다. Raw errno, path,
+command와 원시 message는 renderer에 전달하지 않는다.
+
+수정 후 provider/security/IPC/renderer/UI와 실제 temp ffmpeg focused는 39/39
+PASS했다. 전체 deny-network suite는 180/180, lint와 Vite build 52 modules도
+PASS했다. 이 결과는 독립 verifier의 원본 commit BLOCK 기록을 지우지 않는다.
+Follow-up commit의 최종 독립 인수는 root가 별도로 소유한다.
 
 ## 실제 Electron 격리 증거
 
@@ -172,6 +211,20 @@ SHA-256 9bf48fe04eee5a6de953f5811b5ab7c30d19a212fe45c5562551f42c8aee2f10
 재실행은 DOM에서 current run ID, fresh probe PASS와 `승인 안 됨`을 복원했지만,
 `finishing-relaunch.png`는 compositor capture가 대부분 검게 저장되어 full restored
 UI의 시각 증거로는 사용하지 않는다. 이 증거 gap을 기능 복원 PASS로 숨기지 않는다.
+
+P2 복구 후에는 screenshot을 반복하지 않고 단 한 번의 functional Electron 회차를
+새 temp production/userData에서 수행했다.
+
+```text
+/private/tmp/open-ga-finishing-electron-20260714TJGV0DHdD4wQ6/evidence/runtime-summary.json
+SHA-256 5ebba7bd461a9fb4838b83202ecbc09422dc43b7f72ac44784e731e5cb8a66d2
+```
+
+24-method bridge, `window.localAI === undefined`, path/command 비노출, 세 progress
+phase, selected/output 2.5초 일치, fresh probe true, quality false, canonical 불변,
+허용 output 4파일, 외부 request/console event 0, 두 graceful exit 0과 functional
+relaunch restore를 PASS했다. `capture_attempted:false`이며 기존 full restored
+screenshot BLOCK은 그대로다.
 
 ## 남은 경계
 

@@ -15,7 +15,8 @@ const MAX_MEDIA_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 256 * 1024;
 const MAX_RUNS = 1000;
 const OUTPUT_DURATION_TOLERANCE_SECONDS = 0.35;
-const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const TOKEN_PATTERN = SHA256_PATTERN;
 const RUN_ID_PATTERN = /^[a-f0-9]{24}$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SENSITIVE_SEGMENT_PATTERN = /(^|[._-])(auth|cookie|credential|keychain|secret|session|token)([._-]|$)/i;
@@ -660,8 +661,14 @@ async function readCurrentRun(rootInfo, inputSnapshotId = '') {
         ];
         if (!exactKeys(receipt, receiptKeys) || receipt.schema_version !== FINISHING_RECEIPT_SCHEMA
             || receipt.contract_version !== FINISHING_OUTPUT_CONTRACT_VERSION || receipt.run_id !== pointer.run_id
-            || !/^[a-f0-9]{64}$/.test(receipt.input_snapshot_id) || !safeId(receipt.project_id)
+            || !SHA256_PATTERN.test(receipt.input_snapshot_id) || !safeId(receipt.project_id)
             || !safeId(receipt.episode_id) || receipt.fresh_probe_verified !== true
+            || !Number.isInteger(receipt.selected_range_count) || receipt.selected_range_count < 1
+            || receipt.selected_range_count > MAX_RUNS
+            || finiteNumber(receipt.selected_duration_seconds, Number.EPSILON, Number.MAX_SAFE_INTEGER) === null
+            || !SHA256_PATTERN.test(receipt.output_sha256)
+            || !Number.isInteger(receipt.output_size_bytes) || receipt.output_size_bytes < 1
+            || receipt.output_size_bytes > MAX_MEDIA_BYTES || !SHA256_PATTERN.test(receipt.probe_sha256)
             || receipt.output_quality_approved !== false || receipt.canonical_delivery_modified !== false) {
             throw failure('FINISHING_RECEIPT_INVALID');
         }
@@ -688,7 +695,14 @@ async function readCurrentRun(rootInfo, inputSnapshotId = '') {
             || probe.input_snapshot_id !== receipt.input_snapshot_id || probe.output_sha256 !== receipt.output_sha256
             || probe.output_size_bytes !== receipt.output_size_bytes || probe.fresh_probe_verified !== true
             || probe.output_quality_approved !== false || probe.has_video !== true || probe.has_audio !== true
-            || Math.abs(probe.duration_seconds - probe.selected_duration_seconds) > probe.duration_tolerance_seconds) {
+            || finiteNumber(probe.duration_seconds, Number.EPSILON, Number.MAX_SAFE_INTEGER) === null
+            || finiteNumber(probe.selected_duration_seconds, Number.EPSILON, Number.MAX_SAFE_INTEGER) === null
+            || probe.selected_duration_seconds !== receipt.selected_duration_seconds
+            || probe.duration_tolerance_seconds !== OUTPUT_DURATION_TOLERANCE_SECONDS
+            || !SHA256_PATTERN.test(probe.output_sha256)
+            || !Number.isInteger(probe.output_size_bytes) || probe.output_size_bytes < 1
+            || probe.output_size_bytes > MAX_MEDIA_BYTES
+            || Math.abs(probe.duration_seconds - receipt.selected_duration_seconds) > probe.duration_tolerance_seconds) {
             throw failure('FINISHING_CURRENT_PROBE_INVALID');
         }
         const stale = Boolean(inputSnapshotId && receipt.input_snapshot_id !== inputSnapshotId);
@@ -929,6 +943,30 @@ function writeExclusive(target, buffer, mode = 0o600) {
     fs.chmodSync(target, mode);
 }
 
+function acquireCooperativeLock(target) {
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+        | (typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0);
+    let descriptor = null;
+    let created = false;
+    try {
+        descriptor = fs.openSync(target, flags, 0o600);
+        created = true;
+        fs.writeFileSync(descriptor, `${process.pid}\n`);
+        fs.fsyncSync(descriptor);
+        fs.closeSync(descriptor);
+        descriptor = null;
+    } catch (error) {
+        if (descriptor !== null) {
+            try { fs.closeSync(descriptor); } catch {}
+        }
+        if (created) {
+            try { fs.unlinkSync(target); } catch {}
+        }
+        if (error?.code === 'EEXIST') throw failure('FINISHING_CONCURRENT_LOCKED');
+        throw failure('FINISHING_LOCK_ACQUIRE_FAILED');
+    }
+}
+
 function fsyncDirectory(target) {
     const descriptor = fs.openSync(target, fs.constants.O_RDONLY);
     try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
@@ -1052,15 +1090,7 @@ function createFinishingWorkbenchProvider(options = {}) {
         const paths = outputPaths(inspection.rootInfo.root);
         ensureDirectory(paths.finalRoot, 0o700, false);
         ensureDirectory(paths.runsRoot, 0o700);
-        const lockDescriptor = fs.openSync(
-            paths.lockPath,
-            fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
-                | (typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0),
-            0o600,
-        );
-        fs.writeFileSync(lockDescriptor, `${process.pid}\n`);
-        fs.fsyncSync(lockDescriptor);
-        fs.closeSync(lockDescriptor);
+        acquireCooperativeLock(paths.lockPath);
         const stagingRoot = path.join(paths.runsRoot, `.staging-${inspection.runId}-${context.randomBytes(8).toString('hex')}`);
         const runRoot = path.join(paths.runsRoot, inspection.runId);
         let published = false;
