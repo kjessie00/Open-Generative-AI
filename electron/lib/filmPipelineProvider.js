@@ -6,6 +6,7 @@ const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
+const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
 
 const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
@@ -1237,6 +1238,54 @@ function promoteG3ProductionSelection(payload, options = {}) {
     return result;
 }
 
+function finishingWorkbench(options = {}) {
+    return createFinishingWorkbenchProvider({
+        config: getConfig(options),
+        harnessRoot: options.finishingHarnessRoot,
+        adapterPath: options.finishingAdapterPath,
+        runtimeResolver: options.finishingRuntimeResolver,
+        mediaProbe: options.finishingMediaProbe,
+        render: options.finishingRender,
+        now: options.finishingNow,
+        nowMs: options.finishingNowMs,
+        randomBytes: options.finishingRandomBytes,
+        planStore: options.finishingPlanStore,
+        planTtlMs: options.finishingPlanTtlMs,
+    });
+}
+
+async function getFinishingWorkspace(options = {}) {
+    return finishingWorkbench(options).getWorkspace();
+}
+
+async function planFinishingRun(options = {}) {
+    const result = await finishingWorkbench(options).plan();
+    sendProgress({
+        phase: result.ready ? 'finishing-plan-ready' : result.already_current ? 'finishing-already-current' : 'finishing-plan-blocked',
+        ready: result.ready === true,
+        alreadyCurrent: result.already_current === true,
+        executed: false,
+    });
+    return result;
+}
+
+async function executeFinishingRun(payload, options = {}) {
+    sendProgress({ phase: 'finishing-executing', executed: false });
+    try {
+        const result = await finishingWorkbench(options).execute(payload);
+        sendProgress({
+            phase: result.already_current ? 'finishing-already-current' : 'finishing-execution-succeeded',
+            executed: result.executed === true,
+            freshProbeVerified: result.fresh_probe_verified === true,
+            outputQualityApproved: false,
+        });
+        return result;
+    } catch (error) {
+        sendProgress({ phase: 'finishing-execution-failed', executed: false, error: error.code || 'FINISHING_EXECUTION_FAILED' });
+        throw error;
+    }
+}
+
 function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:get-config', () => getConfig(options));
     ipcApi.handle('film-pipeline:get-harness-contract-status', (_, pathArgument) => {
@@ -1282,6 +1331,15 @@ function register(ipcApi = ipcMain, options = {}) {
         return planG3ProductionPromotion(options);
     });
     ipcApi.handle('film-pipeline:promote-g3-production-selection', (_, payload) => promoteG3ProductionSelection(payload, options));
+    ipcApi.handle('film-pipeline:get-finishing-workspace', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getFinishingWorkspace(options);
+    });
+    ipcApi.handle('film-pipeline:plan-finishing-run', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return planFinishingRun(options);
+    });
+    ipcApi.handle('film-pipeline:execute-finishing-run', (_, payload) => executeFinishingRun(payload, options));
 }
 
 module.exports = {
@@ -1310,6 +1368,9 @@ module.exports = {
     exportG3ReviewPacket,
     planG3ProductionPromotion,
     promoteG3ProductionSelection,
+    getFinishingWorkspace,
+    planFinishingRun,
+    executeFinishingRun,
     HARNESS_CONTRACT_ALLOWLIST,
     HAPPY_VIDEO_FACTORY_ROOT,
 };

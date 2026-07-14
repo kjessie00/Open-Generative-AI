@@ -1,9 +1,8 @@
 import { BLOCKERS } from '../../lib/pipeline/blockers.js';
-import { buildFfmpegConcatPreviewCommand, buildFfprobeValidationCommands } from '../../lib/pipeline/commandBuilders.js';
 import { validateFinalReady } from '../../lib/pipeline/validators.js';
 import { localMediaSource } from '../../lib/pipeline/mediaSources.js';
 import { blockerList, card, dataTable, el, infoGrid, panelShell, statusBadge } from './ui.js';
-import { CommandPreviewCard } from './CommandPreviewCard.js';
+import { FinishingWorkbenchPanel } from './FinishingWorkbenchPanel.js';
 import { p } from './copy.js';
 
 function checklistItem(label, ok, blocker = BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN) {
@@ -125,7 +124,14 @@ export function deriveFinalCondition(state = {}, validation = validateFinalReady
     return 'missing final stitch';
 }
 
-export function FinalReportPanel({ state }) {
+export function FinalReportPanel({
+    state,
+    finishingWorkspace,
+    finishingExecution,
+    onFinishingRefresh,
+    onFinishingPlan,
+    onFinishingExecute,
+}) {
     const finalReport = state.finalReport || {};
     const canonicalHandoff = state.canonicalHandoff || {};
     const validation = validateFinalReady(state);
@@ -152,8 +158,6 @@ export function FinalReportPanel({ state }) {
     const condition = deriveFinalCondition(state, validation);
     const creditEvidence = knownCreditEvidence(state);
     const clipRows = buildFinalClipRows(state);
-    const ffprobeSpecs = buildFfprobeValidationCommands(state);
-    const concatSpec = buildFfmpegConcatPreviewCommand(state);
 
     const checklist = [
         checklistItem(p('all clips downloaded'), allClipIds.length > 0 && allClipIds.every((clipId) => downloadedClipIds.has(clipId)), BLOCKERS.FRAME_EXTRACTION_BLOCKED),
@@ -172,7 +176,7 @@ export function FinalReportPanel({ state }) {
             el('div', { className: 'mb-3 flex flex-wrap gap-2' }, [
                 statusBadge(validation.ok ? p('final ready') : conditionLabel, validation.ok ? 'PASS' : 'BLOCK'),
                 statusBadge(p('evidence-only credits'), 'PREVIEW'),
-                statusBadge(p('ffmpeg/ffprobe commands blocked'), 'BLOCK'),
+                statusBadge('선택 구간 workbench 실행은 별도 확인', 'WARN'),
                 deliveryVerified ? statusBadge(p('delivery hash verified'), 'PASS') : null,
             ]),
             el('p', {
@@ -182,6 +186,13 @@ export function FinalReportPanel({ state }) {
                 className: 'break-words text-sm leading-6 text-secondary',
             }),
         ], validation.ok ? 'border-emerald-400/20' : 'border-red-400/20'),
+        FinishingWorkbenchPanel({
+            workspace: finishingWorkspace,
+            execution: finishingExecution,
+            onRefresh: onFinishingRefresh,
+            onPlan: onFinishingPlan,
+            onExecute: onFinishingExecute,
+        }),
         infoGrid([
             { label: p('Final report path'), value: finalReport.report_path },
             { label: p('Final video path'), value: finalVideoExists ? finalReport.final_video_path : p('not available · {condition}', { condition: conditionLabel }) },
@@ -235,16 +246,6 @@ export function FinalReportPanel({ state }) {
             { label: p('Blocker'), key: 'blocker' },
         ], state.heartbeatRecords || []),
         el('div', { className: 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3' }, checklist),
-        el('section', { className: 'flex flex-col gap-4' }, [
-            el('div', {}, [
-                el('h3', { text: p('Final command safety status'), className: 'text-lg font-bold text-white' }),
-                el('p', { text: p('The app does not run a fresh ffprobe or render selected ranges. Both command cards remain disabled and cannot be copied, even when persisted delivery evidence is verified.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
-            ]),
-            el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, [
-                ...ffprobeSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec })),
-                CommandPreviewCard({ commandSpec: concatSpec }),
-            ]),
-        ]),
         card([
             el('div', { text: p('Readiness details'), className: 'mb-3 text-xs font-semibold text-secondary' }),
             el('pre', { className: 'overflow-auto rounded-xl border border-white/10 bg-black/30 p-4 text-xs leading-6 text-secondary' }, [

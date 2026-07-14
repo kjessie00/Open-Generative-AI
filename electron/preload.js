@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     exportG3ReviewPacket: (payload) => ipcRenderer.invoke('film-pipeline:export-g3-review-packet', payload),
     planG3ProductionPromotion: () => ipcRenderer.invoke('film-pipeline:plan-g3-production-promotion'),
     promoteG3ProductionSelection: (payload) => ipcRenderer.invoke('film-pipeline:promote-g3-production-selection', payload),
+    getFinishingWorkspace: () => ipcRenderer.invoke('film-pipeline:get-finishing-workspace'),
+    planFinishingRun: () => ipcRenderer.invoke('film-pipeline:plan-finishing-run'),
+    executeFinishingRun: (payload) => ipcRenderer.invoke('film-pipeline:execute-finishing-run', payload),
     onProgress: (callback) => {
         const listener = (_, data) => callback(data);
         ipcRenderer.on('film-pipeline:progress', listener);

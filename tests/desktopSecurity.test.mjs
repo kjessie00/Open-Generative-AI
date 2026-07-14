@@ -183,8 +183,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(Object.keys(bridge).sort(), [
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
+        'executeFinishingRun',
         'exportG3ReviewPacket',
         'getConfig',
+        'getFinishingWorkspace',
         'getG3ReviewWorkspace',
         'getHarnessContractStatus',
         'getNewProjectDraftState',
@@ -192,6 +194,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'listProductionChildren',
         'loadG3CandidatePreview',
         'onProgress',
+        'planFinishingRun',
         'planG3ProductionPromotion',
         'previewCommand',
         'promoteG3ProductionSelection',
@@ -225,6 +228,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.exportG3ReviewPacket({ draft_id: 'draft' });
     await bridge.planG3ProductionPromotion();
     await bridge.promoteG3ProductionSelection({ planToken: 'opaque', projectIdConfirmation: 'project_01', confirmed: true });
+    await bridge.getFinishingWorkspace();
+    await bridge.planFinishingRun();
+    await bridge.executeFinishingRun({ planToken: 'opaque', projectId: 'project_01', confirmed: true });
     assert.deepEqual(
         invocations.map(([channel]) => channel),
         [
@@ -248,6 +254,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:export-g3-review-packet',
             'film-pipeline:plan-g3-production-promotion',
             'film-pipeline:promote-g3-production-selection',
+            'film-pipeline:get-finishing-workspace',
+            'film-pipeline:plan-finishing-run',
+            'film-pipeline:execute-finishing-run',
         ],
     );
     assert.deepEqual(
@@ -263,6 +272,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:list-assets',
         'film-pipeline:get-g3-review-workspace',
         'film-pipeline:plan-g3-production-promotion',
+        'film-pipeline:get-finishing-workspace',
+        'film-pipeline:plan-finishing-run',
     ]) {
         assert.deepEqual(
             invocations.find(([candidate]) => candidate === channel)[1],
@@ -281,6 +292,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:promote-g3-production-selection')[1],
         [{ planToken: 'opaque', projectIdConfirmation: 'project_01', confirmed: true }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:execute-finishing-run')[1],
+        [{ planToken: 'opaque', projectId: 'project_01', confirmed: true }],
     );
 
     const unsubscribe = bridge.onProgress(() => {});

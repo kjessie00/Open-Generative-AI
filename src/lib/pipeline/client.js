@@ -278,6 +278,53 @@ export async function promoteG3ProductionSelection(payload) {
     };
 }
 
+function unavailableFinishingWorkspace(method = 'getFinishingWorkspace') {
+    return {
+        ...unavailable(method),
+        schema_version: 'film_pipeline.finishing_workbench.v1',
+        status: 'blocked',
+        ready_to_plan: false,
+        already_current: false,
+        project_id: '',
+        episode_id: '',
+        selected_range_count: 0,
+        selected_duration_seconds: 0,
+        input_ready: false,
+        qc_ready: false,
+        harness_ready: false,
+        runtime_ready: false,
+        output_contract: {
+            version: 'film_pipeline.finishing_workbench.v1',
+            location: 'production/final/workbench_runs/<content-derived-run-id>',
+            canonical_delivery_untouched: true,
+        },
+        tool_status: { python: '사용 불가', ffmpeg: '사용 불가', ffprobe: '사용 불가' },
+        current_run: null,
+        current_blockers: [],
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        output_quality_approved: false,
+        quality_notice: '렌더 실행 성공 ≠ 영상 품질 승인',
+    };
+}
+
+export async function getFinishingWorkspace() {
+    const bridge = getBridge();
+    if (typeof bridge?.getFinishingWorkspace === 'function') return bridge.getFinishingWorkspace();
+    return unavailableFinishingWorkspace();
+}
+
+export async function planFinishingRun() {
+    const bridge = getBridge();
+    if (typeof bridge?.planFinishingRun === 'function') return bridge.planFinishingRun();
+    return { ...unavailableFinishingWorkspace('planFinishingRun'), ready: false, plan_token: '', expires_at: '' };
+}
+
+export async function executeFinishingRun(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.executeFinishingRun === 'function') return bridge.executeFinishingRun(payload);
+    return { ...unavailableFinishingWorkspace('executeFinishingRun'), payload: undefined, executed: false };
+}
+
 export function onProgress(callback) {
     const bridge = getBridge();
     if (bridge) return bridge.onProgress(callback);
@@ -306,6 +353,9 @@ export const pipelineClient = Object.freeze({
     exportG3ReviewPacket,
     planG3ProductionPromotion,
     promoteG3ProductionSelection,
+    getFinishingWorkspace,
+    planFinishingRun,
+    executeFinishingRun,
     onProgress,
 });
 

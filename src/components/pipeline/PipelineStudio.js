@@ -12,6 +12,11 @@ import {
     normalizeG3PromotionPlan,
     staleG3PromotionPlan,
 } from '../../lib/pipeline/g3PromotionState.js';
+import {
+    emptyFinishingWorkspace,
+    finishingExecutionState,
+    normalizeFinishingWorkspace,
+} from '../../lib/pipeline/finishingWorkbenchState.js';
 import { PipelineSidebar } from './PipelineSidebar.js';
 import { PipelineProjectBar } from './PipelineProjectBar.js';
 import { PipelineSafetySummary } from './PipelineSafetySummary.js';
@@ -100,6 +105,8 @@ export function PipelineStudio() {
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
     let g3PromotionPlan = emptyG3PromotionPlan();
+    let finishingWorkspace = emptyFinishingWorkspace();
+    let finishingExecution = finishingExecutionState();
 
     const render = () => {
         container.innerHTML = '';
@@ -132,14 +139,17 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, g3Loaded, promotionLoaded] = await Promise.all([
+                const [loaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
                     pipelineClient.getG3ReviewWorkspace(),
                     pipelineClient.planG3ProductionPromotion(),
+                    pipelineClient.getFinishingWorkspace(),
                 ]);
                 state = normalizeState(loaded?.state);
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
+                finishingWorkspace = normalizeFinishingWorkspace(finishingLoaded);
+                finishingExecution = finishingExecutionState();
                 g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
                 render();
             } catch {
@@ -198,14 +208,17 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, g3Loaded, promotionLoaded] = await Promise.all([
+                const [loaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
                     pipelineClient.getG3ReviewWorkspace(),
                     pipelineClient.planG3ProductionPromotion(),
+                    pipelineClient.getFinishingWorkspace(),
                 ]);
                 state = normalizeState(loaded?.state);
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
+                finishingWorkspace = normalizeFinishingWorkspace(finishingLoaded);
+                finishingExecution = finishingExecutionState();
                 g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
                 render();
             } catch {
@@ -379,6 +392,63 @@ export function PipelineStudio() {
                     }
                     render();
                 },
+                finishingWorkspace,
+                finishingExecution,
+                onFinishingRefresh: async () => {
+                    finishingWorkspace = emptyFinishingWorkspace('loading');
+                    finishingExecution = finishingExecutionState();
+                    render();
+                    try {
+                        finishingWorkspace = normalizeFinishingWorkspace(await pipelineClient.getFinishingWorkspace());
+                    } catch {
+                        finishingWorkspace = normalizeFinishingWorkspace({
+                            status: 'error',
+                            blockers: ['FINISHING_WORKSPACE_LOAD_FAILED'],
+                        }, 'error');
+                    }
+                    render();
+                },
+                onFinishingPlan: async () => {
+                    finishingWorkspace = { ...finishingWorkspace, status: 'loading', ready_to_plan: false };
+                    finishingExecution = finishingExecutionState();
+                    render();
+                    try {
+                        finishingWorkspace = normalizeFinishingWorkspace(await pipelineClient.planFinishingRun());
+                    } catch {
+                        finishingWorkspace = normalizeFinishingWorkspace({
+                            status: 'error',
+                            blockers: ['FINISHING_PLAN_FAILED'],
+                        }, 'error');
+                    }
+                    render();
+                },
+                onFinishingExecute: async (payload) => {
+                    finishingExecution = finishingExecutionState('executing');
+                    render();
+                    try {
+                        const result = await pipelineClient.executeFinishingRun(payload);
+                        finishingExecution = finishingExecutionState('success', result);
+                        const [loadedState, loadedWorkspace] = await Promise.all([
+                            pipelineClient.readProductionState(),
+                            pipelineClient.getFinishingWorkspace(),
+                        ]);
+                        state = normalizeState(loadedState?.state);
+                        finishingWorkspace = normalizeFinishingWorkspace(loadedWorkspace);
+                    } catch (error) {
+                        finishingExecution = finishingExecutionState(
+                            'error',
+                            null,
+                            /^FINISHING_[A-Z0-9_]+/.exec(error?.message || '')?.[0] || 'FINISHING_EXECUTION_FAILED',
+                        );
+                        finishingWorkspace = {
+                            ...finishingWorkspace,
+                            status: 'error',
+                            ready: false,
+                            plan_token: '',
+                        };
+                    }
+                    render();
+                },
             }),
         ]);
 
@@ -450,14 +520,16 @@ export function PipelineStudio() {
         };
 
         if (config.productionRoot) {
-            const [loadedState, loadedG3, loadedPromotion] = await Promise.all([
+            const [loadedState, loadedG3, loadedPromotion, loadedFinishing] = await Promise.all([
                 pipelineClient.readProductionState().catch(() => ({ state: samplePipelineState })),
                 pipelineClient.getG3ReviewWorkspace().catch(() => emptyG3ReviewState('error')),
                 pipelineClient.planG3ProductionPromotion().catch(() => staleG3PromotionPlan('G3_PROMOTION_PLAN_FAILED')),
+                pipelineClient.getFinishingWorkspace().catch(() => ({ status: 'error', blockers: ['FINISHING_WORKSPACE_LOAD_FAILED'] })),
             ]);
             state = normalizeState(loadedState?.state);
             g3Workspace = normalizeG3ReviewState(loadedG3);
             g3PromotionPlan = normalizeG3PromotionPlan(loadedPromotion);
+            finishingWorkspace = normalizeFinishingWorkspace(loadedFinishing);
             g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
         } else {
             state = samplePipelineState;
@@ -467,6 +539,10 @@ export function PipelineStudio() {
                 validation_blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],
             });
             g3PromotionPlan = staleG3PromotionPlan('G3_PRODUCTION_ROOT_NOT_CONFIGURED');
+            finishingWorkspace = normalizeFinishingWorkspace({
+                status: 'empty',
+                blockers: ['FINISHING_PRODUCTION_ROOT_NOT_CONFIGURED'],
+            }, 'empty');
         }
         render();
     })();

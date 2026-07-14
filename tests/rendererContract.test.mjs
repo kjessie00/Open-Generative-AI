@@ -972,15 +972,16 @@ test('canonical finishing UI stays Korean, separates QC states, and exposes zero
     assert.match(final.textContent, /정식 delivery 증거 검증됨/);
     assert.match(final.textContent, /저장된 생산자 probe/);
     assert.match(final.textContent, /새 ffprobe 실행 안 함/);
-    assert.match(final.textContent, /앱은 새 ffprobe를 실행하거나 선택 구간을 렌더링하지 않습니다/);
+    assert.match(final.textContent, /선택 구간 마감 작업대/);
+    assert.match(final.textContent, /렌더 실행 성공 ≠ 영상 품질 승인/);
+    assert.match(final.textContent, /source 경로·명령·실행 파일은 화면에 노출되지 않습니다/);
     assert.doesNotMatch(final.textContent, /새 ffprobe 검증됨/);
     const buttons = findAll(final, 'button');
-    assert.ok(buttons.length >= 2);
-    assert.equal(buttons.every((button) => button.disabled), true);
-    assert.equal(buttons.every((button) => (button.listeners.get('click') || []).length === 0), true);
+    assert.equal(buttons.length, 1);
+    assert.equal(buttons[0].textContent, '작업대 상태 새로 확인');
     for (const button of buttons) await button.dispatchEvent({ type: 'click' });
     assert.equal(copyCalls, 0);
-    assert.equal(buttons.some((button) => /실행|Run/i.test(button.textContent)), false);
+    assert.equal(buttons.some((button) => /명령 복사|command/i.test(button.textContent)), false);
 });
 
 test('G3 review workspace is Korean-first, keyboard-native, responsive, and separates machine QC from human decisions', async (t) => {
