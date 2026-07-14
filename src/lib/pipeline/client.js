@@ -245,6 +245,39 @@ export async function exportG3ReviewPacket(payload) {
     return { ...unavailable('exportG3ReviewPacket'), saved: false, exported: false, promotion_ready: false, state: unavailableG3State('exportG3ReviewPacket') };
 }
 
+export async function planG3ProductionPromotion() {
+    const bridge = getBridge();
+    if (typeof bridge?.planG3ProductionPromotion === 'function') return bridge.planG3ProductionPromotion();
+    return {
+        ...unavailable('planG3ProductionPromotion'),
+        schema_version: 'film_pipeline.g3_promotion_plan.v1',
+        status: 'blocked',
+        ready: false,
+        already_current: false,
+        plan_token: '',
+        expires_at: '',
+        project_id: '',
+        episode_id: '',
+        shot_count: 0,
+        target_state: '확인 불가',
+        selected_takes_sha256: '',
+        current_target_sha256: '',
+        safety_summary: ['Electron main bridge가 없어 승격 계획을 만들 수 없습니다.'],
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function promoteG3ProductionSelection(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.promoteG3ProductionSelection === 'function') return bridge.promoteG3ProductionSelection(payload);
+    return {
+        ...unavailable('promoteG3ProductionSelection'),
+        promoted: false,
+        already_current: false,
+        receipt_written: false,
+    };
+}
+
 export function onProgress(callback) {
     const bridge = getBridge();
     if (bridge) return bridge.onProgress(callback);
@@ -271,6 +304,8 @@ export const pipelineClient = Object.freeze({
     loadG3CandidatePreview,
     saveG3ReviewDraft,
     exportG3ReviewPacket,
+    planG3ProductionPromotion,
+    promoteG3ProductionSelection,
     onProgress,
 });
 

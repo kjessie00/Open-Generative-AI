@@ -146,7 +146,7 @@ export function actionButton(label, { disabled = false, variant = 'primary', onC
         text: label,
         disabled,
         onClick,
-        className: `ui-action-button rounded-md border px-3 py-2 text-xs font-semibold transition-colors ${classes} ${disabled ? 'cursor-not-allowed opacity-45' : 'hover:bg-white/10'}`,
+        className: `ui-action-button min-h-11 rounded-md border px-3 py-2 text-xs font-semibold transition-colors ${classes} ${disabled ? 'cursor-not-allowed opacity-45' : 'hover:bg-white/10'}`,
         attrs: { type: 'button' },
     });
 }

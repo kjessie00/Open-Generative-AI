@@ -7,6 +7,7 @@ const componentPaths = [
     'src/components/pipeline/G3ShotNavigator.js',
     'src/components/pipeline/G3CandidatePanel.js',
     'src/components/pipeline/G3SelectionEditor.js',
+    'src/components/pipeline/G3PromotionPanel.js',
 ];
 
 async function source(relativePath) {
@@ -22,7 +23,10 @@ test('G3 UI stays focused, responsive, Korean-first, and uses native semantic co
         assert.ok(content.split(/\r?\n/).length < 200, `${relativePath} must remain a focused component`);
     }
     const combined = components.map(({ content }) => content).join('\n');
-    for (const label of ['G3 인간 검토 작업대', '초안/비승격', '기계 QC · 읽기 전용', '인간 선택 기록']) {
+    for (const label of [
+        'G3 인간 검토 작업대', '초안/비승격', '기계 QC · 읽기 전용', '인간 선택 기록',
+        'Production 반영 · 명시적 확인', '프로젝트 ID', 'production에 반영',
+    ]) {
         assert.match(combined, new RegExp(label));
     }
     assert.match(combined, /grid-cols-1/);
@@ -43,21 +47,25 @@ test('G3 preview CSP permits only local and Blob media while network remains dis
     assert.match(csp, /connect-src 'none'/);
 });
 
-test('G3 IPC is path-free at workspace load and has no promotion or production-write channel', async () => {
+test('G3 IPC keeps promotion planning pathless and exposes no generation, upload, ledger, or command channel', async () => {
     const [preload, provider] = await Promise.all([
         source('electron/preload.js'),
         source('electron/lib/filmPipelineProvider.js'),
     ]);
     assert.match(preload, /getG3ReviewWorkspace:\s*\(\)\s*=>/);
+    assert.match(preload, /planG3ProductionPromotion:\s*\(\)\s*=>/);
     assert.match(provider, /get-g3-review-workspace'[\s\S]*assertNoRendererPathArgument/);
+    assert.match(provider, /plan-g3-production-promotion'[\s\S]*assertNoRendererPathArgument/);
     for (const channel of [
         'get-g3-review-workspace',
         'load-g3-candidate-preview',
         'save-g3-review-draft',
         'export-g3-review-packet',
+        'plan-g3-production-promotion',
+        'promote-g3-production-selection',
     ]) {
         assert.match(preload, new RegExp(`film-pipeline:${channel}`));
         assert.match(provider, new RegExp(`film-pipeline:${channel}`));
     }
-    assert.doesNotMatch(`${preload}\n${provider}`, /film-pipeline:(?:promote|write-production|write-ledger|approve-g3)/i);
+    assert.doesNotMatch(`${preload}\n${provider}`, /film-pipeline:(?:generate|submit|upload|write-ledger|run-g3-command)/i);
 });

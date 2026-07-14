@@ -358,4 +358,5 @@ module.exports = {
     saveG3ReviewDraft,
     exportG3ReviewPacket,
     loadG3CandidatePreview,
+    contextState,
 };

@@ -41,6 +41,9 @@ export function QAPanel({
     onG3Preview,
     onG3Save,
     onG3Export,
+    g3PromotionPlan,
+    onG3PromotionRefresh,
+    onG3Promote,
 }) {
     const finalValidation = validateFinalReady(state);
     const qaRecords = state.qaRecords || [];
@@ -72,6 +75,9 @@ export function QAPanel({
             onPreview: onG3Preview,
             onSave: onG3Save,
             onExport: onG3Export,
+            promotionPlan: g3PromotionPlan,
+            onPromotionRefresh: onG3PromotionRefresh,
+            onPromote: onG3Promote,
         }) : null,
         blockerList([
             ...finalValidation.blockers,

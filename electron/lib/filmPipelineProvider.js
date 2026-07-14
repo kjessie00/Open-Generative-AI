@@ -5,6 +5,7 @@ const path = require('path');
 const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
+const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 
 const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
@@ -1185,6 +1186,12 @@ function g3ReviewContext(options = {}) {
         now: options.g3Now,
         randomBytes: options.g3RandomBytes,
         renameFile: options.g3RenameFile,
+        promotionPlanStore: options.g3PromotionPlanStore,
+        promotionNowMs: options.g3PromotionNowMs,
+        promotionPlanTtlMs: options.g3PromotionPlanTtlMs,
+        promotionRandomBytes: options.g3PromotionRandomBytes,
+        promotionPrivateRenameFile: options.g3PromotionPrivateRenameFile,
+        promotionRenameFile: options.g3PromotionRenameFile,
     };
 }
 
@@ -1207,6 +1214,26 @@ function saveG3ReviewDraft(payload, options = {}) {
 function exportG3ReviewPacket(payload, options = {}) {
     const result = g3ReviewDraftProvider.exportG3ReviewPacket(payload, g3ReviewContext(options));
     sendProgress({ phase: 'g3-draft-exported', promotionReady: false, executed: false });
+    return result;
+}
+
+function planG3ProductionPromotion(options = {}) {
+    const result = g3ProductionPromotionProvider.planG3ProductionPromotion(g3ReviewContext(options));
+    sendProgress({
+        phase: result.ok ? 'g3-promotion-plan-ready' : 'g3-promotion-plan-blocked',
+        alreadyCurrent: result.already_current === true,
+        executed: false,
+    });
+    return result;
+}
+
+function promoteG3ProductionSelection(payload, options = {}) {
+    const result = g3ProductionPromotionProvider.promoteG3ProductionSelection(payload, g3ReviewContext(options));
+    sendProgress({
+        phase: result.already_current ? 'g3-promotion-already-current' : 'g3-production-promoted',
+        promoted: result.promoted === true,
+        executed: result.executed === true,
+    });
     return result;
 }
 
@@ -1250,6 +1277,11 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:load-g3-candidate-preview', (_, payload) => loadG3CandidatePreview(payload, options));
     ipcApi.handle('film-pipeline:save-g3-review-draft', (_, payload) => saveG3ReviewDraft(payload, options));
     ipcApi.handle('film-pipeline:export-g3-review-packet', (_, payload) => exportG3ReviewPacket(payload, options));
+    ipcApi.handle('film-pipeline:plan-g3-production-promotion', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return planG3ProductionPromotion(options);
+    });
+    ipcApi.handle('film-pipeline:promote-g3-production-selection', (_, payload) => promoteG3ProductionSelection(payload, options));
 }
 
 module.exports = {
@@ -1276,6 +1308,8 @@ module.exports = {
     loadG3CandidatePreview,
     saveG3ReviewDraft,
     exportG3ReviewPacket,
+    planG3ProductionPromotion,
+    promoteG3ProductionSelection,
     HARNESS_CONTRACT_ALLOWLIST,
     HAPPY_VIDEO_FACTORY_ROOT,
 };

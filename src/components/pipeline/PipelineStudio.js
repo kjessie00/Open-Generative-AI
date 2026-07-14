@@ -7,6 +7,11 @@ import {
     normalizeG3ReviewState,
     updateG3Selection,
 } from '../../lib/pipeline/g3ReviewWorkspace.js';
+import {
+    emptyG3PromotionPlan,
+    normalizeG3PromotionPlan,
+    staleG3PromotionPlan,
+} from '../../lib/pipeline/g3PromotionState.js';
 import { PipelineSidebar } from './PipelineSidebar.js';
 import { PipelineProjectBar } from './PipelineProjectBar.js';
 import { PipelineSafetySummary } from './PipelineSafetySummary.js';
@@ -94,6 +99,7 @@ export function PipelineStudio() {
     let newProjectDraftValue = { ...newProjectDraftState.draft };
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
+    let g3PromotionPlan = emptyG3PromotionPlan();
 
     const render = () => {
         container.innerHTML = '';
@@ -126,12 +132,14 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, g3Loaded] = await Promise.all([
+                const [loaded, g3Loaded, promotionLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
                     pipelineClient.getG3ReviewWorkspace(),
+                    pipelineClient.planG3ProductionPromotion(),
                 ]);
                 state = normalizeState(loaded?.state);
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
+                g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
                 g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
                 render();
             } catch {
@@ -190,12 +198,14 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, g3Loaded] = await Promise.all([
+                const [loaded, g3Loaded, promotionLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
                     pipelineClient.getG3ReviewWorkspace(),
+                    pipelineClient.planG3ProductionPromotion(),
                 ]);
                 state = normalizeState(loaded?.state);
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
+                g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
                 g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
                 render();
             } catch {
@@ -286,6 +296,7 @@ export function PipelineStudio() {
                 onPickParent: pickParentFolder,
                 onRefresh: refreshProductions,
                 g3Workspace,
+                g3PromotionPlan,
                 g3ActiveShotId,
                 onG3ActiveShotChange: (shotId) => {
                     g3ActiveShotId = shotId;
@@ -298,6 +309,7 @@ export function PipelineStudio() {
                         export_ready: false,
                         validation_blockers: Array.from(new Set([...g3Workspace.validation_blockers, 'G3_UNSAVED_CHANGES'])),
                     };
+                    g3PromotionPlan = staleG3PromotionPlan();
                 },
                 onG3OverallNotesChange: (value) => {
                     g3Workspace = {
@@ -306,6 +318,7 @@ export function PipelineStudio() {
                         export_ready: false,
                         validation_blockers: Array.from(new Set([...g3Workspace.validation_blockers, 'G3_UNSAVED_CHANGES'])),
                     };
+                    g3PromotionPlan = staleG3PromotionPlan();
                 },
                 onG3Preview: (candidateToken) => pipelineClient.loadG3CandidatePreview({ candidateToken }),
                 onG3Save: async () => {
@@ -313,6 +326,7 @@ export function PipelineStudio() {
                     try {
                         const result = await pipelineClient.saveG3ReviewDraft(payload);
                         g3Workspace = normalizeG3ReviewState(result?.state);
+                        g3PromotionPlan = normalizeG3PromotionPlan(await pipelineClient.planG3ProductionPromotion());
                         window.alert(result?.saved ? 'G3 로컬 검토 초안을 저장했습니다.' : 'G3 초안 저장이 차단되었습니다.');
                     } catch {
                         window.alert('G3 초안 저장이 안전 정책에 따라 차단되었습니다.');
@@ -324,11 +338,44 @@ export function PipelineStudio() {
                     try {
                         const result = await pipelineClient.exportG3ReviewPacket(payload);
                         g3Workspace = normalizeG3ReviewState(result?.state);
+                        g3PromotionPlan = normalizeG3PromotionPlan(await pipelineClient.planG3ProductionPromotion());
                         window.alert(result?.exported
                             ? 'canonical 형태의 비승격 G3 초안을 내보냈습니다.'
                             : 'G3 초안 내보내기가 차단되었습니다.');
                     } catch {
                         window.alert('G3 초안 내보내기가 안전 정책에 따라 차단되었습니다.');
+                    }
+                    render();
+                },
+                onG3PromotionRefresh: async () => {
+                    g3PromotionPlan = emptyG3PromotionPlan();
+                    render();
+                    try {
+                        g3PromotionPlan = normalizeG3PromotionPlan(await pipelineClient.planG3ProductionPromotion());
+                    } catch {
+                        g3PromotionPlan = staleG3PromotionPlan('G3_PROMOTION_PLAN_FAILED');
+                    }
+                    render();
+                },
+                onG3Promote: async (promotionPayload) => {
+                    try {
+                        const result = await pipelineClient.promoteG3ProductionSelection(promotionPayload);
+                        const [loadedState, loadedG3, promotionLoaded] = await Promise.all([
+                            pipelineClient.readProductionState(),
+                            pipelineClient.getG3ReviewWorkspace(),
+                            pipelineClient.planG3ProductionPromotion(),
+                        ]);
+                        state = normalizeState(loadedState?.state);
+                        g3Workspace = normalizeG3ReviewState(loadedG3);
+                        g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
+                        window.alert(result?.already_current
+                            ? 'production selected_takes.json이 이미 현재 선택과 같습니다.'
+                            : result?.promoted && result?.executed
+                                ? '확인한 사람 선택을 production selected_takes.json에 반영했습니다.'
+                                : 'G3 production 반영이 차단되었습니다.');
+                    } catch {
+                        g3PromotionPlan = staleG3PromotionPlan('G3_PROMOTION_FAILED');
+                        window.alert('G3 production 반영이 안전 정책에 따라 차단되었습니다. 계획을 다시 확인하세요.');
                     }
                     render();
                 },
@@ -403,12 +450,14 @@ export function PipelineStudio() {
         };
 
         if (config.productionRoot) {
-            const [loadedState, loadedG3] = await Promise.all([
+            const [loadedState, loadedG3, loadedPromotion] = await Promise.all([
                 pipelineClient.readProductionState().catch(() => ({ state: samplePipelineState })),
                 pipelineClient.getG3ReviewWorkspace().catch(() => emptyG3ReviewState('error')),
+                pipelineClient.planG3ProductionPromotion().catch(() => staleG3PromotionPlan('G3_PROMOTION_PLAN_FAILED')),
             ]);
             state = normalizeState(loadedState?.state);
             g3Workspace = normalizeG3ReviewState(loadedG3);
+            g3PromotionPlan = normalizeG3PromotionPlan(loadedPromotion);
             g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
         } else {
             state = samplePipelineState;
@@ -417,6 +466,7 @@ export function PipelineStudio() {
                 blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],
                 validation_blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],
             });
+            g3PromotionPlan = staleG3PromotionPlan('G3_PRODUCTION_ROOT_NOT_CONFIGURED');
         }
         render();
     })();

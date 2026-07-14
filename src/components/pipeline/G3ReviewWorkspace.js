@@ -1,6 +1,7 @@
 import { G3CandidatePanel } from './G3CandidatePanel.js';
 import { G3SelectionEditor } from './G3SelectionEditor.js';
 import { G3ShotNavigator } from './G3ShotNavigator.js';
+import { G3PromotionPanel } from './G3PromotionPanel.js';
 import { actionButton, el, emptyState, statusBadge } from './ui.js';
 import { p } from './copy.js';
 
@@ -34,6 +35,9 @@ export function G3ReviewWorkspace({
     onPreview,
     onSave,
     onExport,
+    promotionPlan,
+    onPromotionRefresh,
+    onPromote,
 }) {
     if (workspace.status === 'loading') {
         return el('section', { className: 'border-t border-white/10 pt-5', attrs: { 'aria-labelledby': 'g3-workspace-title' } }, [
@@ -112,7 +116,8 @@ export function G3ReviewWorkspace({
         el('div', { className: 'flex flex-col gap-3 sm:flex-row sm:items-center' }, [
             actionButton('로컬 검토 초안 저장', { disabled: !workspace.authoring_ready, onClick: onSave }),
             actionButton('canonical 형태로 초안 내보내기', { disabled: !workspace.export_ready, variant: 'muted', onClick: onExport }),
-            el('p', { text: '내보낸 파일도 비승격 초안입니다. 실제 production 반영은 별도의 happyVideoFactory importer/CAS가 필요합니다.', className: 'text-xs leading-5 text-secondary' }),
+            el('p', { text: '내보낸 파일은 반영 전 초안입니다. 아래에서 새 승격 계획을 확인하고 프로젝트 ID와 명시적 승인을 완료해야 production에 반영됩니다.', className: 'text-xs leading-5 text-secondary' }),
         ]),
+        G3PromotionPanel({ plan: promotionPlan, onRefresh: onPromotionRefresh, onPromote }),
     ]);
 }

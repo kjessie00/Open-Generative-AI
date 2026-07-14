@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     loadG3CandidatePreview: (payload) => ipcRenderer.invoke('film-pipeline:load-g3-candidate-preview', payload),
     saveG3ReviewDraft: (payload) => ipcRenderer.invoke('film-pipeline:save-g3-review-draft', payload),
     exportG3ReviewPacket: (payload) => ipcRenderer.invoke('film-pipeline:export-g3-review-packet', payload),
+    planG3ProductionPromotion: () => ipcRenderer.invoke('film-pipeline:plan-g3-production-promotion'),
+    promoteG3ProductionSelection: (payload) => ipcRenderer.invoke('film-pipeline:promote-g3-production-selection', payload),
     onProgress: (callback) => {
         const listener = (_, data) => callback(data);
         ipcRenderer.on('film-pipeline:progress', listener);
