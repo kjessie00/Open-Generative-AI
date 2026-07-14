@@ -1,4 +1,4 @@
-import { g3PreviewDataUrl } from '../../lib/pipeline/g3ReviewWorkspace.js';
+import { createG3PreviewObjectUrl } from '../../lib/pipeline/g3PreviewObjectUrl.js';
 import { actionButton, el, emptyState, statusBadge } from './ui.js';
 
 function formatBytes(value) {
@@ -22,7 +22,6 @@ export function G3CandidatePanel({ candidates, selection, onChange, onPreview })
         })),
     ]);
     select.value = selection.candidate_token || '';
-    select.addEventListener('change', () => onChange('candidate_token', select.value));
     wrapper.appendChild(label);
     wrapper.appendChild(select);
 
@@ -37,38 +36,75 @@ export function G3CandidatePanel({ candidates, selection, onChange, onPreview })
             : '길이 상한 미검증', candidate.duration_authoritative ? 'PASS' : 'WARN'));
         meta.appendChild(statusBadge(candidate.preview_allowed ? '로컬 미리보기 가능' : '미리보기 용량 초과', candidate.preview_allowed ? 'PREVIEW' : 'BLOCK'));
     };
-    select.addEventListener('change', renderMeta);
     renderMeta();
     wrapper.appendChild(meta);
 
     const previewHost = el('div', { className: 'min-h-24 rounded-md border border-dashed border-white/10 bg-black/20 p-3' }, [
         el('p', { text: '후보를 선택한 뒤 로컬 미리보기를 불러오세요.', className: 'text-sm text-secondary', attrs: { role: 'status' } }),
     ]);
+    let activePreview = null;
+    let requestVersion = 0;
+    const disposePreview = () => {
+        requestVersion += 1;
+        activePreview?.dispose();
+        activePreview = null;
+    };
+    const showMessage = (text, role = 'status', error = false) => {
+        previewHost.replaceChildren(el('p', {
+            text,
+            className: `text-sm ${error ? 'text-red-200' : 'text-secondary'}`,
+            attrs: { role },
+        }));
+    };
+    select.addEventListener('change', () => {
+        disposePreview();
+        showMessage('후보를 선택한 뒤 로컬 미리보기를 불러오세요.');
+        renderMeta();
+        onChange('candidate_token', select.value);
+    });
     wrapper.appendChild(actionButton('선택 후보 미리보기', {
         disabled: false,
         variant: 'muted',
         onClick: async () => {
+            disposePreview();
             const candidate = selected();
-            previewHost.innerHTML = '';
             if (!candidate?.candidate_token) {
-                previewHost.appendChild(el('p', { text: '먼저 후보를 선택하세요.', className: 'text-sm text-secondary', attrs: { role: 'alert' } }));
+                showMessage('먼저 후보를 선택하세요.', 'alert');
                 return;
             }
-            previewHost.appendChild(el('p', { text: '로컬 후보를 불러오는 중…', className: 'text-sm text-secondary', attrs: { role: 'status' } }));
+            const currentRequest = requestVersion;
+            showMessage('로컬 후보를 불러오는 중…');
             const preview = await onPreview(candidate.candidate_token).catch(() => null);
-            const source = g3PreviewDataUrl(preview);
-            previewHost.innerHTML = '';
-            if (!source) {
-                previewHost.appendChild(el('p', { text: '미리보기를 안전하게 불러오지 못했습니다.', className: 'text-sm text-red-200', attrs: { role: 'alert' } }));
+            const prepared = createG3PreviewObjectUrl(preview);
+            if (currentRequest !== requestVersion || ('isConnected' in wrapper && !wrapper.isConnected)) {
+                prepared.dispose();
                 return;
             }
-            previewHost.appendChild(el('video', {
+            if (!prepared.ok) {
+                showMessage('미리보기를 안전하게 불러오지 못했습니다.', 'alert', true);
+                return;
+            }
+            activePreview = prepared;
+            const video = el('video', {
                 className: 'max-h-80 w-full rounded-md bg-black object-contain',
-                attrs: { controls: '', preload: 'metadata', src: source, 'aria-label': '선택한 후보 영상 미리보기' },
-            }));
+                attrs: { controls: '', preload: 'metadata', src: prepared.url, 'aria-label': '선택한 후보 영상 미리보기' },
+            });
+            video.addEventListener('error', () => {
+                disposePreview();
+                showMessage('미리보기를 재생할 수 없습니다.', 'alert', true);
+            });
+            previewHost.replaceChildren(video);
         },
     }));
     wrapper.appendChild(previewHost);
+    if (typeof globalThis.MutationObserver === 'function') {
+        const observer = new globalThis.MutationObserver(() => {
+            if (wrapper.isConnected) return;
+            disposePreview();
+            observer.disconnect();
+        });
+        observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
+    }
     wrapper.appendChild(el('p', {
         text: '파일 길이가 canonical 근거로 제공되지 않으면 구간 상한은 검증하지 않습니다. 인·아웃 값은 사람이 직접 확인해야 합니다.',
         className: 'text-xs leading-5 text-secondary',

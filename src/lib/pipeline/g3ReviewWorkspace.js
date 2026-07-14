@@ -77,9 +77,3 @@ export function g3DraftPayload(state) {
         overall_notes: state.overall_notes || '',
     };
 }
-
-export function g3PreviewDataUrl(preview) {
-    if (!preview?.loaded || !['video/mp4', 'video/quicktime', 'video/webm', 'video/x-m4v'].includes(preview.mime_type)
-        || typeof preview.base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(preview.base64)) return '';
-    return `data:${preview.mime_type};base64,${preview.base64}`;
-}

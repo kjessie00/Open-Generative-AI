@@ -31,6 +31,16 @@ test('G3 UI stays focused, responsive, Korean-first, and uses native semantic co
     assert.match(combined, /el\('(?:button|select|input|textarea|fieldset|label|nav)'/);
     assert.doesNotMatch(combined, /innerHTML\s*=\s*[^'";]*(?:candidate|display_path|notes|reason)/);
     assert.doesNotMatch(combined, /runSafeCommand|previewCommand|child_process|fetch\(/);
+    assert.match(combined, /createG3PreviewObjectUrl/);
+    assert.doesNotMatch(combined, /data:video|g3PreviewDataUrl/);
+});
+
+test('G3 preview CSP permits only local and Blob media while network remains disabled', async () => {
+    const html = await source('index.html');
+    const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] || '';
+    assert.match(csp, /media-src 'self' blob: file:/);
+    assert.doesNotMatch(csp, /media-src[^;]*(?:data:|https?:)/);
+    assert.match(csp, /connect-src 'none'/);
 });
 
 test('G3 IPC is path-free at workspace load and has no promotion or production-write channel', async () => {

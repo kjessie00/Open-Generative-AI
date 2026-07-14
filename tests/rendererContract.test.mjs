@@ -42,6 +42,19 @@ class TestNode {
         return child;
     }
 
+    removeChild(child) {
+        const index = this.childNodes.indexOf(child);
+        if (index >= 0) this.childNodes.splice(index, 1);
+        child.parentNode = null;
+        return child;
+    }
+
+    get isConnected() {
+        let current = this;
+        while (current?.parentNode) current = current.parentNode;
+        return current === globalThis.document?.body;
+    }
+
     replaceChildren(...children) {
         this._text = '';
         this.childNodes = [];
@@ -973,6 +986,45 @@ test('canonical finishing UI stays Korean, separates QC states, and exposes zero
 test('G3 review workspace is Korean-first, keyboard-native, responsive, and separates machine QC from human decisions', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);
+    const priorPreviewApis = {
+        atob: Object.getOwnPropertyDescriptor(globalThis, 'atob'),
+        Blob: Object.getOwnPropertyDescriptor(globalThis, 'Blob'),
+        URL: Object.getOwnPropertyDescriptor(globalThis, 'URL'),
+        MutationObserver: Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver'),
+    };
+    const revoked = [];
+    const observers = [];
+    let nextUrl = 0;
+    globalThis.atob = (value) => Buffer.from(value, 'base64').toString('latin1');
+    globalThis.Blob = class {
+        constructor(parts, options) {
+            this.size = parts.reduce((sum, part) => sum + part.byteLength, 0);
+            this.type = options.type;
+        }
+    };
+    globalThis.URL = {
+        createObjectURL: () => `blob:fixture-${nextUrl += 1}`,
+        revokeObjectURL: (value) => revoked.push(value),
+    };
+    globalThis.MutationObserver = class {
+        constructor(callback) {
+            this.callback = callback;
+            this.disconnected = false;
+            observers.push(this);
+        }
+
+        observe() {}
+
+        disconnect() {
+            this.disconnected = true;
+        }
+    };
+    t.after(() => {
+        for (const [key, descriptor] of Object.entries(priorPreviewApis)) {
+            if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+            else delete globalThis[key];
+        }
+    });
     const { G3ReviewWorkspace } = await import('../src/components/pipeline/G3ReviewWorkspace.js');
     const changes = [];
     const workspace = {
@@ -1020,7 +1072,7 @@ test('G3 review workspace is Korean-first, keyboard-native, responsive, and sepa
         onActiveShotChange: (value) => changes.push(['shot', value]),
         onSelectionChange: (shotId, field, value) => changes.push([shotId, field, value]),
         onOverallNotesChange: (value) => changes.push(['notes', value]),
-        onPreview: async () => ({ loaded: true, mime_type: 'video/mp4', base64: 'Zml4dHVyZQ==' }),
+        onPreview: async () => ({ loaded: true, mime_type: 'video/mp4', byte_length: 7, base64: 'Zml4dHVyZQ==' }),
         onSave: () => changes.push(['save']),
         onExport: () => changes.push(['export']),
     });
@@ -1047,8 +1099,32 @@ test('G3 review workspace is Korean-first, keyboard-native, responsive, and sepa
     assert.deepEqual(changes.at(-1), ['SH01', 'chosen_provider', 'flow']);
 
     const previewButton = byText(node, 'button', '선택 후보 미리보기');
+    document.body.appendChild(node);
     await previewButton.dispatchEvent({ type: 'click' });
-    assert.equal(findAll(node, 'video').length, 1);
+    let video = findAll(node, 'video')[0];
+    assert.ok(video);
+    assert.match(video.attributes.get('src'), /^blob:/);
+    assert.doesNotMatch(node.textContent, /data:video|Zml4dHVyZQ/);
+    await video.dispatchEvent({ type: 'error' });
+    assert.deepEqual(revoked, ['blob:fixture-1']);
+    assert.match(node.textContent, /미리보기를 재생할 수 없습니다/);
+
+    await previewButton.dispatchEvent({ type: 'click' });
+    video = findAll(node, 'video')[0];
+    assert.equal(video.attributes.get('src'), 'blob:fixture-2');
+    candidate.value = '';
+    await candidate.dispatchEvent({ type: 'change' });
+    assert.deepEqual(revoked, ['blob:fixture-1', 'blob:fixture-2']);
+    assert.match(node.textContent, /후보를 선택한 뒤/);
+
+    candidate.value = 'opaque-token';
+    await candidate.dispatchEvent({ type: 'change' });
+    await previewButton.dispatchEvent({ type: 'click' });
+    assert.equal(findAll(node, 'video')[0].attributes.get('src'), 'blob:fixture-3');
+    document.body.removeChild(node);
+    observers.forEach((observer) => observer.callback());
+    assert.deepEqual(revoked, ['blob:fixture-1', 'blob:fixture-2', 'blob:fixture-3']);
+    assert.equal(observers.every((observer) => observer.disconnected), true);
     assert.equal(byText(node, 'button', 'canonical 형태로 초안 내보내기').disabled, false);
 
     const loading = G3ReviewWorkspace({ workspace: { ...workspace, status: 'loading' } });
