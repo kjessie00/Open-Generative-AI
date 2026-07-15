@@ -2,6 +2,7 @@ import { classifySideEffect, renderShellCommand, allowedStatusLabel } from '../.
 import { actionButton, card, codeBlock, el, statusBadge } from './ui.js';
 import { SideEffectGate } from './SideEffectGate.js';
 import { p } from './copy.js';
+import { blockerLabel, simpleStatusLabel } from './generationUi.js';
 
 function commandLabel(commandSpec) {
     const label = commandSpec.label || commandSpec.id || 'Command preview';
@@ -17,7 +18,7 @@ function commandLabel(commandSpec) {
     return p(label);
 }
 
-export function CommandPreviewCard({ commandSpec }) {
+export function CommandPreviewCard({ commandSpec, compact = false }) {
     const command = renderShellCommand(commandSpec);
     const classification = classifySideEffect(commandSpec);
     const copyButton = actionButton(p('Copy unavailable'), {
@@ -27,6 +28,27 @@ export function CommandPreviewCard({ commandSpec }) {
 
     const blocked = classification.mode === 'blocked';
     const status = blocked ? 'BLOCK' : classification.mode === 'preview_only' ? 'PREVIEW' : 'PASS';
+
+    if (compact) {
+        const blockers = classification.blockers.map(blockerLabel);
+        return card([
+            el('div', { className: 'flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between' }, [
+                el('div', {}, [
+                    el('h3', { text: commandLabel(commandSpec), className: 'text-sm font-bold text-white' }),
+                    el('p', { text: `${simpleStatusLabel(status)} · 앱에서 실행 안 함`, className: 'mt-1 text-xs text-secondary' }),
+                ]),
+                copyButton,
+            ]),
+            el('details', { className: 'mt-3 text-xs text-secondary' }, [
+                el('summary', { text: '명령 내용 보기', className: 'cursor-pointer font-semibold' }),
+                el('div', { className: 'mt-3' }, [codeBlock(command)]),
+                el('dl', { className: 'mt-3 grid grid-cols-1 gap-2 md:grid-cols-2' }, [
+                    el('div', {}, [el('dt', { text: '결과 위치', className: 'font-semibold' }), el('dd', { text: commandSpec.evidence_output_path || '없음', className: 'mt-1 break-all font-mono' })]),
+                    el('div', {}, [el('dt', { text: '필요한 확인', className: 'font-semibold' }), el('dd', { text: blockers.join(', ') || '없음', className: 'mt-1' })]),
+                ]),
+            ]),
+        ], blocked ? 'border-red-400/20' : 'border-white/10');
+    }
 
     return card([
         el('div', { className: 'mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between' }, [

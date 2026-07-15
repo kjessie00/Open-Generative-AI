@@ -1,9 +1,10 @@
 import { BLOCKERS } from '../../lib/pipeline/blockers.js';
 import { buildPipelineCommandSpecs } from '../../lib/pipeline/commandBuilders.js';
 import { QUEUE_PHASES, validateSeedanceQueuePolicy, validateSubmitAllowed } from '../../lib/pipeline/validators.js';
-import { actionButton, blockerList, card, dataTable, el, panelShell, statusBadge } from './ui.js';
+import { actionButton, card, dataTable, el, panelShell } from './ui.js';
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { p } from './copy.js';
+import { blockerLabel, issueList, queuePhaseLabel, simpleStatusBadge } from './generationUi.js';
 
 function latestHeartbeatForClip(state, clipId) {
     return [...(state.heartbeatRecords || [])].reverse().find((record) => record.clip_id === clipId) || null;
@@ -39,37 +40,26 @@ function phaseBadge(phase) {
         [QUEUE_PHASES.QUEUED]: 'PREVIEW',
         [QUEUE_PHASES.NOT_QUEUED]: 'UNREVIEWED',
     }[phase] || 'UNREVIEWED';
-    return statusBadge(phase, status);
+    return simpleStatusBadge(status, queuePhaseLabel(phase));
 }
 
 function submitIdBadge(submitId) {
-    return submitId ? statusBadge(submitId, 'PASS') : statusBadge(p('missing submit_id'), 'BLOCK');
+    return submitId || '아직 없음';
 }
 
 function creditBadge(count) {
     const numeric = Number(count || 0);
-    return statusBadge(p('{count} credits', { count: numeric }), numeric > 0 ? 'WARN' : 'PREVIEW');
+    return `${numeric} 크레딧`;
 }
 
 function backendModelEvidence(item) {
-    return item.backendModelEvidence
-        ? statusBadge(item.backendModelEvidence, 'PASS')
-        : statusBadge(p('not recorded'), 'UNREVIEWED');
+    return item.backendModelEvidence || '아직 없음';
 }
 
 function policyBanner() {
     return card([
-        el('div', { className: 'mb-3 flex flex-wrap items-center gap-2' }, [
-            statusBadge(p('No auto-retry'), 'BLOCK'),
-            statusBadge(p('No duplicate jobs'), 'BLOCK'),
-            statusBadge(p('No VIP/fallback'), 'BLOCK'),
-            statusBadge('--poll=0 first', 'PREVIEW'),
-            statusBadge('list_task/query_result only', 'PREVIEW'),
-        ]),
-        el('p', {
-            text: p('Slow queue status is not a retry signal. Seedance/Dreamina clips get one live generation attempt by default; approved clips must be queued first with --poll=0, then heartbeat checks use only non-consuming list_task/query_result previews.'),
-            className: 'text-sm leading-6 text-secondary',
-        }),
+        el('strong', { text: '안전한 대기열 원칙', className: 'text-sm text-white' }),
+        el('p', { text: '자동 재시도와 중복 생성은 하지 않습니다. 모든 승인 클립을 먼저 대기열에 넣은 뒤 상태만 확인합니다.', className: 'mt-1 text-sm leading-6 text-secondary' }),
     ], 'border-cyan-400/20');
 }
 
@@ -85,24 +75,23 @@ function strictBlockerCard(queuePolicy) {
     ].filter(Boolean);
 
     return card([
-        el('div', { className: 'mb-3 flex flex-wrap gap-2' }, queuePolicy.blockers.length
-            ? queuePolicy.blockers.map((blocker) => statusBadge(blocker, 'BLOCK'))
-            : [statusBadge(p('Strict queue policy clear'), 'PASS')]),
+        el('strong', {
+            text: queuePolicy.blockers.length ? '먼저 준비할 것' : '대기열 준비 완료',
+            className: queuePolicy.blockers.length ? 'text-sm text-amber-100' : 'text-sm text-emerald-200',
+        }),
         rows.length
-            ? el('ul', { className: 'flex flex-col gap-2 text-sm leading-6 text-secondary' }, rows.map((row) => el('li', { text: row, className: 'break-words' })))
+            ? el('ul', { className: 'mt-3 flex flex-col gap-2 text-sm leading-6 text-secondary' }, rows.map((row) => el('li', { text: row, className: 'break-words' })))
             : el('p', { text: p('No strict queue blocker is active for preview state.'), className: 'text-sm text-secondary' }),
     ], queuePolicy.blockers.length ? 'border-red-400/20' : 'border-emerald-400/20');
 }
 
 function harnessStatusCard(harnessStatus) {
     const readiness = harnessStatus?.readiness || 'blocked';
-    const label = readiness === 'available' ? p('Available') : readiness === 'partial' ? p('Partial') : p('Blocked');
     const badge = readiness === 'available' ? 'PASS' : readiness === 'partial' ? 'WARN' : 'BLOCK';
     return card([
         el('div', { className: 'mb-2 flex flex-wrap items-center gap-2' }, [
             el('div', { text: p('Canonical harness handoff'), className: 'text-sm font-bold text-white' }),
-            statusBadge(label, badge),
-            statusBadge(p('Read-only metadata'), 'PREVIEW'),
+            simpleStatusBadge(badge, readiness === 'available' ? '연결됨' : readiness === 'partial' ? '일부 준비' : '연결 필요'),
         ]),
         el('p', {
             text: readiness === 'available'
@@ -143,13 +132,10 @@ export function QueuePanel({ state, config, harnessStatus }) {
     return panelShell(p('Generation Queue'), p('Submit and heartbeat ledgers. Live submit is disabled; UI-only mode only renders preview commands.'), [
         harnessStatusCard(harnessStatus),
         policyBanner(),
-        blockerList([...motionBoardBlockers, ...submitValidation.blockers, ...queuePolicy.blockers]),
+        issueList([...motionBoardBlockers, ...submitValidation.blockers, ...queuePolicy.blockers]),
         strictBlockerCard(queuePolicy),
         card([
-            el('div', { className: 'mb-4 flex flex-wrap items-center gap-2' }, [
-                statusBadge('submit_records.jsonl', 'PREVIEW'),
-                statusBadge('heartbeat_log.jsonl', 'PREVIEW'),
-            ]),
+            el('strong', { text: '대기열 기록 파일', className: 'text-sm text-white' }),
             el('div', { className: 'grid grid-cols-1 gap-3 md:grid-cols-2' }, [
                 el('div', { text: ledgers.submit_records || p('submit_records.jsonl not loaded'), className: 'break-all rounded-md border border-white/10 bg-black/20 p-3 font-mono text-xs text-secondary' }),
                 el('div', { text: ledgers.heartbeat_log || p('heartbeat_log.jsonl not loaded'), className: 'break-all rounded-md border border-white/10 bg-black/20 p-3 font-mono text-xs text-secondary' }),
@@ -159,7 +145,7 @@ export function QueuePanel({ state, config, harnessStatus }) {
             { label: p('Clip'), key: 'clip_id' },
             { label: p('Timeline'), render: (item) => phaseBadge(item.phase) },
             { label: p('Submit ID'), render: (item) => submitIdBadge(item.submit_id) },
-            { label: p('Live attempts'), render: (item) => statusBadge(`${item.liveAttemptCount}/1`, item.liveAttemptCount > 1 ? 'BLOCK' : item.liveAttemptCount === 1 ? 'PASS' : 'UNREVIEWED') },
+            { label: p('Live attempts'), render: (item) => `${item.liveAttemptCount}/1` },
             { label: p('Known credits'), render: (item) => creditBadge(item.knownCreditCount) },
             { label: p('Backend model evidence'), render: backendModelEvidence },
             { label: p('Next heartbeat countdown'), render: (item) => el('span', { text: countdownText(item.heartbeat.details?.nextHeartbeatAt || item.next_heartbeat_at, now), className: 'font-mono text-xs text-secondary' }) },
@@ -167,7 +153,7 @@ export function QueuePanel({ state, config, harnessStatus }) {
         ], queueTimeline),
         dataTable([
             { label: p('Clip'), key: 'clip_id' },
-            { label: p('Submitted?'), render: (record) => statusBadge(record.submit_id ? p('yes') : p('no'), record.submit_id ? 'PASS' : 'UNREVIEWED') },
+            { label: p('Submitted?'), render: (record) => record.submit_id ? '예' : '아니요' },
             { label: p('Submit ID'), key: 'submit_id' },
             { label: p('Backend model evidence'), key: 'submitted_cli_model' },
             { label: p('Credits'), key: 'credit_count' },
@@ -181,24 +167,20 @@ export function QueuePanel({ state, config, harnessStatus }) {
             el('div', { className: 'mb-4 flex flex-wrap items-center gap-3' }, [
                 actionButton(p('Submit disabled'), { disabled: true, variant: 'danger' }),
                 actionButton(heartbeatBlocked ? p('Heartbeat disabled until {time}', { time: exactTime(nextHeartbeatBlocked.next_heartbeat_at) }) : p('Heartbeat preview only'), { disabled: true, variant: 'muted' }),
-                statusBadge(p(heartbeatBlocked ? '20m gate blocked' : '20m gate clear'), heartbeatBlocked ? 'BLOCK' : 'PREVIEW'),
+                el('span', { text: heartbeatBlocked ? '상태 확인 대기 중' : '상태 확인 가능', className: 'text-sm text-secondary' }),
             ]),
-            el('p', { text: p('Retry, faster queue, VIP/fallback model, and duplicate job paths are never suggested by this UI. Blocker: {blocker}.', { blocker: BLOCKERS.DREAMINA_PREFLIGHT_BLOCKED }), className: 'mb-4 text-sm leading-6 text-secondary' }),
+            el('p', { text: `현재 상태: ${blockerLabel(BLOCKERS.DREAMINA_PREFLIGHT_BLOCKED)}`, className: 'mb-4 text-sm leading-6 text-secondary' }),
             el('p', { text: p('Dreamina submit execution is not exposed. Planning and status previews remain non-executing; unfinished ffprobe and selected-range rendering commands are blocked.'), className: 'text-sm leading-6 text-secondary' }),
         ]),
-        el('section', { className: 'flex flex-col gap-4' }, [
-            el('div', {}, [
-                el('h3', { text: p('Heartbeat Query Commands'), className: 'text-lg font-bold text-white' }),
-                el('p', { text: p('Copy-only Dreamina list_task/query_result previews. They remain disabled until submit_id is recorded, all approved clips are queued first, and the 20 minute gate is due.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
-            ]),
-            el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, queryCommandSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec }))),
+        el('details', { className: 'rounded-lg border border-white/10 bg-white/[0.025] p-4' }, [
+            el('summary', { text: `상태 확인 명령 ${queryCommandSpecs.length}개`, className: 'cursor-pointer text-sm font-bold text-white' }),
+            el('p', { text: '필요할 때만 펼쳐서 명령 내용을 확인하세요. 앱에서는 실행되지 않습니다.', className: 'mt-2 text-sm text-secondary' }),
+            el('div', { className: 'mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2' }, queryCommandSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec, compact: true }))),
         ]),
-        el('section', { className: 'flex flex-col gap-4' }, [
-            el('div', {}, [
-                el('h3', { text: p('Other Command Previews'), className: 'text-lg font-bold text-white' }),
-                el('p', { text: p('Planning and Dreamina help/user_credit remain preview-only. ffprobe evidence and selected-range rendering cards are disabled and cannot be copied.'), className: 'mt-1 text-sm leading-6 text-secondary' }),
-            ]),
-            el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, otherCommandSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec }))),
+        el('details', { className: 'rounded-lg border border-white/10 bg-white/[0.025] p-4' }, [
+            el('summary', { text: `기타 준비 명령 ${otherCommandSpecs.length}개`, className: 'cursor-pointer text-sm font-bold text-white' }),
+            el('p', { text: '계획·검증·생성 명령을 기술적으로 확인할 때만 펼치세요.', className: 'mt-2 text-sm text-secondary' }),
+            el('div', { className: 'mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2' }, otherCommandSpecs.map((commandSpec) => CommandPreviewCard({ commandSpec, compact: true }))),
         ]),
     ]);
 }

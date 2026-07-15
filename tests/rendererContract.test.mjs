@@ -348,16 +348,30 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     }
 
     await byAttribute(studio, 'button', 'aria-label', '3 생성 준비').dispatchEvent({ type: 'click' });
+    const visibleBadgeLabels = () => findAll(studio, 'span')
+        .filter((span) => span.className.includes('text-[11px]'))
+        .map((span) => span.textContent.trim());
+
     await byText(studio, 'button', '참조 이미지').dispatchEvent({ type: 'click' });
     assert.match(studio.textContent, /하네스 이미지 대시보드를 읽기 전용으로 보여 줍니다/);
+    assert.deepEqual(visibleBadgeLabels(), ['통과']);
+
+    await byText(studio, 'button', '프롬프트 팩').dispatchEvent({ type: 'click' });
+    assert.deepEqual(visibleBadgeLabels(), []);
+
+    await byText(studio, 'button', '검토 게이트').dispatchEvent({ type: 'click' });
+    assert.equal(visibleBadgeLabels().length, 8, 'review gates keep exactly one short Korean badge per gate');
+    assert.ok(visibleBadgeLabels().every((label) => ['통과', '준비 필요', '검토 전', '확인 필요'].includes(label)));
 
     await byText(studio, 'button', '생성 대기열').dispatchEvent({ type: 'click' });
     const queueText = studio.textContent;
-    assert.match(queueText, /Canonical 하네스 연결사용 가능읽기 전용 메타데이터/);
+    assert.match(queueText, /Canonical 하네스 연결연결됨/);
     assert.match(queueText, /라이브 제출은 차단/);
-    assert.match(queueText, /미리보기 카드만 제공합니다. 실행 버튼은 표시하지 않습니다./);
+    assert.match(queueText, /필요할 때만 펼쳐서 명령 내용을 확인하세요/);
     assert.match(queueText, /복사 불가/);
-    assert.match(queueText, /CREDIT_CONFIRMATION_REQUIRED/);
+    assert.match(queueText, /생성 승인 필요/);
+    assert.doesNotMatch(queueText, /CREDIT_CONFIRMATION_REQUIRED|DREAMINA_PREFLIGHT_BLOCKED/);
+    assert.deepEqual(visibleBadgeLabels(), ['연결됨', '제출 전']);
     assert.ok(byText(studio, 'button', '제출 차단')?.disabled, 'submit control must stay visibly disabled');
 
     const unsafeEnabledButtons = findAll(studio, 'button').filter((button) => (

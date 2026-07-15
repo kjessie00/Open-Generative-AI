@@ -1,5 +1,6 @@
-import { dataTable, el, panelShell, statusBadge } from './ui.js';
+import { dataTable, el, panelShell } from './ui.js';
 import { p } from './copy.js';
+import { blockerLabel, gateLabel, simpleStatusBadge } from './generationUi.js';
 
 const GATE_ORDER = [
     'image_prompt',
@@ -30,19 +31,22 @@ export function ReviewGatesPanel({ state }) {
     return panelShell(p('Review Gates'), p('Every gate status must stay separate: pipeline pass is not output-quality acceptance.'), [
         el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, ordered.map((gate) => (
             el('article', { className: 'rounded-lg border border-white/10 bg-white/[0.035] p-4' }, [
-                el('div', { className: 'mb-4 flex flex-wrap items-center gap-2' }, [
-                    statusBadge(gate.type, gate.status),
-                    statusBadge(gate.status || 'UNREVIEWED', gate.status || 'UNREVIEWED'),
+                el('div', { className: 'flex items-center justify-between gap-3' }, [
+                    el('h3', { text: gateLabel(gate.type), className: 'text-base font-bold text-white' }),
+                    simpleStatusBadge(gate.status),
                 ]),
-                dataTable([
-                    { label: p('Field'), key: 'field' },
-                    { label: p('Value'), key: 'value' },
-                ], [
-                    { field: 'gate_id', value: gate.gate_id },
-                    { field: 'clip_id', value: gate.clip_id },
-                    { field: 'evidence_path', value: gate.evidence_path },
-                    { field: 'blocker', value: gate.blocker },
-                    { field: 'notes', value: gate.notes },
+                gate.blocker ? el('p', { text: blockerLabel(gate.blocker), className: 'mt-3 text-sm text-amber-100', title: gate.blocker }) : null,
+                gate.notes ? el('p', { text: gate.notes, className: 'mt-2 text-sm leading-6 text-secondary' }) : null,
+                el('details', { className: 'mt-4' }, [
+                    el('summary', { text: '세부 기록', className: 'cursor-pointer text-xs font-semibold text-secondary' }),
+                    el('div', { className: 'mt-3' }, [dataTable([
+                        { label: '항목', key: 'field' },
+                        { label: '내용', key: 'value' },
+                    ], [
+                        { field: '게이트 ID', value: gate.gate_id },
+                        { field: '클립', value: gate.clip_id },
+                        { field: '근거 파일', value: gate.evidence_path },
+                    ])]),
                 ]),
             ])
         ))),
