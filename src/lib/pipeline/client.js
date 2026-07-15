@@ -177,6 +177,60 @@ export async function getMediaRetryPlan() {
     };
 }
 
+export async function getDstBundleImportWorkspace() {
+    const bridge = getBridge();
+    if (typeof bridge?.getDstBundleImportWorkspace === 'function') return bridge.getDstBundleImportWorkspace();
+    return {
+        ...unavailable('getDstBundleImportWorkspace'),
+        status: 'blocked',
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        candidates: [],
+    };
+}
+
+export async function loadDstBundleImportPreview(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.loadDstBundleImportPreview === 'function') return bridge.loadDstBundleImportPreview(payload);
+    return {
+        ...unavailable('loadDstBundleImportPreview'),
+        status: 'blocked',
+        ready: false,
+        candidate_token: '',
+        preview: null,
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function planDstBundleImport(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.planDstBundleImport === 'function') return bridge.planDstBundleImport(payload);
+    return {
+        ...unavailable('planDstBundleImport'),
+        status: 'blocked',
+        ready: false,
+        already_current: false,
+        plan_token: '',
+        retry_media_id: '',
+        target_id: '',
+        source_bundle_id: '',
+        preview: null,
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function confirmDstBundleImport(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.confirmDstBundleImport === 'function') return bridge.confirmDstBundleImport(payload);
+    return {
+        ...unavailable('confirmDstBundleImport'),
+        ok: false,
+        imported: false,
+        already_current: false,
+        media_id: '',
+        target_id: '',
+    };
+}
+
 export async function writePlanningFile(payload) {
     const bridge = getBridge();
     if (bridge) return bridge.writePlanningFile(payload);
@@ -364,6 +418,10 @@ export const pipelineClient = Object.freeze({
     listProductionChildren,
     readProductionState,
     getMediaRetryPlan,
+    getDstBundleImportWorkspace,
+    loadDstBundleImportPreview,
+    planDstBundleImport,
+    confirmDstBundleImport,
     writePlanningFile,
     listAssets,
     readJsonl,

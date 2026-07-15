@@ -555,6 +555,118 @@ test('MOCK media review board updates selection and filter, then saves the exact
     assert.match(rerendered.textContent, /검토 초안 저장됨/);
 });
 
+test('MOCK DST result import exposes only image retry targets and uses opaque plan confirmation', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaRetryPlanBand } = await import('../src/components/pipeline/MediaRetryPlanBand.js');
+    const band = MediaRetryPlanBand({
+        plan: {
+            status: 'preview_ready',
+            blockers: [],
+            items: [{
+                sequence: 1,
+                media_id: 'dst-image-retry',
+                target_id: 'clip_001',
+                provider: 'dst',
+                kind: 'scene_image',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }, {
+                sequence: 2,
+                media_id: 'dst-video-retry',
+                target_id: 'clip_002',
+                provider: 'dst',
+                kind: 'scene_video',
+                readiness: 'blocked_adapter_missing',
+                blockers: ['MISSING_PROVIDER_ADAPTER'],
+                command_spec: {},
+            }, {
+                sequence: 3,
+                media_id: 'flow-image-retry',
+                target_id: 'clip_003',
+                provider: 'flow',
+                kind: 'scene_image',
+                readiness: 'blocked_adapter_missing',
+                blockers: ['MISSING_PROVIDER_ADAPTER'],
+                command_spec: {},
+            }],
+        },
+        dstBundleImportWorkspace: {
+            status: 'ready',
+            blockers: [],
+            candidates: [{
+                candidate_token: 'opaque-candidate-token',
+                bundle_id: '20260715_street_scene_1234',
+                created_at: '2026-07-15T08:00:00Z',
+                prompt_excerpt: '비 오는 골목의 주인공',
+                mime_type: 'image/png',
+                size_bytes: 2048,
+            }],
+        },
+        dstBundleImportPreview: {
+            status: 'ready',
+            ready: true,
+            candidate_token: 'opaque-candidate-token',
+            preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=', byte_length: 8 },
+            blockers: [],
+        },
+        async onPlanDstBundleImport(payload) {
+            calls.push(['plan', payload]);
+            return {
+                status: 'ready',
+                ready: true,
+                already_current: false,
+                plan_token: 'opaque-plan-token',
+                retry_media_id: payload.retryMediaId,
+                target_id: 'clip_001',
+                source_bundle_id: '20260715_street_scene_1234',
+                source_image_name: 'secret-source.png',
+                target_relative_path: 'media/private-target.png',
+                blockers: [],
+                executed: false,
+            };
+        },
+        async onConfirmDstBundleImport(payload) {
+            calls.push(['confirm', payload]);
+            return {
+                ok: true,
+                imported: true,
+                already_current: false,
+                media_id: 'dst-image-imported',
+                target_id: 'clip_001',
+                relative_path: 'media/private-target.png',
+                executed: false,
+            };
+        },
+    });
+
+    const targetSelect = byAttribute(band, 'select', 'id', 'dst-import-retry-target');
+    const candidateSelect = byAttribute(band, 'select', 'id', 'dst-import-candidate');
+    assert.ok(targetSelect);
+    assert.ok(candidateSelect);
+    assert.deepEqual(findAll(targetSelect, 'option').map((option) => option.value), ['dst-image-retry']);
+    assert.deepEqual(findAll(candidateSelect, 'option').map((option) => option.value), ['opaque-candidate-token']);
+    const preview = byAttribute(band, 'img', 'alt', '20260715_street_scene_1234 결과 미리보기');
+    assert.match(preview.attributes.get('src'), /^data:image\/png;base64,/);
+
+    await byText(band, 'button', '가져오기 계획').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[0], ['plan', {
+        candidateToken: 'opaque-candidate-token',
+        retryMediaId: 'dst-image-retry',
+    }]);
+    assert.match(band.textContent, /가져오기 준비/);
+    assert.equal(band.textContent.includes('secret-source.png'), false, 'source filenames stay in Electron main');
+    assert.equal(band.textContent.includes('private-target.png'), false, 'target paths stay in Electron main');
+
+    await byText(band, 'button', '선택한 결과 가져오기').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[1], ['confirm', { planToken: 'opaque-plan-token', confirmed: true }]);
+    assert.match(band.textContent, /가져오기 완료/);
+    assert.match(band.textContent, /작업대 기록에 반영했습니다/);
+    assert.equal(findAll(band, 'button').some((button) => /(?:생성|명령) 실행/.test(button.textContent)), false);
+});
+
 test('MOCK media attempt cards keep Korean labels and semantic review colors', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);

@@ -1,4 +1,5 @@
 import { CommandPreviewCard } from './CommandPreviewCard.js';
+import { DstBundleImportBand } from './DstBundleImportBand.js';
 import { actionButton, card, el, emptyState, statusBadge } from './ui.js';
 
 const READINESS_LABELS = Object.freeze({
@@ -38,8 +39,22 @@ function retryPlanItem(item) {
     ]);
 }
 
-export function MediaRetryPlanBand({ plan, onRefresh }) {
+export function MediaRetryPlanBand({
+    plan,
+    onRefresh,
+    dstBundleImportWorkspace,
+    dstBundleImportPreview,
+    dstBundleImportPlan,
+    onRefreshDstBundleImportWorkspace,
+    onLoadDstBundleImportPreview,
+    onPlanDstBundleImport,
+    onConfirmDstBundleImport,
+}) {
     const items = Array.isArray(plan?.items) ? plan.items : [];
+    const dstImageItems = items.filter((item) => (
+        String(item.provider || '').toLowerCase() === 'dst'
+        && !/(?:video|clip)/i.test(String(item.kind || ''))
+    ));
     const loading = plan?.status === 'loading';
     return el('section', { className: 'media-review-band' }, [
         el('header', { className: 'media-review-band-head' }, [
@@ -61,5 +76,15 @@ export function MediaRetryPlanBand({ plan, onRefresh }) {
         items.length
             ? el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, items.map(retryPlanItem))
             : emptyState('검토 초안을 저장한 뒤 실행 계획을 확인하세요.'),
+        DstBundleImportBand({
+            retryItems: dstImageItems,
+            workspace: dstBundleImportWorkspace,
+            preview: dstBundleImportPreview,
+            plan: dstBundleImportPlan,
+            onRefresh: onRefreshDstBundleImportWorkspace,
+            onLoadPreview: onLoadDstBundleImportPreview,
+            onPlan: onPlanDstBundleImport,
+            onConfirm: onConfirmDstBundleImport,
+        }),
     ]);
 }

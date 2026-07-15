@@ -181,11 +181,13 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.equal(invocations.length, 0, 'preload initialization must not invoke any IPC channel');
     const bridge = exposed.get('filmPipeline');
     assert.deepEqual(Object.keys(bridge).sort(), [
+        'confirmDstBundleImport',
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
         'executeFinishingRun',
         'exportG3ReviewPacket',
         'getConfig',
+        'getDstBundleImportWorkspace',
         'getFinishingWorkspace',
         'getG3ReviewWorkspace',
         'getHarnessContractStatus',
@@ -193,8 +195,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getNewProjectDraftState',
         'listAssets',
         'listProductionChildren',
+        'loadDstBundleImportPreview',
         'loadG3CandidatePreview',
         'onProgress',
+        'planDstBundleImport',
         'planFinishingRun',
         'planG3ProductionPromotion',
         'previewCommand',
@@ -211,6 +215,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.getConfig();
     await bridge.getHarnessContractStatus();
     await bridge.getMediaRetryPlan();
+    await bridge.getDstBundleImportWorkspace();
+    await bridge.loadDstBundleImportPreview({ candidateToken: 'opaque' });
+    await bridge.planDstBundleImport({ candidateToken: 'opaque', retryMediaId: 'media_01' });
+    await bridge.confirmDstBundleImport({ planToken: 'opaque', confirmed: true });
     await bridge.getNewProjectDraftState();
     await bridge.saveNewProjectDraft({ production_id: 'test-project' });
     await bridge.copyNewProjectBuildCommand();
@@ -239,6 +247,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:get-config',
             'film-pipeline:get-harness-contract-status',
             'film-pipeline:get-media-retry-plan',
+            'film-pipeline:get-dst-bundle-import-workspace',
+            'film-pipeline:load-dst-bundle-import-preview',
+            'film-pipeline:plan-dst-bundle-import',
+            'film-pipeline:confirm-dst-bundle-import',
             'film-pipeline:get-new-project-draft-state',
             'film-pipeline:save-new-project-draft',
             'film-pipeline:copy-new-project-build-command',
@@ -269,6 +281,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     for (const channel of [
         'film-pipeline:get-harness-contract-status',
         'film-pipeline:get-media-retry-plan',
+        'film-pipeline:get-dst-bundle-import-workspace',
         'film-pipeline:get-new-project-draft-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',

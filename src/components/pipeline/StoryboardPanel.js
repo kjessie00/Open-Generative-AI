@@ -27,6 +27,13 @@ export function StoryboardPanel({
     onMediaReviewSaveStatusChange,
     onSavePlanningFile,
     onRefreshMediaRetryPlan,
+    dstBundleImportWorkspace,
+    dstBundleImportPreview,
+    dstBundleImportPlan,
+    onRefreshDstBundleImportWorkspace,
+    onLoadDstBundleImportPreview,
+    onPlanDstBundleImport,
+    onConfirmDstBundleImport,
 }) {
     let attempts = deriveMediaAttempts(state).map((attempt) => ({
         ...attempt,
@@ -132,7 +139,17 @@ export function StoryboardPanel({
                 ReferenceRail('장소 시트', '장면 전체에서 유지할 공간·조명·소품 기준입니다.', grouped.locationSheets, actions),
             ]),
             ...sceneGroups.map((group) => SceneReviewRow(group, clipById.get(group.target_id), actions)),
-            MediaRetryPlanBand({ plan: mediaRetryPlan, onRefresh: onRefreshMediaRetryPlan }),
+            MediaRetryPlanBand({
+                plan: mediaRetryPlan,
+                onRefresh: onRefreshMediaRetryPlan,
+                dstBundleImportWorkspace,
+                dstBundleImportPreview,
+                dstBundleImportPlan,
+                onRefreshDstBundleImportWorkspace,
+                onLoadDstBundleImportPreview,
+                onPlanDstBundleImport,
+                onConfirmDstBundleImport,
+            }),
         ];
         if (!attempts.length) children.push(emptyState('media_attempts.jsonl에 기록된 생성 시도가 없습니다.'));
         board.replaceChildren(...children);

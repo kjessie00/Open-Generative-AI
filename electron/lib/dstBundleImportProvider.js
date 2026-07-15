@@ -1,0 +1,950 @@
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const { buildMediaRetryPlan } = require('./mediaRetryPlanProvider');
+const { readProductionFolder } = require('./productionReader');
+
+const WORKSPACE_SCHEMA = 'film_pipeline.dst_bundle_import_workspace.v1';
+const PLAN_SCHEMA = 'film_pipeline.dst_bundle_import_plan.v1';
+const DEFAULT_DST_IMAGES_ROOT = '/Users/jessiek/StudioProjects/deepSearchTeam/output/images';
+const MAX_CANDIDATES = 12;
+const MAX_SCAN_DIRECTORIES = 240;
+const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
+const MAX_LEDGER_BYTES = 2 * 1024 * 1024;
+const DEFAULT_PLAN_TTL_MS = 2 * 60 * 1000;
+const MAX_PLAN_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_STALE_LOCK_MS = 30 * 1000;
+const MAX_STALE_LOCK_MS = 10 * 60 * 1000;
+const SESSION_TOKEN_SECRET = crypto.randomBytes(32);
+const SESSION_PLAN_STORE = new Map();
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const IMPORT_RELATIVE_ROOT = 'media/imports/dst';
+
+function failure(code, message = code) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+}
+
+function sha256(value) {
+    return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function exactKeys(value, expected, code) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).sort().join(',') !== [...expected].sort().join(',')) {
+        throw failure(code);
+    }
+}
+
+function safeId(value, code = 'DST_IMPORT_ID_INVALID') {
+    if (typeof value !== 'string' || !SAFE_ID_PATTERN.test(value)) throw failure(code);
+    return value;
+}
+
+function boundedText(value, maximum, code) {
+    if (typeof value !== 'string' || value.includes('\0')) throw failure(code);
+    const text = value.trim();
+    if (!text || Buffer.byteLength(text, 'utf8') > maximum) throw failure(code);
+    return text;
+}
+
+function identity(stats) {
+    return {
+        dev: stats.dev,
+        ino: stats.ino,
+        mode: stats.mode,
+        size: stats.size,
+        mtimeMs: stats.mtimeMs,
+        ctimeMs: stats.ctimeMs,
+    };
+}
+
+function sameIdentity(left, right) {
+    return Boolean(left && right)
+        && ['dev', 'ino', 'mode', 'size', 'mtimeMs', 'ctimeMs'].every((key) => left[key] === right[key]);
+}
+
+function sameDirectoryIdentity(left, right) {
+    return Boolean(left && right)
+        && ['dev', 'ino', 'mode'].every((key) => left[key] === right[key]);
+}
+
+function sameSnapshot(left, right) {
+    if (left.exists !== right.exists) return false;
+    if (!left.exists) return true;
+    return left.sha256 === right.sha256 && left.size === right.size && sameIdentity(left.identity, right.identity);
+}
+
+function assertRealDirectory(directoryPath, code, { parentRoot = '' } = {}) {
+    if (typeof directoryPath !== 'string' || !directoryPath || directoryPath.includes('\0')
+        || !path.isAbsolute(directoryPath) || path.normalize(directoryPath) !== directoryPath) throw failure(code);
+    let stats;
+    try { stats = fs.lstatSync(directoryPath); } catch { throw failure(code); }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) throw failure(code);
+    const realPath = fs.realpathSync.native(directoryPath);
+    if (realPath !== directoryPath) throw failure(code);
+    if (parentRoot && path.dirname(realPath) !== parentRoot) throw failure(code);
+    return { path: directoryPath, realPath, stats, identity: identity(stats) };
+}
+
+function stableFile(filePath, maximum, code, { allowEmpty = false } = {}) {
+    let before;
+    try { before = fs.lstatSync(filePath); } catch (error) {
+        if (error.code === 'ENOENT') return { exists: false, buffer: Buffer.alloc(0), sha256: '', size: 0, identity: null };
+        throw failure(code);
+    }
+    if (before.isSymbolicLink() || !before.isFile() || (!allowEmpty && before.size <= 0) || before.size > maximum) {
+        throw failure(before.size > maximum ? `${code}_TOO_LARGE` : code);
+    }
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') throw failure('DST_IMPORT_NOFOLLOW_UNAVAILABLE');
+    let descriptor;
+    try {
+        descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const opened = fs.fstatSync(descriptor);
+        if (!opened.isFile() || !sameIdentity(identity(before), identity(opened))) throw failure(`${code}_CHANGED`);
+        const buffer = fs.readFileSync(descriptor);
+        const after = fs.fstatSync(descriptor);
+        const pathAfter = fs.lstatSync(filePath);
+        if (buffer.byteLength !== opened.size || !sameIdentity(identity(opened), identity(after))
+            || !sameIdentity(identity(opened), identity(pathAfter))) throw failure(`${code}_CHANGED`);
+        return {
+            exists: true,
+            buffer,
+            sha256: sha256(buffer),
+            size: buffer.byteLength,
+            identity: identity(opened),
+        };
+    } finally {
+        if (descriptor !== undefined) {
+            try { fs.closeSync(descriptor); } catch { /* already closed */ }
+        }
+    }
+}
+
+function parseJson(read, code) {
+    if (!read.exists) throw failure(code);
+    try {
+        const value = JSON.parse(read.buffer.toString('utf8'));
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('object required');
+        return value;
+    } catch {
+        throw failure(code);
+    }
+}
+
+function imageType(fileName, buffer) {
+    const extension = path.extname(fileName).toLowerCase();
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        if (extension !== '.png') throw failure('DST_IMPORT_IMAGE_EXTENSION_MISMATCH');
+        return { mimeType: 'image/png', extension: '.png' };
+    }
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+        if (!['.jpg', '.jpeg'].includes(extension)) throw failure('DST_IMPORT_IMAGE_EXTENSION_MISMATCH');
+        return { mimeType: 'image/jpeg', extension: '.jpg' };
+    }
+    if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+        if (extension !== '.webp') throw failure('DST_IMPORT_IMAGE_EXTENSION_MISMATCH');
+        return { mimeType: 'image/webp', extension: '.webp' };
+    }
+    throw failure('DST_IMPORT_IMAGE_TYPE_UNSUPPORTED');
+}
+
+function tokenSecret(context = {}) {
+    const secret = context.tokenSecret || SESSION_TOKEN_SECRET;
+    if (!Buffer.isBuffer(secret) || secret.byteLength < 32) throw failure('DST_IMPORT_TOKEN_SECRET_INVALID');
+    return secret;
+}
+
+function candidateToken(candidate, context = {}) {
+    return crypto.createHmac('sha256', tokenSecret(context)).update([
+        candidate.inventoryRootFingerprint,
+        candidate.bundleId,
+        candidate.manifest.sha256,
+        candidate.metadata.sha256,
+        candidate.imageName,
+        candidate.image.sha256,
+    ].join('\0')).digest('base64url');
+}
+
+function inspectBundle(imagesRoot, inventoryRootFingerprint, bundleName, context = {}) {
+    const bundleRoot = path.join(imagesRoot.path, bundleName);
+    const bundle = assertRealDirectory(bundleRoot, 'DST_IMPORT_BUNDLE_UNSAFE', { parentRoot: imagesRoot.realPath });
+    const images = assertRealDirectory(path.join(bundle.path, 'images'), 'DST_IMPORT_IMAGES_DIRECTORY_UNSAFE');
+    if (path.dirname(images.realPath) !== bundle.realPath) throw failure('DST_IMPORT_IMAGES_DIRECTORY_UNSAFE');
+
+    const manifestRead = stableFile(path.join(bundle.path, 'manifest.json'), MAX_JSON_BYTES, 'DST_IMPORT_MANIFEST_UNSAFE');
+    const metadataRead = stableFile(path.join(bundle.path, 'metadata.json'), MAX_JSON_BYTES, 'DST_IMPORT_METADATA_UNSAFE');
+    const manifest = parseJson(manifestRead, 'DST_IMPORT_MANIFEST_INVALID');
+    const metadata = parseJson(metadataRead, 'DST_IMPORT_METADATA_INVALID');
+    const bundleId = safeId(manifest.id, 'DST_IMPORT_BUNDLE_ID_INVALID');
+    const query = boundedText(manifest.query, 12000, 'DST_IMPORT_PROMPT_INVALID');
+    if (manifest.type !== 'image_generation' || manifest.status !== 'complete'
+        || manifest.profile !== 'goldpure369' || manifest.files?.images !== 'images/'
+        || metadata.status !== 'complete' || metadata.profile !== 'goldpure369'
+        || metadata.image_count !== 1 || metadata.query !== query) {
+        throw failure('DST_IMPORT_BUNDLE_CONTRACT_INVALID');
+    }
+
+    const entries = fs.readdirSync(images.path, { withFileTypes: true });
+    if (entries.length !== 1 || !entries[0].isFile() || entries[0].isSymbolicLink()) {
+        throw failure('DST_IMPORT_SINGLE_IMAGE_REQUIRED');
+    }
+    const imageName = safeId(entries[0].name, 'DST_IMPORT_IMAGE_NAME_INVALID');
+    if (imageName !== path.basename(imageName) || !/^image_01\.(?:png|jpe?g|webp)$/i.test(imageName)) {
+        throw failure('DST_IMPORT_IMAGE_NAME_INVALID');
+    }
+    const imagePath = path.join(images.path, imageName);
+    const imageLimit = context.maxImageBytes || MAX_IMAGE_BYTES;
+    const imageRead = stableFile(imagePath, imageLimit, 'DST_IMPORT_IMAGE_UNSAFE');
+    const type = imageType(imageName, imageRead.buffer);
+    const candidate = {
+        inventoryRootFingerprint,
+        bundleName,
+        bundleId,
+        bundleIdentity: bundle.identity,
+        manifest: manifestRead,
+        metadata: metadataRead,
+        manifestValue: manifest,
+        metadataValue: metadata,
+        query,
+        imageName,
+        imagePath,
+        image: imageRead,
+        mimeType: type.mimeType,
+        extension: type.extension,
+        createdAt: typeof manifest.created_at === 'string' && Number.isFinite(Date.parse(manifest.created_at))
+            ? manifest.created_at : '',
+    };
+    candidate.token = candidateToken(candidate, context);
+    return candidate;
+}
+
+function scanInventory(context = {}) {
+    const rootPath = context.dstImagesRoot || DEFAULT_DST_IMAGES_ROOT;
+    const imagesRoot = assertRealDirectory(rootPath, 'DST_IMPORT_ROOT_UNSAFE');
+    const inventoryRootFingerprint = sha256(`${imagesRoot.realPath}\0${imagesRoot.stats.dev}\0${imagesRoot.stats.ino}`);
+    const directories = fs.readdirSync(imagesRoot.path, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.'))
+        .map((entry) => {
+            const fullPath = path.join(imagesRoot.path, entry.name);
+            try { return { name: entry.name, mtimeMs: fs.lstatSync(fullPath).mtimeMs }; } catch { return null; }
+        })
+        .filter(Boolean)
+        .sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name))
+        .slice(0, context.maxScanDirectories || MAX_SCAN_DIRECTORIES);
+    const candidates = [];
+    let rejectedCount = 0;
+    const candidateLimit = Math.min(MAX_CANDIDATES, context.maxCandidates || MAX_CANDIDATES);
+    for (const directory of directories) {
+        if (candidates.length >= candidateLimit) break;
+        try { candidates.push(inspectBundle(imagesRoot, inventoryRootFingerprint, directory.name, context)); } catch { rejectedCount += 1; }
+    }
+    return { imagesRoot, inventoryRootFingerprint, candidates, rejectedCount };
+}
+
+function publicCandidate(candidate) {
+    return {
+        candidate_token: candidate.token,
+        bundle_id: candidate.bundleId,
+        created_at: candidate.createdAt,
+        prompt_excerpt: candidate.query.slice(0, 160),
+        mime_type: candidate.mimeType,
+        size_bytes: candidate.image.size,
+    };
+}
+
+function blockedPreview(code) {
+    return {
+        status: 'blocked',
+        ready: false,
+        candidate_token: '',
+        preview: null,
+        blockers: [code],
+        executed: false,
+        generation_executed: false,
+    };
+}
+
+function getDstBundleImportPreview(payload, context = {}) {
+    try {
+        exactKeys(payload, ['candidateToken'], 'DST_IMPORT_PREVIEW_REQUEST_INVALID');
+        const token = boundedText(payload.candidateToken, 256, 'DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        if (!TOKEN_PATTERN.test(token)) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        const inventory = scanInventory(context);
+        const candidate = inventory.candidates.find((entry) => entry.token === token);
+        if (!candidate) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        if (candidate.image.size > MAX_PREVIEW_BYTES) throw failure('DST_IMPORT_PREVIEW_TOO_LARGE');
+        return {
+            status: 'ready',
+            ready: true,
+            candidate_token: candidate.token,
+            preview: {
+                mime_type: candidate.mimeType,
+                byte_length: candidate.image.size,
+                base64: candidate.image.buffer.toString('base64'),
+            },
+            blockers: [],
+            executed: false,
+            generation_executed: false,
+        };
+    } catch (error) {
+        return blockedPreview(error.code || 'DST_IMPORT_PREVIEW_BLOCKED');
+    }
+}
+
+function blockedWorkspace(code) {
+    return {
+        schema_version: WORKSPACE_SCHEMA,
+        status: 'blocked',
+        ready: false,
+        candidates: [],
+        rejected_count: 0,
+        blockers: [code],
+        executed: false,
+        generation_executed: false,
+    };
+}
+
+function getDstBundleImportWorkspace(context = {}) {
+    try {
+        const inventory = scanInventory(context);
+        return {
+            schema_version: WORKSPACE_SCHEMA,
+            status: inventory.candidates.length ? 'ready' : 'empty',
+            ready: inventory.candidates.length > 0,
+            candidates: inventory.candidates.map(publicCandidate),
+            rejected_count: inventory.rejectedCount,
+            blockers: inventory.candidates.length ? [] : ['DST_IMPORT_CANDIDATE_EMPTY'],
+            executed: false,
+            generation_executed: false,
+        };
+    } catch (error) {
+        return blockedWorkspace(error.code || 'DST_IMPORT_WORKSPACE_BLOCKED');
+    }
+}
+
+function assertProductionRoot(context = {}) {
+    const root = context.config?.productionRoot;
+    const info = assertRealDirectory(root, 'DST_IMPORT_PRODUCTION_ROOT_UNSAFE');
+    return {
+        ...info,
+        fingerprint: sha256(`${info.realPath}\0${info.stats.dev}\0${info.stats.ino}`),
+    };
+}
+
+function snapshotStablePair(filePath, maximum, code, operation) {
+    const before = stableFile(filePath, maximum, code, { allowEmpty: true });
+    const value = operation();
+    const after = stableFile(filePath, maximum, code, { allowEmpty: true });
+    if (!sameSnapshot(before, after)) throw failure(`${code}_CHANGED`);
+    return { snapshot: after, value };
+}
+
+function parsedLedger(snapshot) {
+    const records = [];
+    const ids = new Set();
+    for (const line of snapshot.buffer.toString('utf8').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let record;
+        try { record = JSON.parse(line); } catch { throw failure('DST_IMPORT_LEDGER_INVALID'); }
+        if (!record || typeof record !== 'object' || Array.isArray(record)) throw failure('DST_IMPORT_LEDGER_INVALID');
+        const mediaId = safeId(record.media_id, 'DST_IMPORT_LEDGER_INVALID');
+        if (ids.has(mediaId)) throw failure('DST_IMPORT_LEDGER_DUPLICATE_ID');
+        ids.add(mediaId);
+        records.push(record);
+    }
+    return records;
+}
+
+function retryContext(context, retryMediaId) {
+    const rootInfo = assertProductionRoot(context);
+    const ledgerPath = path.join(rootInfo.path, 'media_attempts.jsonl');
+    const reviewPath = path.join(rootInfo.path, 'reviews', 'media_review_draft.json');
+    const ledgerBefore = stableFile(ledgerPath, MAX_LEDGER_BYTES, 'DST_IMPORT_LEDGER_UNSAFE', { allowEmpty: true });
+    const reviewBefore = stableFile(reviewPath, MAX_JSON_BYTES, 'DST_IMPORT_REVIEW_UNSAFE');
+    if (!ledgerBefore.exists || !reviewBefore.exists) throw failure('DST_IMPORT_RETRY_SOURCES_REQUIRED');
+    const read = context.readProductionFolderFn || readProductionFolder;
+    const raw = read(rootInfo.path);
+    const ledgerAfter = stableFile(ledgerPath, MAX_LEDGER_BYTES, 'DST_IMPORT_LEDGER_UNSAFE', { allowEmpty: true });
+    const reviewAfter = stableFile(reviewPath, MAX_JSON_BYTES, 'DST_IMPORT_REVIEW_UNSAFE');
+    if (!sameSnapshot(ledgerBefore, ledgerAfter) || !sameSnapshot(reviewBefore, reviewAfter)) {
+        throw failure('DST_IMPORT_RETRY_SOURCES_CHANGED');
+    }
+    const build = context.buildMediaRetryPlanFn || buildMediaRetryPlan;
+    const retryPlan = build(rootInfo.path, { readProductionFolderFn: () => raw });
+    const item = retryPlan.items?.find((entry) => entry.media_id === retryMediaId);
+    const planBlockers = Array.isArray(retryPlan.blockers) ? retryPlan.blockers : [];
+    const itemBlockers = Array.isArray(item?.blockers) ? item.blockers : [];
+    if (!item || retryPlan.status !== 'preview_ready' || planBlockers.length
+        || item.readiness !== 'preview_ready' || item.preview_ready !== true || itemBlockers.length) {
+        throw failure('DST_IMPORT_RETRY_PLAN_BLOCKED');
+    }
+    if (item.provider !== 'dst' || item.kind === 'video') throw failure('DST_IMPORT_DST_RETRY_REQUIRED');
+    const records = parsedLedger(ledgerAfter);
+    const source = records.find((record) => record.media_id === retryMediaId);
+    if (!source) throw failure('DST_IMPORT_RETRY_SOURCE_MISSING');
+    return { rootInfo, ledgerPath, reviewPath, ledger: ledgerAfter, review: reviewAfter, records, item, source };
+}
+
+function destinationSnapshot(rootInfo, relativePath, maximum) {
+    const target = path.join(rootInfo.path, ...relativePath.split('/'));
+    const relative = path.relative(rootInfo.path, target);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw failure('DST_IMPORT_TARGET_UNSAFE');
+    let cursor = rootInfo.path;
+    for (const component of relative.split(path.sep).slice(0, -1)) {
+        cursor = path.join(cursor, component);
+        try {
+            const stats = fs.lstatSync(cursor);
+            if (stats.isSymbolicLink() || !stats.isDirectory()) throw failure('DST_IMPORT_TARGET_PARENT_UNSAFE');
+            const real = fs.realpathSync.native(cursor);
+            if (real !== rootInfo.realPath && !real.startsWith(rootInfo.realPath + path.sep)) throw failure('DST_IMPORT_TARGET_ESCAPE');
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            break;
+        }
+    }
+    return { path: target, snapshot: stableFile(target, maximum, 'DST_IMPORT_TARGET_UNSAFE') };
+}
+
+function recordMatches(existing, desired) {
+    const keys = [
+        'media_id', 'kind', 'target_id', 'provider', 'operation_id', 'attempt', 'relative_path',
+        'generation_status', 'prompt', 'aspect_ratio', 'review_status', 'retry_of', 'source_bundle_id',
+        'source_image_name', 'source_manifest_sha256', 'source_metadata_sha256', 'source_image_sha256',
+    ];
+    return keys.every((key) => existing[key] === desired[key])
+        && JSON.stringify(existing.reference_ids || []) === JSON.stringify(desired.reference_ids || []);
+}
+
+function operationIso(context = {}) {
+    const value = (context.now || (() => new Date().toISOString()))();
+    if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) throw failure('DST_IMPORT_CLOCK_INVALID');
+    return value;
+}
+
+function buildInputs(context, candidate, retryMediaId, importedAt) {
+    const retry = retryContext(context, retryMediaId);
+    const deterministic = sha256(`${retryMediaId}\0${candidate.bundleId}\0${candidate.image.sha256}`);
+    const mediaId = `dst_${deterministic.slice(0, 32)}`;
+    const targetRelativePath = `${IMPORT_RELATIVE_ROOT}/${candidate.image.sha256}${candidate.extension}`;
+    const existing = retry.records.find((record) => record.media_id === mediaId);
+    const attempts = retry.records
+        .filter((record) => record.kind === retry.item.kind && record.target_id === retry.item.target_id && record.provider === 'dst')
+        .map((record) => Number(record.attempt)).filter((value) => Number.isSafeInteger(value) && value > 0);
+    const attempt = existing ? Number(existing.attempt) : Math.max(0, ...attempts) + 1;
+    if (!Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10000) throw failure('DST_IMPORT_ATTEMPT_INVALID');
+    const manifestId = safeId(candidate.manifestValue.id, 'DST_IMPORT_OPERATION_ID_INVALID');
+    const referenceIds = Array.isArray(retry.source.reference_ids)
+        ? retry.source.reference_ids.map((value) => safeId(value, 'DST_IMPORT_REFERENCE_ID_INVALID')).slice(0, 8) : [];
+    const desired = {
+        media_id: mediaId,
+        kind: retry.item.kind,
+        target_id: retry.item.target_id,
+        provider: 'dst',
+        operation_id: manifestId,
+        attempt,
+        reference_ids: referenceIds,
+        relative_path: targetRelativePath,
+        generation_status: 'imported',
+        prompt: candidate.query,
+        aspect_ratio: typeof retry.source.aspect_ratio === 'string' ? retry.source.aspect_ratio : '',
+        review_status: 'unreviewed',
+        retry_of: retryMediaId,
+        source_bundle_id: candidate.bundleId,
+        source_image_name: candidate.imageName,
+        source_manifest_sha256: candidate.manifest.sha256,
+        source_metadata_sha256: candidate.metadata.sha256,
+        source_image_sha256: candidate.image.sha256,
+        imported_at: importedAt,
+    };
+    if (existing && !recordMatches(existing, desired)) throw failure('DST_IMPORT_MEDIA_ID_CONFLICT');
+    const target = destinationSnapshot(retry.rootInfo, targetRelativePath, context.maxImageBytes || MAX_IMAGE_BYTES);
+    if (target.snapshot.exists && target.snapshot.sha256 !== candidate.image.sha256) throw failure('DST_IMPORT_TARGET_COLLISION');
+    const ledgerAppendNeeded = !existing;
+    const targetReady = target.snapshot.exists && target.snapshot.sha256 === candidate.image.sha256;
+    return {
+        retry,
+        candidate,
+        desired,
+        target,
+        ledgerAppendNeeded,
+        alreadyCurrent: !ledgerAppendNeeded && targetReady,
+    };
+}
+
+function evidence(inputs) {
+    return {
+        productionRootFingerprint: inputs.retry.rootInfo.fingerprint,
+        productionRootIdentity: inputs.retry.rootInfo.identity,
+        ledger: inputs.retry.ledger,
+        review: inputs.retry.review,
+        retryItem: inputs.retry.item,
+        candidateToken: inputs.candidate.token,
+        bundleIdentity: inputs.candidate.bundleIdentity,
+        manifestSha256: inputs.candidate.manifest.sha256,
+        manifestIdentity: inputs.candidate.manifest.identity,
+        metadataSha256: inputs.candidate.metadata.sha256,
+        metadataIdentity: inputs.candidate.metadata.identity,
+        imageSha256: inputs.candidate.image.sha256,
+        imageIdentity: inputs.candidate.image.identity,
+        target: inputs.target.snapshot,
+        desired: inputs.desired,
+        ledgerAppendNeeded: inputs.ledgerAppendNeeded,
+        alreadyCurrent: inputs.alreadyCurrent,
+    };
+}
+
+function stableEvidence(left, right) {
+    return left.productionRootFingerprint === right.productionRootFingerprint
+        // Lock-directory creation legitimately changes the production directory timestamps. Root
+        // provenance is its device/inode/mode; mutable inputs are bound separately below.
+        && sameDirectoryIdentity(left.productionRootIdentity, right.productionRootIdentity)
+        && sameSnapshot(left.ledger, right.ledger) && sameSnapshot(left.review, right.review)
+        && JSON.stringify(left.retryItem) === JSON.stringify(right.retryItem)
+        && left.candidateToken === right.candidateToken
+        && sameIdentity(left.bundleIdentity, right.bundleIdentity)
+        && left.manifestSha256 === right.manifestSha256 && left.metadataSha256 === right.metadataSha256
+        && sameIdentity(left.manifestIdentity, right.manifestIdentity)
+        && sameIdentity(left.metadataIdentity, right.metadataIdentity)
+        && left.imageSha256 === right.imageSha256 && sameIdentity(left.imageIdentity, right.imageIdentity)
+        && sameSnapshot(left.target, right.target)
+        && JSON.stringify(left.desired) === JSON.stringify(right.desired)
+        && left.ledgerAppendNeeded === right.ledgerAppendNeeded && left.alreadyCurrent === right.alreadyCurrent;
+}
+
+function clockMs(context = {}) {
+    const value = context.nowMs ? context.nowMs() : Date.now();
+    if (!Number.isFinite(value) || value < 0) throw failure('DST_IMPORT_CLOCK_INVALID');
+    return Math.trunc(value);
+}
+
+function planTtl(context = {}) {
+    const value = context.planTtlMs ?? DEFAULT_PLAN_TTL_MS;
+    if (!Number.isInteger(value) || value <= 0 || value > MAX_PLAN_TTL_MS) throw failure('DST_IMPORT_TTL_INVALID');
+    return value;
+}
+
+function planStore(context = {}) {
+    return context.planStore || SESSION_PLAN_STORE;
+}
+
+function blockedPlan(code) {
+    return {
+        schema_version: PLAN_SCHEMA,
+        status: 'blocked',
+        ready: false,
+        already_current: false,
+        plan_token: '',
+        expires_at: '',
+        retry_media_id: '',
+        target_id: '',
+        new_media_id: '',
+        source_bundle_id: '',
+        source_image_name: '',
+        source_manifest_sha256: '',
+        source_image_sha256: '',
+        mime_type: '',
+        size_bytes: 0,
+        target_relative_path: '',
+        preview: null,
+        blockers: [code],
+        executed: false,
+        generation_executed: false,
+    };
+}
+
+function planDstBundleImport(payload, context = {}) {
+    try {
+        exactKeys(payload, ['candidateToken', 'retryMediaId'], 'DST_IMPORT_PLAN_REQUEST_INVALID');
+        const candidateTokenValue = boundedText(payload.candidateToken, 256, 'DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        if (!TOKEN_PATTERN.test(candidateTokenValue)) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        const retryMediaId = safeId(payload.retryMediaId, 'DST_IMPORT_RETRY_ID_INVALID');
+        const inventory = scanInventory(context);
+        const candidate = inventory.candidates.find((entry) => entry.token === candidateTokenValue);
+        if (!candidate) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        const importedAt = operationIso(context);
+        const inputs = buildInputs(context, candidate, retryMediaId, importedAt);
+        const now = clockMs(context);
+        const expiresAtMs = now + planTtl(context);
+        const store = planStore(context);
+        for (const [token, record] of store.entries()) {
+            if (!record || record.expiresAtMs <= now) store.delete(token);
+        }
+        const randomBytes = context.randomBytes || crypto.randomBytes;
+        let token = '';
+        for (let attempt = 0; attempt < 4 && !token; attempt += 1) {
+            const proposed = randomBytes(32).toString('base64url');
+            if (TOKEN_PATTERN.test(proposed) && !store.has(proposed)) token = proposed;
+        }
+        if (!token) throw failure('DST_IMPORT_PLAN_TOKEN_UNAVAILABLE');
+        store.set(token, {
+            expiresAtMs,
+            candidateToken: candidate.token,
+            retryMediaId,
+            importedAt,
+            evidence: evidence(inputs),
+        });
+        return {
+            schema_version: PLAN_SCHEMA,
+            status: inputs.alreadyCurrent ? 'already_current' : 'ready',
+            ready: !inputs.alreadyCurrent,
+            already_current: inputs.alreadyCurrent,
+            plan_token: token,
+            expires_at: new Date(expiresAtMs).toISOString(),
+            retry_media_id: retryMediaId,
+            target_id: inputs.desired.target_id,
+            new_media_id: inputs.desired.media_id,
+            source_bundle_id: candidate.bundleId,
+            source_image_name: candidate.imageName,
+            source_manifest_sha256: candidate.manifest.sha256,
+            source_image_sha256: candidate.image.sha256,
+            mime_type: candidate.mimeType,
+            size_bytes: candidate.image.size,
+            target_relative_path: inputs.desired.relative_path,
+            preview: null,
+            blockers: [],
+            executed: false,
+            generation_executed: false,
+        };
+    } catch (error) {
+        return blockedPlan(error.code || 'DST_IMPORT_PLAN_BLOCKED');
+    }
+}
+
+function consumePlan(payload, context = {}) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw failure('DST_IMPORT_CONFIRM_REQUEST_INVALID');
+    const token = payload.planToken;
+    if (typeof token !== 'string' || !TOKEN_PATTERN.test(token)) throw failure('DST_IMPORT_PLAN_TOKEN_INVALID');
+    const store = planStore(context);
+    const record = store.get(token);
+    store.delete(token);
+    if (!record) throw failure('DST_IMPORT_PLAN_TOKEN_INVALID');
+    exactKeys(payload, ['planToken', 'confirmed'], 'DST_IMPORT_CONFIRM_REQUEST_INVALID');
+    if (payload.confirmed !== true) throw failure('DST_IMPORT_CONFIRMATION_REQUIRED');
+    if (record.expiresAtMs <= clockMs(context)) throw failure('DST_IMPORT_PLAN_TOKEN_EXPIRED');
+    return { token, record };
+}
+
+function ensureDirectoryTree(rootInfo, relativeDirectory) {
+    let current = rootInfo.path;
+    for (const component of relativeDirectory.split('/')) {
+        current = path.join(current, component);
+        try { fs.mkdirSync(current, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+        const stats = fs.lstatSync(current);
+        if (stats.isSymbolicLink() || !stats.isDirectory()) throw failure('DST_IMPORT_TARGET_PARENT_UNSAFE');
+        const real = fs.realpathSync.native(current);
+        if (real !== rootInfo.realPath && !real.startsWith(rootInfo.realPath + path.sep)) throw failure('DST_IMPORT_TARGET_ESCAPE');
+    }
+    return current;
+}
+
+function fsyncDirectory(directoryPath) {
+    let descriptor;
+    try {
+        descriptor = fs.openSync(directoryPath, fs.constants.O_RDONLY);
+        fs.fsyncSync(descriptor);
+    } finally {
+        if (descriptor !== undefined) {
+            try { fs.closeSync(descriptor); } catch { /* already closed */ }
+        }
+    }
+}
+
+function writeExclusive(filePath, buffer) {
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') throw failure('DST_IMPORT_NOFOLLOW_UNAVAILABLE');
+    let descriptor;
+    let created = false;
+    try {
+        descriptor = fs.openSync(
+            filePath,
+            fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+            0o600,
+        );
+        created = true;
+        fs.fchmodSync(descriptor, 0o600);
+        fs.writeFileSync(descriptor, buffer);
+        fs.fsyncSync(descriptor);
+        const stats = fs.fstatSync(descriptor);
+        if (!stats.isFile() || stats.size !== buffer.byteLength || (stats.mode & 0o777) !== 0o600) {
+            throw failure('DST_IMPORT_TEMP_UNSAFE');
+        }
+    } catch (error) {
+        if (created) {
+            if (descriptor !== undefined) {
+                try { fs.closeSync(descriptor); } catch { /* cleanup continues */ }
+                descriptor = undefined;
+            }
+            try { fs.unlinkSync(filePath); } catch { /* task-owned temp */ }
+        }
+        throw error;
+    } finally {
+        if (descriptor !== undefined) {
+            try { fs.closeSync(descriptor); } catch { /* already closed */ }
+        }
+    }
+}
+
+function publishImage(inputs, context = {}) {
+    if (inputs.target.snapshot.exists) return { created: false };
+    const directory = ensureDirectoryTree(inputs.retry.rootInfo, IMPORT_RELATIVE_ROOT);
+    const randomBytes = context.randomBytes || crypto.randomBytes;
+    const tempPath = path.join(directory, `.dst-import-${process.pid}-${randomBytes(12).toString('hex')}`);
+    writeExclusive(tempPath, inputs.candidate.image.buffer);
+    let created = false;
+    try {
+        const linkSync = context.copyLinkSync || fs.linkSync;
+        try {
+            linkSync(tempPath, inputs.target.path);
+            created = true;
+            fsyncDirectory(directory);
+        } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+        }
+        const verified = stableFile(inputs.target.path, context.maxImageBytes || MAX_IMAGE_BYTES, 'DST_IMPORT_TARGET_UNSAFE');
+        if (!verified.exists || verified.sha256 !== inputs.candidate.image.sha256) throw failure('DST_IMPORT_TARGET_COLLISION');
+        return { created };
+    } finally {
+        try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        fsyncDirectory(directory);
+    }
+}
+
+function appendLedger(inputs, context = {}) {
+    if (!inputs.ledgerAppendNeeded) return false;
+    const recordBuffer = Buffer.from(`${JSON.stringify(inputs.desired)}\n`, 'utf8');
+    const separator = inputs.retry.ledger.buffer.length && !inputs.retry.ledger.buffer.toString('utf8').endsWith('\n') ? Buffer.from('\n') : Buffer.alloc(0);
+    const nextBuffer = Buffer.concat([inputs.retry.ledger.buffer, separator, recordBuffer]);
+    if (nextBuffer.byteLength > MAX_LEDGER_BYTES) throw failure('DST_IMPORT_LEDGER_TOO_LARGE');
+    const parent = inputs.retry.rootInfo.path;
+    const randomBytes = context.randomBytes || crypto.randomBytes;
+    const tempPath = path.join(parent, `.dst-media-attempts-${process.pid}-${randomBytes(12).toString('hex')}`);
+    let renamed = false;
+    try {
+        writeExclusive(tempPath, nextBuffer);
+        // The production-root media-attempts lock serializes participating writers. Node/fs has no
+        // portable compare-and-swap rename, so a non-cooperating external writer can still race this
+        // final snapshot check; such writers are outside this cooperative ledger contract.
+        const current = stableFile(inputs.retry.ledgerPath, MAX_LEDGER_BYTES, 'DST_IMPORT_LEDGER_UNSAFE', { allowEmpty: true });
+        if (!sameSnapshot(current, inputs.retry.ledger)) throw failure('DST_IMPORT_LEDGER_STALE');
+        const renameFile = context.ledgerRenameFile || fs.renameSync;
+        renameFile(tempPath, inputs.retry.ledgerPath);
+        renamed = true;
+        fsyncDirectory(parent);
+        const written = stableFile(inputs.retry.ledgerPath, MAX_LEDGER_BYTES, 'DST_IMPORT_LEDGER_UNSAFE', { allowEmpty: true });
+        if (written.sha256 !== sha256(nextBuffer) || written.size !== nextBuffer.byteLength) {
+            throw failure('DST_IMPORT_LEDGER_POST_WRITE_MISMATCH');
+        }
+        return true;
+    } finally {
+        if (!renamed) {
+            try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+    }
+}
+
+function staleLockMs(context = {}) {
+    const value = context.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
+    if (!Number.isInteger(value) || value <= 0 || value > MAX_STALE_LOCK_MS) {
+        throw failure('DST_IMPORT_STALE_LOCK_WINDOW_INVALID');
+    }
+    return value;
+}
+
+function processAlive(pid, context = {}) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw failure('DST_IMPORT_LOCK_INVALID');
+    if (typeof context.isProcessAliveFn === 'function') return context.isProcessAliveFn(pid) === true;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        if (error?.code === 'ESRCH') return false;
+        if (error?.code === 'EPERM') return true;
+        throw failure('DST_IMPORT_LOCK_PROCESS_CHECK_FAILED');
+    }
+}
+
+function lockBuffer(token, rootFingerprint, context = {}) {
+    return Buffer.from(`${JSON.stringify({
+        schema_version: 'film_pipeline.media_attempts_lock.v1',
+        pid: process.pid,
+        created_at_ms: clockMs(context),
+        production_root_fingerprint: rootFingerprint,
+        token_sha256: sha256(token),
+    })}\n`);
+}
+
+function releaseOwnedFile(filePath, owned, directory, code) {
+    const current = stableFile(filePath, 4096, code);
+    if (!sameSnapshot(owned, current)) throw failure(`${code}_CHANGED`);
+    fs.unlinkSync(filePath);
+    fsyncDirectory(directory);
+}
+
+function parseExistingLock(snapshot, expectedFingerprint) {
+    const value = parseJson(snapshot, 'DST_IMPORT_LOCK_INVALID');
+    if (value.schema_version !== 'film_pipeline.media_attempts_lock.v1'
+        || !Number.isSafeInteger(value.pid) || value.pid <= 0
+        || !Number.isFinite(value.created_at_ms) || value.created_at_ms < 0
+        || value.production_root_fingerprint !== expectedFingerprint
+        || typeof value.token_sha256 !== 'string' || !SHA256_PATTERN.test(value.token_sha256)) {
+        throw failure('DST_IMPORT_LOCK_INVALID');
+    }
+    return value;
+}
+
+function parseRecoveryLock(snapshot, expectedFingerprint) {
+    const value = parseJson(snapshot, 'DST_IMPORT_LOCK_RECOVERY_INVALID');
+    if (value.schema_version !== 'film_pipeline.media_attempts_lock_recovery.v1'
+        || !Number.isSafeInteger(value.pid) || value.pid <= 0
+        || !Number.isFinite(value.created_at_ms) || value.created_at_ms < 0
+        || value.production_root_fingerprint !== expectedFingerprint) {
+        throw failure('DST_IMPORT_LOCK_RECOVERY_INVALID');
+    }
+    return value;
+}
+
+function recoverDeadStaleFile(filePath, snapshot, value, directory, context, lockedCode, changedCode) {
+    const age = clockMs(context) - value.created_at_ms;
+    if (age < staleLockMs(context) || processAlive(value.pid, context)) throw failure(lockedCode);
+    const unchanged = stableFile(filePath, 4096, changedCode);
+    if (!sameSnapshot(snapshot, unchanged)) throw failure(`${changedCode}_CHANGED`);
+    try {
+        fs.unlinkSync(filePath);
+    } catch (error) {
+        if (error.code === 'ENOENT') throw failure(`${changedCode}_CHANGED`);
+        throw error;
+    }
+    fsyncDirectory(directory);
+}
+
+function acquireLock(rootInfo, token, context = {}) {
+    const directory = ensureDirectoryTree(rootInfo, '.film-pipeline-locks');
+    const lockPath = path.join(directory, 'media-attempts.lock');
+    const recoveryPath = path.join(directory, 'media-attempts.recovery.lock');
+    const rootFingerprint = rootInfo.fingerprint;
+    const ownBuffer = lockBuffer(token, rootFingerprint, context);
+
+    const recovery = stableFile(recoveryPath, 4096, 'DST_IMPORT_LOCK_RECOVERY_UNSAFE');
+    if (recovery.exists) {
+        const value = parseRecoveryLock(recovery, rootFingerprint);
+        recoverDeadStaleFile(
+            recoveryPath,
+            recovery,
+            value,
+            directory,
+            context,
+            'DST_IMPORT_LOCK_RECOVERY_BUSY',
+            'DST_IMPORT_LOCK_RECOVERY_UNSAFE',
+        );
+    }
+    try {
+        writeExclusive(lockPath, ownBuffer);
+        const owned = stableFile(lockPath, 4096, 'DST_IMPORT_LOCK_UNSAFE');
+        return () => releaseOwnedFile(lockPath, owned, directory, 'DST_IMPORT_LOCK_UNSAFE');
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+    }
+
+    const recoveryBuffer = Buffer.from(`${JSON.stringify({
+        schema_version: 'film_pipeline.media_attempts_lock_recovery.v1',
+        pid: process.pid,
+        created_at_ms: clockMs(context),
+        production_root_fingerprint: rootFingerprint,
+    })}\n`);
+    try { writeExclusive(recoveryPath, recoveryBuffer); } catch (error) {
+        if (error.code === 'EEXIST') throw failure('DST_IMPORT_LOCK_RECOVERY_BUSY');
+        throw error;
+    }
+    const recoveryOwned = stableFile(recoveryPath, 4096, 'DST_IMPORT_LOCK_RECOVERY_UNSAFE');
+    try {
+        const existing = stableFile(lockPath, 4096, 'DST_IMPORT_LOCK_UNSAFE');
+        if (existing.exists) {
+            const value = parseExistingLock(existing, rootFingerprint);
+            recoverDeadStaleFile(
+                lockPath,
+                existing,
+                value,
+                directory,
+                context,
+                'DST_IMPORT_LOCKED',
+                'DST_IMPORT_LOCK_UNSAFE',
+            );
+        }
+        writeExclusive(lockPath, ownBuffer);
+        const owned = stableFile(lockPath, 4096, 'DST_IMPORT_LOCK_UNSAFE');
+        return () => releaseOwnedFile(lockPath, owned, directory, 'DST_IMPORT_LOCK_UNSAFE');
+    } finally {
+        releaseOwnedFile(
+            recoveryPath,
+            recoveryOwned,
+            directory,
+            'DST_IMPORT_LOCK_RECOVERY_UNSAFE',
+        );
+    }
+}
+
+function confirmDstBundleImport(payload, context = {}) {
+    const { token, record } = consumePlan(payload, context);
+    const lockRoot = assertProductionRoot(context);
+    const release = acquireLock(lockRoot, token, context);
+    try {
+        const inventory = scanInventory(context);
+        const candidate = inventory.candidates.find((entry) => entry.token === record.candidateToken);
+        if (!candidate) throw failure('DST_IMPORT_SOURCE_CHANGED');
+        const inputs = buildInputs(context, candidate, record.retryMediaId, record.importedAt);
+        const currentEvidence = evidence(inputs);
+        if (!stableEvidence(record.evidence, currentEvidence)) throw failure('DST_IMPORT_PLAN_STALE');
+        if (inputs.alreadyCurrent) {
+            return {
+                ok: true,
+                imported: false,
+                already_current: true,
+                executed: false,
+                generation_executed: false,
+                media_id: inputs.desired.media_id,
+                target_relative_path: inputs.desired.relative_path,
+                copied: false,
+                ledger_appended: false,
+                sha256: inputs.candidate.image.sha256,
+            };
+        }
+        const copy = publishImage(inputs, context);
+        const ledgerAppended = appendLedger(inputs, context);
+        return {
+            ok: true,
+            imported: copy.created || ledgerAppended,
+            already_current: false,
+            executed: copy.created || ledgerAppended,
+            generation_executed: false,
+            media_id: inputs.desired.media_id,
+            target_relative_path: inputs.desired.relative_path,
+            copied: copy.created,
+            ledger_appended: ledgerAppended,
+            sha256: inputs.candidate.image.sha256,
+        };
+    } finally {
+        release();
+    }
+}
+
+module.exports = {
+    WORKSPACE_SCHEMA,
+    PLAN_SCHEMA,
+    DEFAULT_DST_IMAGES_ROOT,
+    MAX_CANDIDATES,
+    MAX_JSON_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_PREVIEW_BYTES,
+    MAX_LEDGER_BYTES,
+    DEFAULT_PLAN_TTL_MS,
+    getDstBundleImportWorkspace,
+    getDstBundleImportPreview,
+    planDstBundleImport,
+    confirmDstBundleImport,
+};

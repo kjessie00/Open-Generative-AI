@@ -60,6 +60,50 @@ function emptyMediaRetryPlan(status = 'empty', blocker = '') {
     };
 }
 
+function emptyDstBundleImportWorkspace(status = 'empty', blocker = '') {
+    return {
+        status,
+        blockers: blocker ? [blocker] : [],
+        candidates: [],
+    };
+}
+
+function emptyDstBundleImportPreview(status = 'empty', blocker = '') {
+    return {
+        status,
+        ready: false,
+        candidate_token: '',
+        preview: null,
+        blockers: blocker ? [blocker] : [],
+    };
+}
+
+async function readDstBundleImportState(preferredBundleId = '') {
+    const workspace = await pipelineClient.getDstBundleImportWorkspace();
+    const preferred = workspace?.candidates?.find((candidate) => candidate.bundle_id === preferredBundleId);
+    const candidateToken = preferred?.candidate_token || workspace?.candidates?.[0]?.candidate_token || '';
+    let preview = emptyDstBundleImportPreview();
+    if (candidateToken) {
+        preview = await pipelineClient.loadDstBundleImportPreview({ candidateToken })
+            .catch(() => emptyDstBundleImportPreview('blocked', 'DST_BUNDLE_IMPORT_PREVIEW_READ_FAILED'));
+    }
+    return { workspace, preview };
+}
+
+function emptyDstBundleImportPlan(status = 'empty', blocker = '') {
+    return {
+        status,
+        ready: false,
+        already_current: false,
+        plan_token: '',
+        retry_media_id: '',
+        target_id: '',
+        source_bundle_id: '',
+        blockers: blocker ? [blocker] : [],
+        executed: false,
+    };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
@@ -112,6 +156,9 @@ export function PipelineStudio() {
     let finishingWorkspace = emptyFinishingWorkspace();
     let finishingExecution = finishingExecutionState();
     let mediaRetryPlan = emptyMediaRetryPlan();
+    let dstBundleImportWorkspace = emptyDstBundleImportWorkspace();
+    let dstBundleImportPreview = emptyDstBundleImportPreview();
+    let dstBundleImportPlan = emptyDstBundleImportPlan();
     let mediaReviewSaveStatus = '';
 
     const render = () => {
@@ -150,15 +197,22 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, retryPlanLoaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
+                const [loaded, retryPlanLoaded, dstImportLoaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
                     pipelineClient.getMediaRetryPlan().catch(() => emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED')),
+                    readDstBundleImportState().catch(() => ({
+                        workspace: emptyDstBundleImportWorkspace('blocked', 'DST_BUNDLE_IMPORT_WORKSPACE_READ_FAILED'),
+                        preview: emptyDstBundleImportPreview('blocked', 'DST_BUNDLE_IMPORT_PREVIEW_READ_FAILED'),
+                    })),
                     pipelineClient.getG3ReviewWorkspace(),
                     pipelineClient.planG3ProductionPromotion(),
                     pipelineClient.getFinishingWorkspace(),
                 ]);
                 state = normalizeState(loaded?.state);
                 mediaRetryPlan = retryPlanLoaded;
+                dstBundleImportWorkspace = dstImportLoaded.workspace;
+                dstBundleImportPreview = dstImportLoaded.preview;
+                dstBundleImportPlan = emptyDstBundleImportPlan();
                 mediaReviewSaveStatus = '';
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
@@ -222,15 +276,22 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, retryPlanLoaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
+                const [loaded, retryPlanLoaded, dstImportLoaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
                     pipelineClient.getMediaRetryPlan().catch(() => emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED')),
+                    readDstBundleImportState().catch(() => ({
+                        workspace: emptyDstBundleImportWorkspace('blocked', 'DST_BUNDLE_IMPORT_WORKSPACE_READ_FAILED'),
+                        preview: emptyDstBundleImportPreview('blocked', 'DST_BUNDLE_IMPORT_PREVIEW_READ_FAILED'),
+                    })),
                     pipelineClient.getG3ReviewWorkspace(),
                     pipelineClient.planG3ProductionPromotion(),
                     pipelineClient.getFinishingWorkspace(),
                 ]);
                 state = normalizeState(loaded?.state);
                 mediaRetryPlan = retryPlanLoaded;
+                dstBundleImportWorkspace = dstImportLoaded.workspace;
+                dstBundleImportPreview = dstImportLoaded.preview;
+                dstBundleImportPlan = emptyDstBundleImportPlan();
                 mediaReviewSaveStatus = '';
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
@@ -332,6 +393,9 @@ export function PipelineStudio() {
                     }
                 },
                 mediaRetryPlan,
+                dstBundleImportWorkspace,
+                dstBundleImportPreview,
+                dstBundleImportPlan,
                 mediaReviewSaveStatus,
                 onMediaReviewSaveStatusChange: (status) => {
                     mediaReviewSaveStatus = status;
@@ -346,6 +410,59 @@ export function PipelineStudio() {
                     }
                     render();
                     return mediaRetryPlan;
+                },
+                onRefreshDstBundleImportWorkspace: async () => {
+                    dstBundleImportWorkspace = emptyDstBundleImportWorkspace('loading');
+                    dstBundleImportPreview = emptyDstBundleImportPreview('loading');
+                    render();
+                    try {
+                        const loaded = await readDstBundleImportState();
+                        dstBundleImportWorkspace = loaded.workspace;
+                        dstBundleImportPreview = loaded.preview;
+                    } catch {
+                        dstBundleImportWorkspace = emptyDstBundleImportWorkspace('blocked', 'DST_BUNDLE_IMPORT_WORKSPACE_READ_FAILED');
+                        dstBundleImportPreview = emptyDstBundleImportPreview('blocked', 'DST_BUNDLE_IMPORT_PREVIEW_READ_FAILED');
+                    }
+                    dstBundleImportPlan = emptyDstBundleImportPlan();
+                    render();
+                    return dstBundleImportWorkspace;
+                },
+                onLoadDstBundleImportPreview: async (payload) => {
+                    dstBundleImportPreview = await pipelineClient.loadDstBundleImportPreview(payload);
+                    return dstBundleImportPreview;
+                },
+                onPlanDstBundleImport: async (payload) => {
+                    try {
+                        dstBundleImportPlan = await pipelineClient.planDstBundleImport(payload);
+                    } catch {
+                        dstBundleImportPlan = emptyDstBundleImportPlan('blocked', 'DST_BUNDLE_IMPORT_PLAN_FAILED');
+                    }
+                    return dstBundleImportPlan;
+                },
+                onConfirmDstBundleImport: async (payload) => {
+                    const result = await pipelineClient.confirmDstBundleImport(payload);
+                    dstBundleImportPlan = {
+                        ...dstBundleImportPlan,
+                        ...result,
+                        ready: false,
+                        status: result?.imported || result?.already_current ? 'imported' : 'blocked',
+                    };
+                    if (result?.imported || result?.already_current) {
+                        const [loadedState, loadedRetryPlan, loadedImport] = await Promise.all([
+                            pipelineClient.readProductionState().catch(() => null),
+                            pipelineClient.getMediaRetryPlan().catch(() => null),
+                            readDstBundleImportState(dstBundleImportPlan.source_bundle_id).catch(() => null),
+                        ]);
+                        if (loadedState?.state) state = normalizeState(loadedState.state);
+                        if (loadedRetryPlan) mediaRetryPlan = loadedRetryPlan;
+                        if (loadedImport) {
+                            dstBundleImportWorkspace = loadedImport.workspace;
+                            dstBundleImportPreview = loadedImport.preview;
+                        }
+                        mediaReviewSaveStatus = '';
+                        render();
+                    }
+                    return result;
                 },
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),
                 onPickParent: pickParentFolder,
@@ -556,15 +673,22 @@ export function PipelineStudio() {
         };
 
         if (config.productionRoot) {
-            const [loadedState, loadedRetryPlan, loadedG3, loadedPromotion, loadedFinishing] = await Promise.all([
+            const [loadedState, loadedRetryPlan, loadedDstImport, loadedG3, loadedPromotion, loadedFinishing] = await Promise.all([
                 pipelineClient.readProductionState().catch(() => ({ state: samplePipelineState })),
                 pipelineClient.getMediaRetryPlan().catch(() => emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED')),
+                readDstBundleImportState().catch(() => ({
+                    workspace: emptyDstBundleImportWorkspace('blocked', 'DST_BUNDLE_IMPORT_WORKSPACE_READ_FAILED'),
+                    preview: emptyDstBundleImportPreview('blocked', 'DST_BUNDLE_IMPORT_PREVIEW_READ_FAILED'),
+                })),
                 pipelineClient.getG3ReviewWorkspace().catch(() => emptyG3ReviewState('error')),
                 pipelineClient.planG3ProductionPromotion().catch(() => staleG3PromotionPlan('G3_PROMOTION_PLAN_FAILED')),
                 pipelineClient.getFinishingWorkspace().catch(() => ({ status: 'error', blockers: ['FINISHING_WORKSPACE_LOAD_FAILED'] })),
             ]);
             state = normalizeState(loadedState?.state);
             mediaRetryPlan = loadedRetryPlan;
+            dstBundleImportWorkspace = loadedDstImport.workspace;
+            dstBundleImportPreview = loadedDstImport.preview;
+            dstBundleImportPlan = emptyDstBundleImportPlan();
             g3Workspace = normalizeG3ReviewState(loadedG3);
             g3PromotionPlan = normalizeG3PromotionPlan(loadedPromotion);
             finishingWorkspace = normalizeFinishingWorkspace(loadedFinishing);
@@ -572,6 +696,9 @@ export function PipelineStudio() {
         } else {
             state = samplePipelineState;
             mediaRetryPlan = emptyMediaRetryPlan('empty', 'MEDIA_RETRY_PRODUCTION_ROOT_NOT_CONFIGURED');
+            dstBundleImportWorkspace = emptyDstBundleImportWorkspace('empty', 'DST_BUNDLE_IMPORT_PRODUCTION_ROOT_NOT_CONFIGURED');
+            dstBundleImportPreview = emptyDstBundleImportPreview('empty', 'DST_BUNDLE_IMPORT_PRODUCTION_ROOT_NOT_CONFIGURED');
+            dstBundleImportPlan = emptyDstBundleImportPlan();
             g3Workspace = normalizeG3ReviewState({
                 ...emptyG3ReviewState('empty'),
                 blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],
