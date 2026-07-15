@@ -12,6 +12,7 @@ import {
 import { ReferenceRail, SceneReviewRow } from './MediaReviewBoardParts.js';
 import { MediaRetryPlanBand } from './MediaRetryPlanBand.js';
 import { NewProjectDesignBoard } from './NewProjectDesignBoard.js';
+import { NewProjectMediaReviewBoard } from './NewProjectMediaReviewBoard.js';
 import { actionButton, el, emptyState, panelShell } from './ui.js';
 import { p } from './copy.js';
 
@@ -51,6 +52,15 @@ export function StoryboardPanel({
     onRunDesignAgentRequest,
     onRefreshNewProjectDesign,
     onDecideDesignAgentSuggestion,
+    imagePlanTasks,
+    imageResultPreviews,
+    videoPlanTasks,
+    videoResultPreviews,
+    onToggleImageRetry,
+    onToggleVideoRetry,
+    onOpenWorkItem,
+    newProjectMediaReviewFilter,
+    onNewProjectMediaReviewFilterChange,
 }) {
     let attempts = deriveMediaAttempts(state).map((attempt) => ({
         ...attempt,
@@ -194,11 +204,23 @@ export function StoryboardPanel({
                 onRefresh: onRefreshNewProjectDesign,
                 onDecide: onDecideDesignAgentSuggestion,
             }),
+            NewProjectMediaReviewBoard({
+                designBoard: newProjectDesignBoard,
+                imagePlanTasks,
+                imageResultPreviews,
+                videoPlanTasks,
+                videoResultPreviews,
+                onToggleImageRetry,
+                onToggleVideoRetry,
+                onOpenWorkItem,
+                activeFilter: newProjectMediaReviewFilter,
+                onFilterChange: onNewProjectMediaReviewFilterChange,
+            }),
             el('details', { className: 'rounded-md border border-white/10 bg-black/20 px-3' }, [
-                el('summary', { text: '생성 결과 검토', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),
+                el('summary', { text: '기존 제작 결과', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),
                 el('div', { className: 'pb-3 pt-2' }, [
                     el('p', {
-                        text: '생성된 캐릭터·장소 기준과 장면별 이미지·영상을 확인하고 필요한 결과만 다시 고릅니다.',
+                        text: '연결한 기존 제작 폴더의 캐릭터·장소·장면 결과를 확인합니다.',
                         className: 'mb-3 text-xs leading-5 text-secondary',
                     }),
                     board,

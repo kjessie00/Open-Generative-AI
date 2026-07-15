@@ -252,6 +252,7 @@ export function PipelineStudio() {
     let newProjectVideoPlanNotice = '';
     let newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('loading');
     let newProjectVideoResultPreviews = {};
+    let newProjectMediaReviewFilter = 'all';
     let newProjectExecutionState = emptyNewProjectExecutionState('loading');
     let newProjectExecutionNotice = '';
     let newProjectExecutionRefreshing = false;
@@ -612,6 +613,8 @@ export function PipelineStudio() {
                 videoPlanNotice: newProjectVideoPlanNotice,
                 videoResultWorkspace: newProjectVideoResultWorkspace,
                 videoResultPreviews: newProjectVideoResultPreviews,
+                newProjectMediaReviewFilter,
+                onNewProjectMediaReviewFilterChange: (value) => { newProjectMediaReviewFilter = value; },
                 executionState: newProjectExecutionState,
                 executionNotice: newProjectExecutionNotice,
                 executionRefreshing: newProjectExecutionRefreshing,
@@ -634,7 +637,7 @@ export function PipelineStudio() {
                     });
                 },
                 onOpenLegacyQueue: () => switchTab('queue'),
-                onOpenVideoResultReview: () => switchTab('qa'),
+                onOpenVideoResultReview: () => switchTab('storyboard'),
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
                     if (field === 'brief' || field === 'script') newProjectDraftDirty[field] = true;

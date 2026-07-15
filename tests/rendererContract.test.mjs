@@ -377,8 +377,8 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     );
     const details = findAll(studio, 'details');
     assert.ok(details.length >= 1, 'production tools must use progressive disclosure');
-    const resultReviewDetails = details.find((node) => byText(node, 'summary', '생성 결과 검토'));
-    assert.ok(resultReviewDetails && !resultReviewDetails.attributes.has('open'), 'generated-result review stays collapsed by default');
+    const resultReviewDetails = details.find((node) => byText(node, 'summary', '기존 제작 결과'));
+    assert.ok(resultReviewDetails && !resultReviewDetails.attributes.has('open'), 'existing-production review stays collapsed by default');
 
     const openFolder = byText(studio, 'button', '제작 폴더 열기');
     assert.ok(openFolder, 'folder-selection UI must be rendered in Korean');
@@ -656,6 +656,102 @@ test('MOCK media review board updates selection and filter, then saves the exact
         mediaReviewSaveStatus: reportedSaveStatus,
     });
     assert.match(rerendered.textContent, /검토 초안 저장됨/);
+});
+
+test('new-project media review keeps reference sheets and scene image-video pairs together with pathless retry controls', async (t) => {
+    const retries = [];
+    const opened = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectMediaReviewBoard } = await import('../src/components/pipeline/NewProjectMediaReviewBoard.js');
+    const png = { preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=' } };
+    const imageTasks = [
+        {
+            task_token: 'private-scene-2', kind: 'scene_image', source_id: 'scene_02', sequence: 4,
+            label: '장면 이미지 · 두 번째 장면', status: '준비', result_token: '', private_path: '/private/scene-2.png',
+        },
+        {
+            task_token: 'private-character', kind: 'character_sheet', source_id: 'character_01', sequence: 1,
+            label: '인물 시트 · 지아', status: '결과연결', result_token: 'private-character-result', revision_sha256: 'a'.repeat(64),
+        },
+        {
+            task_token: 'private-location', kind: 'location_sheet', source_id: 'location_01', sequence: 2,
+            label: '장소 시트 · 상담실', status: '재제작', result_token: 'private-location-result', provider: 'private-provider-code',
+        },
+        {
+            task_token: 'private-scene-1', kind: 'scene_image', source_id: 'scene_01', sequence: 3,
+            label: '장면 이미지 · 첫 번째 장면', status: '결과연결', result_token: 'private-scene-result',
+        },
+    ];
+    const videoTasks = [
+        {
+            task_token: 'private-video-2', kind: 'scene_video', source_id: 'scene_02', sequence: 2,
+            label: '장면 영상 · 두 번째 장면', status: '재제작', result_token: 'private-video-result-2',
+            provider: 'grok', command: '/private/grok.py', provider_code: 'GROK_PRIVATE_CODE',
+        },
+        {
+            task_token: 'private-video-1', kind: 'scene_video', source_id: 'scene_01', sequence: 1,
+            label: '장면 영상 · 첫 번째 장면', status: '결과연결', result_token: 'private-video-result-1', provider: 'flow',
+        },
+    ];
+    const board = NewProjectMediaReviewBoard({
+        designBoard: {
+            scenes: [
+                { id: 'scene_01', title: '첫 번째 장면' },
+                { id: 'scene_02', title: '두 번째 장면' },
+            ],
+        },
+        imagePlanTasks: imageTasks,
+        imageResultPreviews: {
+            'private-character-result': png,
+            'private-location-result': png,
+            'private-scene-result': { ...png, source_path: '/private/hidden-scene.png' },
+        },
+        videoPlanTasks: videoTasks,
+        videoResultPreviews: {
+            'private-video-result-1': { source: 'blob:safe-new-project-video', source_path: '/private/hidden-video.mp4' },
+            'private-video-result-2': { source: '/private/not-a-renderable-video.mp4' },
+        },
+        onToggleImageRetry: (taskToken, selected) => retries.push(['image', taskToken, selected]),
+        onToggleVideoRetry: (taskToken, selected) => retries.push(['video', taskToken, selected]),
+        onOpenWorkItem: (payload) => opened.push(payload),
+    });
+
+    assert.match(board.textContent, /인물 기준.*인물 시트 · 지아.*장소 기준.*장소 시트 · 상담실.*첫 번째 장면.*장면 이미지 · 첫 번째 장면.*장면 영상 · 첫 번째 장면.*두 번째 장면.*장면 이미지 · 두 번째 장면.*장면 영상 · 두 번째 장면/s);
+    assert.deepEqual(findAll(board, 'article').map((card) => findAll(card, 'h4')[0].textContent), [
+        '인물 시트 · 지아',
+        '장소 시트 · 상담실',
+        '장면 이미지 · 첫 번째 장면',
+        '장면 영상 · 첫 번째 장면',
+        '장면 이미지 · 두 번째 장면',
+        '장면 영상 · 두 번째 장면',
+    ]);
+    assert.ok(byAttribute(board, 'img', 'alt', '인물 시트 · 지아 결과'));
+    assert.ok(byAttribute(board, 'video', 'src', 'blob:safe-new-project-video'));
+    assert.equal(findAll(board, 'video').some((video) => video.attributes.get('src')?.includes('/private/')), false);
+    assert.equal(findAll(board, 'span').filter((node) => node.className.includes('text-[11px]')).length, 0, 'new review must not add badges');
+    assert.doesNotMatch(board.textContent, /private-|revision_sha256|GROK_PRIVATE_CODE|\/private\/|private-provider-code/);
+
+    const characterCard = findAll(board, 'article').find((card) => card.textContent.includes('인물 시트 · 지아'));
+    await byText(characterCard, 'button', '작업 열기').dispatchEvent({ type: 'click' });
+    assert.deepEqual(opened, [{ kind: 'image', sequence: 1 }]);
+    await byText(characterCard, 'button', '다시 만들기').dispatchEvent({ type: 'click' });
+    assert.deepEqual(retries.at(-1), ['image', 'private-character', true]);
+    assert.match(board.textContent, /다시 만들기 3개 선택/);
+
+    await byText(board, 'button', '검토할 결과').dispatchEvent({ type: 'click' });
+    assert.match(board.textContent, /장면 이미지 · 첫 번째 장면.*장면 영상 · 첫 번째 장면/s);
+    assert.doesNotMatch(board.textContent, /인물 시트 · 지아|장소 시트 · 상담실|두 번째 장면/);
+
+    await byText(board, 'button', '다시 만들기').dispatchEvent({ type: 'click' });
+    assert.match(board.textContent, /인물 시트 · 지아.*장소 시트 · 상담실.*장면 영상 · 두 번째 장면/s);
+    assert.doesNotMatch(board.textContent, /장면 이미지 · 첫 번째 장면|장면 영상 · 첫 번째 장면/);
+    const retryVideoCard = findAll(board, 'article').find((card) => card.textContent.includes('장면 영상 · 두 번째 장면'));
+    await byText(retryVideoCard, 'button', '작업 열기').dispatchEvent({ type: 'click' });
+    await byText(retryVideoCard, 'button', '선택 해제').dispatchEvent({ type: 'click' });
+    assert.deepEqual(opened.at(-1), { kind: 'video', sequence: 2 });
+    assert.deepEqual(retries.at(-1), ['video', 'private-video-2', false]);
+    assert.doesNotMatch(board.textContent, /private-|GROK_PRIVATE_CODE|\/private\//);
 });
 
 test('MOCK DST result import exposes only image retry targets and uses opaque plan confirmation', async (t) => {
@@ -3087,6 +3183,9 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
         expected_image_plan_revision_sha256: '3'.repeat(64),
     });
     assert.match(studio.textContent, /다시 만들기로 선택했습니다/);
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'storyboard' } });
+    assert.ok(byText(studio, 'h2', '새 프로젝트 결과 검토'));
+    assert.ok(byAttribute(studio, 'img', 'alt', '첫 장면 결과'));
 });
 
 test('PipelineStudio saves, prepares, connects, and retries video tasks with exact revision-bound payloads', async (t) => {
@@ -3198,4 +3297,13 @@ test('PipelineStudio saves, prepares, connects, and retries video tasks with exa
     await retry.dispatchEvent({ type: 'change' });
     await flushRenderer();
     assert.equal(calls.find(([method]) => method === 'retryVideo')[1].expected_video_plan_revision_sha256, '3'.repeat(64));
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'storyboard' } });
+    assert.ok(byText(studio, 'h2', '새 프로젝트 결과 검토'));
+    assert.ok(findAll(studio, 'video').some((video) => video.attributes.get('src')?.startsWith('blob:')));
+    const retryFilter = byText(studio, 'button', '다시 만들기');
+    await retryFilter.dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '선택 해제').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.equal(byText(studio, 'button', '다시 만들기').attributes.get('aria-pressed'), 'true');
+    assert.equal(findAll(studio, 'article').some((card) => card.textContent.includes('첫 장면')), false);
 });
