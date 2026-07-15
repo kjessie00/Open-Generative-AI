@@ -147,12 +147,17 @@ test('MOCK: receipts restore progress, expose only safe result arrival, enforce 
 
     const succeeded = receipt({ revision_sha256: imageRun }, task, {
         status: 'succeeded', progress: 100, result_received: true,
-        result_locator: 'result:opaque-01', reported_at: '2026-07-16T01:02:00.000Z',
+        result_locator: `dst:fixture-bundle:1:${'9'.repeat(64)}`, reported_at: '2026-07-16T01:02:00.000Z',
     });
+    context.resolveDstExecutionResultLocator = (locator) => locator === succeeded.result_locator
+        ? { candidate_token: 'candidate-session-token', image_index: 1 } : null;
     const completed = executionProvider.publishExecutionReceipt(succeeded, context).state;
     assert.equal(completed.tasks[0].status_label, '결과 도착');
     assert.equal(completed.tasks[0].result_received, true);
-    assert.equal(JSON.stringify(completed).includes('result:opaque-01'), false);
+    assert.equal(completed.tasks[0].result_match_status, 'ready');
+    assert.equal(completed.tasks[0].result_candidate_token, 'candidate-session-token');
+    assert.equal(completed.tasks[0].result_image_index, 1);
+    assert.equal(JSON.stringify(completed).includes('fixture-bundle'), false);
     assert.throws(() => executionProvider.publishExecutionReceipt({
         ...succeeded, status: 'failed', result_received: false, result_locator: '',
         failure_code: 'GENERATION_FAILED', reported_at: '2026-07-16T01:03:00.000Z',

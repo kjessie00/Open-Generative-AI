@@ -110,6 +110,23 @@ function selectedCandidate(context) {
     return workspace.candidates[0];
 }
 
+test('durable DST execution locator revalidates bundle image bytes and regenerates a session candidate token', (t) => {
+    const fx = fixture(t);
+    const imagePath = path.join(fx.bundle.bundleRoot, 'images', fx.bundle.imageName);
+    const imageSha = crypto.createHash('sha256').update(fs.readFileSync(imagePath)).digest('hex');
+    const locator = `dst:${fx.bundle.manifest.id}:1:${imageSha}`;
+    const first = provider.resolveDstExecutionResultLocator(locator, fx.context);
+    const relaunched = provider.resolveDstExecutionResultLocator(locator, {
+        ...fx.context,
+        tokenSecret: Buffer.alloc(32, 8),
+    });
+    assert.ok(first?.candidate_token);
+    assert.equal(first.image_index, 1);
+    assert.ok(relaunched?.candidate_token);
+    assert.notEqual(first.candidate_token, relaunched.candidate_token);
+    assert.equal(provider.resolveDstExecutionResultLocator(`dst:${fx.bundle.manifest.id}:1:${'f'.repeat(64)}`, fx.context), null);
+});
+
 function configureRetryTargets(fx, specs) {
     const records = specs.map((spec) => ({
         media_id: spec.mediaId,

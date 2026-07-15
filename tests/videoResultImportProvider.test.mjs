@@ -168,6 +168,23 @@ function fixture(t, options = {}) {
     };
 }
 
+test('MOCK ffprobe: durable video execution locator binds provider, result id, and current bytes across relaunch', (t) => {
+    const fx = fixture(t);
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'receipt_result_001', MP4_ALT);
+    const digest = crypto.createHash('sha256').update(MP4_ALT).digest('hex');
+    const locator = `replicate:receipt_result_001:${digest}`;
+    const first = provider.resolveVideoExecutionResultLocator(locator, fx.context);
+    const relaunched = provider.resolveVideoExecutionResultLocator(locator, {
+        ...fx.context,
+        tokenSecret: Buffer.alloc(32, 12),
+    });
+    assert.ok(first?.candidate_token);
+    assert.ok(relaunched?.candidate_token);
+    assert.notEqual(first.candidate_token, relaunched.candidate_token);
+    assert.equal(provider.resolveVideoExecutionResultLocator(`replicate:receipt_result_001:${'f'.repeat(64)}`, fx.context), null);
+    assert.equal(provider.resolveVideoExecutionResultLocator(`bytedance:receipt_result_001:${digest}`, fx.context), null);
+});
+
 function writeStoryboard(productionRoot, clips) {
     const directory = path.join(productionRoot, 'storyboard');
     fs.mkdirSync(directory, { recursive: true });

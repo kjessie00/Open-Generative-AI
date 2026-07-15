@@ -19,6 +19,8 @@ function resultSlot(task, resultPreview) {
 
 export function ImageTaskCard({ task, resultPreview, resultWorkspace, onPromptChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult }) {
     let connectorOpen = false;
+    let preferredCandidateToken = '';
+    let preferredImageIndex = 0;
     const root = el('article', {
         className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3',
         attrs: { 'data-work-target': 'image', 'data-sequence': task.sequence, tabindex: -1 },
@@ -70,6 +72,8 @@ export function ImageTaskCard({ task, resultPreview, resultWorkspace, onPromptCh
             connectorOpen && !task.result_token ? ImageResultConnector({
                 task,
                 workspace: resultWorkspace,
+                preferredCandidateToken,
+                preferredImageIndex,
                 onRefresh: onRefreshResults,
                 onLoadPreview: onLoadCandidatePreview,
                 onConnect: onConnectResult,
@@ -77,6 +81,12 @@ export function ImageTaskCard({ task, resultPreview, resultWorkspace, onPromptCh
         ];
         root.replaceChildren(...children.filter(Boolean));
     };
+    root.addEventListener('workbench:show-result', (event) => {
+        preferredCandidateToken = event?.detail?.candidateToken || '';
+        preferredImageIndex = Number(event?.detail?.imageIndex) || 0;
+        connectorOpen = true;
+        render();
+    });
     render();
     return root;
 }

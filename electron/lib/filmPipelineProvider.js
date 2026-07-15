@@ -1122,9 +1122,19 @@ function saveNewProjectVideoRetrySelection(payload, options = {}) {
 }
 
 function getNewProjectExecutionState(options = {}) {
+    const env = options.env || process.env;
     return newProjectExecutionProvider.getNewProjectExecutionState({
         ...options,
         userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        dstImagesRoot: options.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT,
+        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT,
+        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT,
+        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT,
+        replicateReceiptResultsRoot: options.replicateReceiptResultsRoot
+            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT,
+        bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
+            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
+        ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
     });
 }
 

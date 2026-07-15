@@ -186,7 +186,7 @@ test('new project execution panel shows short Korean progress without private me
     await byAttribute(panel, 'button', 'aria-label', '작업 상태 새로고침').dispatchEvent({ type: 'click' });
     await byText(panel, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
     assert.equal(refreshed, 1);
-    assert.deepEqual(opened, [{ kind: 'video', sequence: 3 }]);
+    assert.deepEqual(opened, [{ kind: 'video', sequence: 3, candidateToken: '', imageIndex: 0 }]);
 });
 
 async function flushRenderer() {

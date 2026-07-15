@@ -37,8 +37,14 @@ function taskRow(task, onOpenWorkItem) {
                 el('strong', { text: `${task.sequence}. ${task.label}`, className: 'break-words text-sm text-white' }),
                 task.provider_label ? el('span', { text: task.provider_label, className: 'text-xs text-secondary' }) : null,
             ]),
+            task.provider_status_label ? el('p', {
+                text: task.provider_status_label,
+                className: 'mt-1 text-xs leading-5 text-secondary',
+            }) : null,
             el('p', {
-                text: task.status === 'running' ? `${status} ${progress}%` : status,
+                text: task.status === 'running' ? `${status} ${progress}%`
+                    : task.result_match_status === 'connected' ? `${status} · 작업대에 연결됨`
+                        : task.result_match_status === 'ready' ? `${status} · 연결 준비됨` : status,
                 className: `mt-1 text-sm font-semibold ${stateClass}`,
             }),
             task.status === 'running'
@@ -48,9 +54,14 @@ function taskRow(task, onOpenWorkItem) {
                 })
                 : null,
         ]),
-        actionButton(`${laneTitle(lane)} 작업 열기`, {
+        actionButton(task.result_match_status === 'ready' ? '결과 확인' : `${laneTitle(lane)} 작업 열기`, {
             variant: task.result_received ? 'primary' : 'muted',
-            onClick: () => onOpenWorkItem?.({ kind: lane, sequence: task.sequence }),
+            onClick: () => onOpenWorkItem?.({
+                kind: lane,
+                sequence: task.sequence,
+                candidateToken: task.result_candidate_token || '',
+                imageIndex: task.result_image_index || 0,
+            }),
         }),
     ]);
 }

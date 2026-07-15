@@ -15,10 +15,15 @@ function previewNode(preview, label) {
         });
 }
 
-export function ImageResultConnector({ task, workspace, preview, onRefresh, onLoadPreview, onConnect }) {
+export function ImageResultConnector({
+    task, workspace, preview, preferredCandidateToken = '', preferredImageIndex = 0,
+    onRefresh, onLoadPreview, onConnect,
+}) {
     const candidates = Array.isArray(workspace?.candidates) ? workspace.candidates : [];
-    let selectedToken = candidates[0]?.candidate_token || '';
-    let selectedImageIndex = 1;
+    let selectedToken = candidates.some((candidate) => candidate.candidate_token === preferredCandidateToken)
+        ? preferredCandidateToken : candidates[0]?.candidate_token || '';
+    let selectedImageIndex = Number.isSafeInteger(preferredImageIndex) && preferredImageIndex > 0
+        ? preferredImageIndex : 1;
     let activePreview = preview?.candidate_token === selectedToken ? preview : null;
     let feedback = '';
     let loadingKey = '';
@@ -30,7 +35,7 @@ export function ImageResultConnector({ task, workspace, preview, onRefresh, onLo
             attrs: { id: `image-result-${task.sequence}`, 'aria-label': `${task.label} DST 결과` },
         }, candidates.map((candidate) => el('option', {
             value: candidate.candidate_token,
-            text: candidateLabel(candidate),
+            text: `${candidate.candidate_token === preferredCandidateToken ? '이번 결과 · ' : ''}${candidateLabel(candidate)}`,
         })));
         select.value = selectedToken;
         select.addEventListener('change', async () => {

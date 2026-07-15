@@ -14,10 +14,11 @@ function videoPreview(prepared, label) {
         });
 }
 
-export function VideoResultConnector({ task, workspace, onRefresh, onLoadPreview, onConnect }) {
+export function VideoResultConnector({ task, workspace, preferredCandidateToken = '', onRefresh, onLoadPreview, onConnect }) {
     const candidates = (Array.isArray(workspace?.candidates) ? workspace.candidates : [])
         .filter((candidate) => candidate.provider === task.provider);
-    let selectedToken = candidates[0]?.candidate_token || '';
+    let selectedToken = candidates.some((candidate) => candidate.candidate_token === preferredCandidateToken)
+        ? preferredCandidateToken : candidates[0]?.candidate_token || '';
     let preparedPreview = null;
     let feedback = '';
     const root = el('div', { className: 'mt-3 rounded-md border border-white/10 bg-black/20 p-3' });
@@ -32,7 +33,7 @@ export function VideoResultConnector({ task, workspace, onRefresh, onLoadPreview
             attrs: { 'aria-label': `${task.label} 완료 영상` },
         }, candidates.map((candidate) => el('option', {
             value: candidate.candidate_token,
-            text: videoCandidateLabel(candidate),
+            text: `${candidate.candidate_token === preferredCandidateToken ? '이번 결과 · ' : ''}${videoCandidateLabel(candidate)}`,
         })));
         select.value = selectedToken;
         select.addEventListener('change', () => {

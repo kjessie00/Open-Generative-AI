@@ -5,6 +5,8 @@ const path = require('path');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
+const dstBundleImportProvider = require('./dstBundleImportProvider');
+const videoResultImportProvider = require('./videoResultImportProvider');
 
 const MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v1';
 const RECEIPT_SCHEMA = 'film_pipeline.new_project_execution_receipt.v1';
@@ -31,6 +33,14 @@ const FAILURE_LABELS = Object.freeze({
     UNKNOWN: '원인 확인 필요',
 });
 const FAILURE_CODES = new Set(Object.keys(FAILURE_LABELS));
+const DEFAULT_RUNTIME_PATHS = Object.freeze({
+    dstPython: '/Users/jessiek/StudioProjects/deepSearchTeam/.venv/bin/python',
+    dstModule: '/Users/jessiek/StudioProjects/deepSearchTeam/dst',
+    flowText: '/Users/jessiek/StudioProjects/google_labs_flow_auto/scripts/flow_cdp_video_text_smoke.py',
+    flowRefs: '/Users/jessiek/StudioProjects/google_labs_flow_auto/scripts/flow_cdp_video_refs_smoke.py',
+    grokPython: '/Users/jessiek/.pyenv/versions/3.11.7/bin/python3',
+    grokCli: '/Users/jessiek/StudioProjects/grok-auto/grok-browser/grok_imagine_bot.py',
+});
 
 function failure(code) {
     const error = new Error(code);
@@ -166,12 +176,23 @@ function baseFromPlan(state, lane) {
     if (selected.size !== state.preparation.task_count) throw failure('EXECUTION_PREPARATION_INVALID');
     const source = state.tasks.filter((task) => selected.has(task.task_token));
     if (!source.length || source.length !== selected.size) throw failure('EXECUTION_PREPARATION_STALE');
-    const tasks = source.map((task, index) => ({
+    const resultByTask = new Map(state.tasks.map((task) => [task.task_token, task.result_token || '']));
+    const tasks = source.map((task, index) => {
+        const referenceTaskTokens = lane === 'image'
+            ? Array.isArray(task.reference_task_ids) ? task.reference_task_ids : []
+            : [task.reference_image_task_token].filter(Boolean);
+        const referenceResultTokens = lane === 'image'
+            ? referenceTaskTokens.map((token) => resultByTask.get(token)).filter(Boolean)
+            : [task.reference_image_result_token].filter(Boolean);
+        return {
         task_token: task.task_token, lane, kind: task.kind, sequence: index + 1, label: task.label,
         provider: lane === 'image' ? 'dst_image' : task.provider,
         provider_label: lane === 'image' ? 'DST 이미지' : task.provider_label,
         prompt: task.prompt, preparation_token: state.preparation.preparation_token,
-    }));
+            reference_task_tokens: referenceTaskTokens,
+            reference_result_tokens: referenceResultTokens,
+        };
+    });
     const base = {
         lane,
         design_revision_sha256: state.design_revision_sha256,
@@ -208,7 +229,7 @@ function manifestFor(base, attempt, createdAt = new Date().toISOString()) {
 function validateTask(task, lane, index) {
     exactKeys(task, [
         'task_token', 'lane', 'kind', 'sequence', 'label', 'provider', 'provider_label',
-        'prompt', 'preparation_token',
+        'prompt', 'preparation_token', 'reference_task_tokens', 'reference_result_tokens',
     ], 'EXECUTION_MANIFEST_INVALID');
     if (!TASK_TOKEN.test(task.task_token || '') || task.lane !== lane || task.sequence !== index + 1
         || !PREPARATION_TOKEN.test(task.preparation_token || '')) throw failure('EXECUTION_MANIFEST_INVALID');
@@ -217,6 +238,14 @@ function validateTask(task, lane, index) {
     text(task.provider, 64, 'EXECUTION_MANIFEST_INVALID');
     text(task.provider_label, 64, 'EXECUTION_MANIFEST_INVALID');
     text(task.prompt, 32 * 1024, 'EXECUTION_MANIFEST_INVALID');
+    if (!Array.isArray(task.reference_task_tokens) || task.reference_task_tokens.length > 44
+        || task.reference_task_tokens.some((token) => !TASK_TOKEN.test(token))
+        || new Set(task.reference_task_tokens).size !== task.reference_task_tokens.length
+        || !Array.isArray(task.reference_result_tokens) || task.reference_result_tokens.length > 44
+        || task.reference_result_tokens.some((token) => !/^result_[a-f0-9]{64}$/.test(token))
+        || new Set(task.reference_result_tokens).size !== task.reference_result_tokens.length) {
+        throw failure('EXECUTION_MANIFEST_INVALID');
+    }
     return task;
 }
 
@@ -372,7 +401,80 @@ function aggregateStatus(counts, total) {
     return 'queued';
 }
 
-function publicSelections(selections) {
+function regularFile(filePath) {
+    try {
+        const resolved = fs.realpathSync.native(filePath);
+        return path.isAbsolute(resolved) && fs.statSync(resolved).isFile();
+    } catch { return false; }
+}
+
+function realDirectory(directoryPath) {
+    try {
+        const stats = fs.lstatSync(directoryPath);
+        return stats.isDirectory() && !stats.isSymbolicLink() && fs.realpathSync.native(directoryPath) === directoryPath;
+    } catch { return false; }
+}
+
+function providerReadiness(task, context = {}) {
+    const runtime = { ...DEFAULT_RUNTIME_PATHS, ...(context.runtimePaths || {}) };
+    if (task.lane === 'image') {
+        const installed = regularFile(runtime.dstPython) && realDirectory(runtime.dstModule);
+        return {
+            provider_readiness: installed ? 'result_ready_live_blocked' : 'runtime_missing',
+            provider_status_label: installed ? '결과 확인 준비됨 · 생성 연결 전' : '이미지 도구 준비 필요',
+        };
+    }
+    if (task.provider === 'flow') {
+        const installed = regularFile(runtime.flowText) && regularFile(runtime.flowRefs);
+        return {
+            provider_readiness: installed ? 'reference_contract_blocked' : 'runtime_missing',
+            provider_status_label: installed ? '참조 방식 준비 필요' : '플로우 도구 준비 필요',
+        };
+    }
+    if (task.provider === 'grok') {
+        const installed = regularFile(runtime.grokPython) && regularFile(runtime.grokCli);
+        return {
+            provider_readiness: installed ? 'preview_ready_live_blocked' : 'runtime_missing',
+            provider_status_label: installed ? '로컬 명령 확인됨 · 생성 연결 전' : '그록 도구 준비 필요',
+        };
+    }
+    if (task.provider === 'replicate') {
+        return { provider_readiness: 'result_only', provider_status_label: '결과 영수증 확인 가능 · 생성 연결 전' };
+    }
+    return { provider_readiness: 'adapter_missing', provider_status_label: '직접 생성 연결 없음' };
+}
+
+function resultIndexes(context, needsImage, needsVideo) {
+    const image = new Map();
+    const video = new Map();
+    if (needsImage) {
+        image.set('resolve', context.resolveDstExecutionResultLocator
+            || dstBundleImportProvider.resolveDstExecutionResultLocator);
+    }
+    if (needsVideo) {
+        video.set('resolve', context.resolveVideoExecutionResultLocator
+            || videoResultImportProvider.resolveVideoExecutionResultLocator);
+    }
+    return { image, video };
+}
+
+function connectedTaskTokens(context = {}) {
+    const connected = new Set();
+    for (const load of [
+        context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan,
+        context.getNewProjectVideoPlan || newProjectVideoPlanProvider.getNewProjectVideoPlan,
+    ]) {
+        try {
+            const state = load(context);
+            for (const task of Array.isArray(state?.tasks) ? state.tasks : []) {
+                if (task.result_token && task.status === '결과연결') connected.add(task.task_token);
+            }
+        } catch { /* current workbench may not be ready yet */ }
+    }
+    return connected;
+}
+
+function publicSelections(selections, context = {}) {
     const tasks = [];
     for (const selection of selections) {
         const receipts = laneReceipts(selection);
@@ -387,8 +489,32 @@ function publicSelections(selections) {
                 external_call_performed: receipt?.external_call_performed || false,
                 model_called: receipt?.model_called || false,
                 generation_executed: receipt?.generation_executed || false,
+                result_locator: receipt?.result_locator || '',
+                ...providerReadiness(task, context),
             });
         });
+    }
+    const indexes = resultIndexes(
+        context,
+        tasks.some((task) => task.lane === 'image' && task.status === 'succeeded'),
+        tasks.some((task) => task.lane === 'video' && task.status === 'succeeded'),
+    );
+    const connected = connectedTaskTokens(context);
+    for (const task of tasks) {
+        let match = null;
+        if (task.status === 'succeeded') {
+            const resolver = (task.lane === 'image' ? indexes.image : indexes.video).get('resolve');
+            try { match = typeof resolver === 'function' ? resolver(task.result_locator, context) : null; } catch { match = null; }
+        }
+        const candidateToken = connected.has(task.task_token) ? '' : match?.candidate_token || '';
+        task.workbench_connected = connected.has(task.task_token);
+        task.result_match_status = task.status === 'succeeded'
+            ? task.workbench_connected ? 'connected' : candidateToken ? 'ready' : 'waiting'
+            : '';
+        task.result_candidate_token = candidateToken;
+        task.result_image_index = !task.workbench_connected && task.lane === 'image' && Number.isSafeInteger(match?.image_index)
+            ? match.image_index : 0;
+        delete task.result_locator;
     }
     const counts = Object.fromEntries(Object.keys(STATUS_LABELS)
         .map((status) => [status, tasks.filter((task) => task.status === status).length]));
@@ -419,7 +545,7 @@ function getNewProjectExecutionState(context = {}) {
     try {
         const selections = selectLanes(context);
         if (!selections.length) throw failure('EXECUTION_PREPARATION_REQUIRED');
-        return publicSelections(selections);
+        return publicSelections(selections, context);
     } catch (error) { return blockedState(error.code || 'EXECUTION_STATE_BLOCKED'); }
 }
 
@@ -442,11 +568,11 @@ function prepareNewProjectExecution(payload, context = {}) {
     if (typeof payload.new_attempt !== 'boolean') throw failure('EXECUTION_PREPARE_SHAPE_INVALID');
     let selections = selectLanes(context);
     if (!selections.length) throw failure('EXECUTION_PREPARATION_REQUIRED');
-    const current = publicSelections(selections);
+    const current = publicSelections(selections, context);
     if (!SHA256.test(payload.expected_revision_sha256 || '')
         || payload.expected_revision_sha256 !== current.revision_sha256) throw failure('EXECUTION_REVISION_STALE');
     if (payload.new_attempt) {
-        const laneStates = selections.map((selection) => ({ selection, state: publicSelections([selection]) }));
+        const laneStates = selections.map((selection) => ({ selection, state: publicSelections([selection], context) }));
         if (laneStates.some(({ state }) => state.summary.failed > 0 && state.summary.failed < state.task_count)) {
             throw failure('EXECUTION_RETRY_PREPARATION_REQUIRED');
         }
@@ -469,7 +595,7 @@ function prepareNewProjectExecution(payload, context = {}) {
     }
     const materialized = selections.map(materialize);
     return {
-        ...publicSelections(materialized),
+        ...publicSelections(materialized, context),
         already_prepared: materialized.every((selection) => selection.alreadyPrepared),
     };
 }
@@ -521,7 +647,7 @@ function publishExecutionReceipt(payload, context = {}) {
         const receipts = manifest.tasks.map((task) => loadReceipt(paths, task.task_token));
         const prior = receipts[taskIndex];
         if (prior && JSON.stringify(prior) === JSON.stringify(receipt)) {
-            return { ok: true, already_published: true, state: publicSelections(selectLanes(context)) };
+            return { ok: true, already_published: true, state: publicSelections(selectLanes(context), context) };
         }
         if (prior && Date.parse(receipt.reported_at) <= Date.parse(prior.reported_at)) {
             throw failure('EXECUTION_RECEIPT_TIMESTAMP_STALE');
@@ -529,7 +655,7 @@ function publishExecutionReceipt(payload, context = {}) {
         if (prior) {
             const comparable = (value) => JSON.stringify({ ...value, reported_at: '' });
             if (comparable(prior) === comparable(receipt)) {
-                return { ok: true, already_published: true, state: publicSelections(selectLanes(context)) };
+                return { ok: true, already_published: true, state: publicSelections(selectLanes(context), context) };
             }
         }
         const active = receipts.filter((item) => item?.status === 'running');
@@ -548,7 +674,7 @@ function publishExecutionReceipt(payload, context = {}) {
             }
         }
         privateWrite(receiptPath(paths, receipt.task_token), Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
-        return { ok: true, already_published: false, state: publicSelections(selectLanes(context)) };
+        return { ok: true, already_published: false, state: publicSelections(selectLanes(context), context) };
     } finally { release(); }
 }
 
@@ -559,7 +685,7 @@ function inspectExecutionHandoff(context = {}, options = {}) {
     if (!selections.length) throw failure('EXECUTION_PREPARATION_REQUIRED');
     if (options.new_attempt || selections.some((selection) => !selection.prepared)) {
         prepareNewProjectExecution({
-            expected_revision_sha256: publicSelections(selections).revision_sha256,
+            expected_revision_sha256: publicSelections(selections, context).revision_sha256,
             new_attempt: options.new_attempt,
         }, context);
         selections = selectLanes(context);
@@ -583,7 +709,7 @@ function getNewProjectExecutionHistory(context = {}) {
             ok: true,
             runs: runs.map((run) => ({
                 lane: run.manifest.lane, attempt: run.manifest.attempt,
-                ...publicSelections([{ ...run, prepared: true }]),
+                ...publicSelections([{ ...run, prepared: true }], context),
             })),
             blockers: [],
         };

@@ -164,9 +164,19 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - Automated verification: provider `5/5 PASS` (`4 MOCK` contract tests + `1 actual local CLI/file I/O`), focused UI/static/security `51/51 PASS`, full sequential Node `314/314 PASS`, lint PASS, Vite build PASS at 72 modules, and diff check PASS.
 - No paid/live provider generation, model call, browser automation, API key use, upload or production write occurred. Technical receipt/UI integration PASS remains separate from live generation, result quality and Jessie approval.
 
+### Current Round Completion Evidence (2026-07-16 Durable Result Linking)
+
+- Execution receipts now persist stable `bundle/result id + content SHA-256` locators rather than session candidate tokens. Electron main re-scans and revalidates current DST/video bytes, then regenerates the current session token; id reuse with changed bytes does not match.
+- `작업 진행 → 결과 확인` opens the exact image/video card and preselects `이번 결과`; already connected items are separately labeled `작업대에 연결됨`. Locator, candidate token, path and hash remain absent from visible UI, and provider readiness uses short Korean sentences without badges.
+- Actual CLI/file/Electron E2E used a valid WebP DST bundle and a valid MP4 Replicate canonical receipt. UI connected the exact image and video, decoded the image, reached MP4 readyState 4, fully quit/relaunched and restored two connected items plus two still-connectable results. Four viewports passed overflow/clipping 0 and 44px controls; console/external requests were 0.
+- Computer Use directly opened the real macOS Electron window, navigated `3 생성 준비 → 작업 진행 → 결과 확인`, and confirmed the accessibility tree exposed `이번 결과` and the actual image preview with no badge-heavy status surface.
+- Provider audit is explicit: DST has no no-submit mode; Flow requires two refs while this workbench has one; Grok has no dry-run; Replicate lacks a safe Predictions adapter; direct ByteDance execution is missing. No provider browser, API key, submit, generation, download, upload or production write occurred.
+- Automated verification: focused changed-surface tests `92/92 PASS`; full sequential Node regression `316/316 PASS`; lint PASS; Vite build PASS at 72 modules; diff check PASS.
+- Evidence: `docs/ui_integration/57_durable_execution_result_linking.md` and `/Users/jessiek/.codex/visualizations/2026/07/16/open-ga-durable-result-e2e/result.json`.
+
 ## Pending
 
-- Connect the verified lane-private handoff/receipt contract to explicitly authorized live DST/Flow/Grok/Replicate/ByteDance executors, and map result locators into each provider result inbox. Progress/receipt ingestion and the simple `작업 진행` UI are complete; live generation, result quality and Jessie approval remain separate.
+- Durable receipt locators, provider-inbox matching, exact result opening and workbench connection are complete. Live executors remain blocked on provider contracts: DST no-submit/reference staging, Flow one-ref vs two-ref mismatch, Grok dry-run and account-rotation-off wrapper, Replicate Predictions adapter, and a real direct ByteDance adapter. Live generation, result quality and Jessie approval remain separate.
 - Re-run the Ep01 native folder selection manually or with a separately proven macOS dialog harness; keep its current sidebar/preload/data PASS separate from the native BLOCK.
 - Resolve or explicitly accept the offline OSV database gap without enabling network access implicitly.
 - Independent planning-write/path-provenance acceptance is BLOCK after the first verifier and exactly one fallback both failed at the pre-code cybersecurity classifier. Do not automatically call another verifier; root cannot final-accept this security patch.

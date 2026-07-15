@@ -17,6 +17,7 @@ function resultSlot(task, resultPreview) {
 
 export function VideoTaskCard({ task, resultPreview, resultWorkspace, onPromptChange, onProviderChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult }) {
     let connectorOpen = false;
+    let preferredCandidateToken = '';
     const root = el('article', {
         className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3',
         attrs: { 'data-work-target': 'video', 'data-sequence': task.sequence, tabindex: -1 },
@@ -69,12 +70,17 @@ export function VideoTaskCard({ task, resultPreview, resultWorkspace, onPromptCh
                 ]),
             ]),
             connectorOpen && !task.result_token ? VideoResultConnector({
-                task, workspace: resultWorkspace, onRefresh: onRefreshResults,
+                task, workspace: resultWorkspace, preferredCandidateToken, onRefresh: onRefreshResults,
                 onLoadPreview: onLoadCandidatePreview, onConnect: onConnectResult,
             }) : null,
         ];
         root.replaceChildren(...children.filter(Boolean));
     };
+    root.addEventListener('workbench:show-result', (event) => {
+        preferredCandidateToken = event?.detail?.candidateToken || '';
+        connectorOpen = true;
+        render();
+    });
     render();
     return root;
 }

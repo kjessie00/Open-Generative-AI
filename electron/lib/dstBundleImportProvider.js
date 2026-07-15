@@ -383,6 +383,20 @@ function getDstBundleImportWorkspace(context = {}) {
     }
 }
 
+// Main-process-only durable execution receipt resolver. The receipt keeps a
+// stable bundle/image/hash identity; the short-lived candidate token is
+// regenerated only after the current inventory bytes are revalidated.
+function resolveDstExecutionResultLocator(locator, context = {}) {
+    const match = /^dst:([A-Za-z0-9][A-Za-z0-9._-]{0,159}):(\d{1,2}):([a-f0-9]{64})$/.exec(locator || '');
+    if (!match) return null;
+    const imageIndex = Number(match[2]);
+    const inventory = scanInventory(context);
+    const candidate = inventory.candidates.find((entry) => entry.bundleId === match[1]);
+    const image = candidate?.images?.[imageIndex - 1];
+    if (!candidate || !image || image.image.sha256 !== match[3]) return null;
+    return { candidate_token: candidate.token, image_index: imageIndex };
+}
+
 function assertProductionRoot(context = {}) {
     const root = context.config?.productionRoot;
     const info = assertRealDirectory(root, 'DST_IMPORT_PRODUCTION_ROOT_UNSAFE');
@@ -1362,6 +1376,7 @@ module.exports = {
     MAX_LEDGER_BYTES,
     DEFAULT_PLAN_TTL_MS,
     getDstBundleImportWorkspace,
+    resolveDstExecutionResultLocator,
     getDstBundleImportPreview,
     planDstBundleImport,
     confirmDstBundleImport,

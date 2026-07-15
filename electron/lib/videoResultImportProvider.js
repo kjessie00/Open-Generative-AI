@@ -646,6 +646,18 @@ function getVideoResultImportWorkspace(context = {}) {
     }
 }
 
+// Main-process-only durable execution receipt resolver. Provider/result/hash
+// survives app relaunch while the session candidate token does not.
+function resolveVideoExecutionResultLocator(locator, context = {}) {
+    const match = /^(flow|grok|replicate|bytedance):([A-Za-z0-9][A-Za-z0-9._-]{0,159}):([a-f0-9]{64})$/.exec(locator || '');
+    if (!match) return null;
+    const inventory = scanInventory(context);
+    const candidate = inventory.candidates.find((entry) => (
+        entry.provider === match[1] && entry.resultId === match[2] && entry.source.sha256 === match[3]
+    ));
+    return candidate ? { candidate_token: candidate.token } : null;
+}
+
 function blockedPreview(code) {
     return {
         ok: false,
@@ -1551,6 +1563,7 @@ module.exports = {
     MAX_PREVIEW_BYTES,
     DEFAULT_PLAN_TTL_MS,
     getVideoResultImportWorkspace,
+    resolveVideoExecutionResultLocator,
     getVideoResultImportPreview,
     copyVideoResultCandidateToPrivateFile,
     planVideoResultImport,

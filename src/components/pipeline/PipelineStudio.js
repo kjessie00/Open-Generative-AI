@@ -595,12 +595,19 @@ export function PipelineStudio() {
                 executionRefreshing: newProjectExecutionRefreshing,
                 hasProductionRoot: Boolean(config.productionRoot),
                 onRefreshExecution: refreshNewProjectExecution,
-                onOpenWorkItem: ({ kind, sequence }) => {
+                onOpenWorkItem: async ({ kind, sequence, candidateToken = '', imageIndex = 0 }) => {
+                    if (candidateToken) {
+                        if (kind === 'video') await refreshNewProjectVideoResults();
+                        else await refreshNewProjectImageResults();
+                    }
                     switchTab(kind === 'video' ? 'videos' : 'assets');
                     queueMicrotask(() => {
                         const target = document.querySelector?.(`[data-work-target="${kind}"][data-sequence="${sequence}"]`);
                         target?.focus?.();
                         target?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+                        if (candidateToken) target?.dispatchEvent?.(new CustomEvent('workbench:show-result', {
+                            detail: { candidateToken, imageIndex },
+                        }));
                     });
                 },
                 onOpenLegacyQueue: () => switchTab('queue'),
