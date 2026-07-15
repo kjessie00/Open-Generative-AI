@@ -278,6 +278,24 @@ export async function saveNewProjectImageRetrySelection(payload) {
     return unavailableImagePlanState('saveNewProjectImageRetrySelection');
 }
 
+export async function enqueueImagePromptAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.enqueueImagePromptAgentRequest === 'function') return bridge.enqueueImagePromptAgentRequest(payload);
+    return unavailableImagePlanState('enqueueImagePromptAgentRequest');
+}
+
+export async function runImagePromptAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.runImagePromptAgentRequest === 'function') return bridge.runImagePromptAgentRequest(payload);
+    return unavailableImagePlanState('runImagePromptAgentRequest');
+}
+
+export async function decideImagePromptAgentSuggestion(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.decideImagePromptAgentSuggestion === 'function') return bridge.decideImagePromptAgentSuggestion(payload);
+    return unavailableImagePlanState('decideImagePromptAgentSuggestion');
+}
+
 function unavailableVideoPlanState(method) {
     return {
         ...unavailable(method), status: 'blocked', design_revision_sha256: '', image_plan_revision_sha256: '',
@@ -327,6 +345,24 @@ export async function saveNewProjectVideoRetrySelection(payload) {
     const bridge = getBridge();
     if (typeof bridge?.saveNewProjectVideoRetrySelection === 'function') return bridge.saveNewProjectVideoRetrySelection(payload);
     return unavailableVideoPlanState('saveNewProjectVideoRetrySelection');
+}
+
+export async function enqueueVideoPromptAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.enqueueVideoPromptAgentRequest === 'function') return bridge.enqueueVideoPromptAgentRequest(payload);
+    return unavailableVideoPlanState('enqueueVideoPromptAgentRequest');
+}
+
+export async function runVideoPromptAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.runVideoPromptAgentRequest === 'function') return bridge.runVideoPromptAgentRequest(payload);
+    return unavailableVideoPlanState('runVideoPromptAgentRequest');
+}
+
+export async function decideVideoPromptAgentSuggestion(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.decideVideoPromptAgentSuggestion === 'function') return bridge.decideVideoPromptAgentSuggestion(payload);
+    return unavailableVideoPlanState('decideVideoPromptAgentSuggestion');
 }
 
 export async function getNewProjectExecutionState() {
@@ -690,6 +726,9 @@ export const pipelineClient = Object.freeze({
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
     saveNewProjectImageRetrySelection,
+    enqueueImagePromptAgentRequest,
+    runImagePromptAgentRequest,
+    decideImagePromptAgentSuggestion,
     getNewProjectVideoPlan,
     saveNewProjectVideoPlan,
     prepareNewProjectVideoPlan,
@@ -697,6 +736,9 @@ export const pipelineClient = Object.freeze({
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
     saveNewProjectVideoRetrySelection,
+    enqueueVideoPromptAgentRequest,
+    runVideoPromptAgentRequest,
+    decideVideoPromptAgentSuggestion,
     getNewProjectExecutionState,
     copyNewProjectBuildCommand,
     selectProductionRoot,

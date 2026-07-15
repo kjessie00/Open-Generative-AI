@@ -9,6 +9,7 @@ export function GenerationPreparationPanel({
     onImagePromptChange, onSaveImagePlan, onPrepareImagePlan, onToggleImageRetry,
     onRefreshImageResults, onLoadImageCandidatePreview, onConnectImageResult,
     onOpenImageResultReview,
+    onRequestImageAgentEdit, onDecideImageAgentEdit,
 }) {
     let tasks = normalizeImageTasks(imagePlanTasks || imagePlanState?.tasks);
     const showExistingProduction = config === undefined || Boolean(config.productionRoot);
@@ -52,6 +53,9 @@ export function GenerationPreparationPanel({
         tasks.length
             ? el('div', { className: 'grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3' }, tasks.map((task) => ImageTaskCard({
                 task,
+                agentRequest: imagePlanState?.collaboration?.recent_requests?.find((request) => (
+                    request.target_task_token === task.task_token && ['queued_local_handoff', 'suggestion_ready'].includes(request.status)
+                )),
                 resultPreview: imageResultPreviews[task.result_token] || null,
                 resultWorkspace: imageResultWorkspace,
                 onPromptChange: (taskToken, prompt) => {
@@ -62,6 +66,8 @@ export function GenerationPreparationPanel({
                 onRefreshResults: onRefreshImageResults,
                 onLoadCandidatePreview: onLoadImageCandidatePreview,
                 onConnectResult: onConnectImageResult,
+                onRequestAgentEdit: onRequestImageAgentEdit,
+                onDecideAgentEdit: onDecideImageAgentEdit,
             })))
             : emptyState('인물·장소·장면 설계를 저장하면 이미지 작업이 순서대로 나옵니다.'),
         el('details', { className: 'rounded-md border border-white/10 bg-black/20 px-3' }, [

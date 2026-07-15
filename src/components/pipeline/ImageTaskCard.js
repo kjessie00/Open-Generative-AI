@@ -1,6 +1,7 @@
 import { actionButton, el } from './ui.js';
 import { IMAGE_KIND_LABELS, safePreviewSource } from './imagePreparationUi.js';
 import { ImageResultConnector } from './ImageResultConnector.js';
+import { PromptAgentEditor } from './PromptAgentEditor.js';
 
 function resultSlot(task, resultPreview) {
     const source = safePreviewSource(resultPreview);
@@ -17,12 +18,12 @@ function resultSlot(task, resultPreview) {
     });
 }
 
-export function ImageTaskCard({ task, resultPreview, resultWorkspace, onPromptChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult }) {
+export function ImageTaskCard({ task, resultPreview, resultWorkspace, agentRequest, onPromptChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult, onRequestAgentEdit, onDecideAgentEdit }) {
     let connectorOpen = false;
     let preferredCandidateToken = '';
     let preferredImageIndex = 0;
     const root = el('article', {
-        className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3',
+        className: `min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3 ${agentRequest?.status === 'suggestion_ready' ? 'lg:col-span-2 xl:col-span-3' : ''}`,
         attrs: { 'data-work-target': 'image', 'data-sequence': task.sequence, tabindex: -1 },
     });
 
@@ -56,7 +57,11 @@ export function ImageTaskCard({ task, resultPreview, resultWorkspace, onPromptCh
                 el('div', { className: 'flex min-w-0 flex-col gap-3 sm:col-span-2' }, [
                     el('details', { className: 'rounded-md border border-white/10 bg-black/20 px-3' }, [
                         el('summary', { text: '프롬프트 수정', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),
-                        el('div', { className: 'pb-3' }, [prompt]),
+                        el('div', { className: 'pb-3' }, [
+                            el('label', { className: 'mb-1 block text-xs font-semibold text-secondary', text: '현재 프롬프트' }),
+                            prompt,
+                            PromptAgentEditor({ task, lane: 'image', request: agentRequest, onRequest: onRequestAgentEdit, onDecide: onDecideAgentEdit }),
+                        ]),
                     ]),
                     task.result_token
                         ? el('label', { className: 'flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-white/10 bg-black/20 px-3 text-sm text-white' }, [

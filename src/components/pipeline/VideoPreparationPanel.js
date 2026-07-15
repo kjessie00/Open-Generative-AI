@@ -6,6 +6,7 @@ export function VideoPreparationPanel({
     videoPlanState, videoPlanTasks, videoPlanNotice = '', videoResultWorkspace, videoResultPreviews = {},
     onVideoPromptChange, onVideoProviderChange, onSaveVideoPlan, onPrepareVideoPlan, onToggleVideoRetry,
     onRefreshVideoResults, onLoadVideoCandidatePreview, onConnectVideoResult, onOpenVideoResultReview,
+    onRequestVideoAgentEdit, onDecideVideoAgentEdit,
 }) {
     let tasks = normalizeVideoTasks(videoPlanTasks || videoPlanState?.tasks);
     const progress = videoProgress(tasks);
@@ -32,6 +33,9 @@ export function VideoPreparationPanel({
         tasks.length
             ? el('div', { className: 'grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3' }, tasks.map((task) => VideoTaskCard({
                 task, resultPreview: videoResultPreviews[task.result_token] || null, resultWorkspace: videoResultWorkspace,
+                agentRequest: videoPlanState?.collaboration?.recent_requests?.find((request) => (
+                    request.target_task_token === task.task_token && ['queued_local_handoff', 'suggestion_ready'].includes(request.status)
+                )),
                 onPromptChange: (taskToken, prompt) => {
                     tasks = tasks.map((item) => item.task_token === taskToken ? { ...item, prompt } : item);
                     onVideoPromptChange?.(taskToken, prompt);
@@ -42,6 +46,7 @@ export function VideoPreparationPanel({
                 },
                 onToggleRetry: onToggleVideoRetry, onRefreshResults: onRefreshVideoResults,
                 onLoadCandidatePreview: onLoadVideoCandidatePreview, onConnectResult: onConnectVideoResult,
+                onRequestAgentEdit: onRequestVideoAgentEdit, onDecideAgentEdit: onDecideVideoAgentEdit,
             })))
             : emptyState('장면 설계와 참조 이미지를 준비하면 영상 작업이 순서대로 나옵니다.'),
         el('details', { className: 'rounded-md border border-white/10 bg-black/20 px-3' }, [

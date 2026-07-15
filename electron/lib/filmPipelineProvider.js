@@ -7,6 +7,7 @@ const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
+const promptPlanAgentProvider = require('./promptPlanAgentProvider');
 const newProjectExecutionProvider = require('./newProjectExecutionProvider');
 const { defaultLocalAgentSuggestionRunner } = require('./localAgentSuggestionRunner');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
@@ -1080,12 +1081,70 @@ function newProjectImagePlanContext(options = {}) {
     };
 }
 
+function withPromptCollaboration(state, planProvider, context) {
+    return {
+        ...state,
+        collaboration: promptPlanAgentProvider.publicState(planProvider.exactPaths(context.userDataPath)),
+    };
+}
+
 function getNewProjectImagePlan(options = {}) {
-    return newProjectImagePlanProvider.getNewProjectImagePlan(newProjectImagePlanContext(options));
+    const context = newProjectImagePlanContext(options);
+    return withPromptCollaboration(
+        newProjectImagePlanProvider.getNewProjectImagePlan(context), newProjectImagePlanProvider, context,
+    );
 }
 
 function saveNewProjectImagePlan(payload, options = {}) {
-    return newProjectImagePlanProvider.saveNewProjectImagePlan(payload, newProjectImagePlanContext(options));
+    const context = newProjectImagePlanContext(options);
+    newProjectImagePlanProvider.saveNewProjectImagePlan(payload, context);
+    return getNewProjectImagePlan(options);
+}
+
+function imagePromptAgentState(options = {}) {
+    const context = newProjectImagePlanContext(options);
+    return { context, state: newProjectImagePlanProvider.getNewProjectImagePlan(context) };
+}
+
+function enqueueImagePromptAgentRequest(payload, options = {}) {
+    const { context, state } = imagePromptAgentState(options);
+    const result = promptPlanAgentProvider.enqueue({
+        lane: 'image', payload, state, planPaths: newProjectImagePlanProvider.exactPaths(context.userDataPath),
+    });
+    return { ...result, state: getNewProjectImagePlan(options) };
+}
+
+async function runImagePromptAgentRequest(payload, options = {}) {
+    const input = exactAgentRunPayload(payload, ['task_token'], 'IMAGE_PROMPT_AGENT_RUN_SHAPE_INVALID');
+    const context = newProjectImagePlanContext(options);
+    const current = getNewProjectImagePlan(options);
+    const request = current.collaboration?.recent_requests?.find((item) => (
+        item.target_task_token === input.task_token && item.status === 'queued_local_handoff'
+    ));
+    if (!request?.request_id) return { ok: false, status: 'not_ready', executed: false, model_called: false,
+        generation_executed: false, error: 'AGENT_REQUEST_NOT_READY', state: current };
+    try {
+        const runner = options.localAgentSuggestionRunner || defaultLocalAgentSuggestionRunner;
+        const result = await runner.runPrompt({ lane: 'image', requestId: request.request_id, context });
+        return { ok: true, status: 'suggestion_ready', executed: true, model_called: true,
+            generation_executed: false, result, state: getNewProjectImagePlan(options) };
+    } catch (error) {
+        return { ok: false, status: 'failed', executed: false, model_called: error?.modelCalled === true,
+            generation_executed: false, error: publicAgentError(error), state: getNewProjectImagePlan(options) };
+    }
+}
+
+function decideImagePromptAgentSuggestion(payload, options = {}) {
+    const { context, state } = imagePromptAgentState(options);
+    const result = promptPlanAgentProvider.decide({
+        lane: 'image', payload, state, planPaths: newProjectImagePlanProvider.exactPaths(context.userDataPath),
+        save: (tasks, current) => newProjectImagePlanProvider.saveNewProjectImagePlan({
+            tasks,
+            expected_design_revision_sha256: current.design_revision_sha256,
+            expected_image_plan_revision_sha256: current.revision_sha256,
+        }, context),
+    });
+    return { ...result, state: getNewProjectImagePlan(options) };
 }
 
 function prepareNewProjectImagePlan(payload, options = {}) {
@@ -1136,11 +1195,63 @@ function newProjectVideoPlanContext(options = {}) {
 }
 
 function getNewProjectVideoPlan(options = {}) {
-    return newProjectVideoPlanProvider.getNewProjectVideoPlan(newProjectVideoPlanContext(options));
+    const context = newProjectVideoPlanContext(options);
+    return withPromptCollaboration(
+        newProjectVideoPlanProvider.getNewProjectVideoPlan(context), newProjectVideoPlanProvider, context,
+    );
 }
 
 function saveNewProjectVideoPlan(payload, options = {}) {
-    return newProjectVideoPlanProvider.saveNewProjectVideoPlan(payload, newProjectVideoPlanContext(options));
+    const context = newProjectVideoPlanContext(options);
+    newProjectVideoPlanProvider.saveNewProjectVideoPlan(payload, context);
+    return getNewProjectVideoPlan(options);
+}
+
+function videoPromptAgentState(options = {}) {
+    const context = newProjectVideoPlanContext(options);
+    return { context, state: newProjectVideoPlanProvider.getNewProjectVideoPlan(context) };
+}
+
+function enqueueVideoPromptAgentRequest(payload, options = {}) {
+    const { context, state } = videoPromptAgentState(options);
+    const result = promptPlanAgentProvider.enqueue({
+        lane: 'video', payload, state, planPaths: newProjectVideoPlanProvider.exactPaths(context.userDataPath),
+    });
+    return { ...result, state: getNewProjectVideoPlan(options) };
+}
+
+async function runVideoPromptAgentRequest(payload, options = {}) {
+    const input = exactAgentRunPayload(payload, ['task_token'], 'VIDEO_PROMPT_AGENT_RUN_SHAPE_INVALID');
+    const context = newProjectVideoPlanContext(options);
+    const current = getNewProjectVideoPlan(options);
+    const request = current.collaboration?.recent_requests?.find((item) => (
+        item.target_task_token === input.task_token && item.status === 'queued_local_handoff'
+    ));
+    if (!request?.request_id) return { ok: false, status: 'not_ready', executed: false, model_called: false,
+        generation_executed: false, error: 'AGENT_REQUEST_NOT_READY', state: current };
+    try {
+        const runner = options.localAgentSuggestionRunner || defaultLocalAgentSuggestionRunner;
+        const result = await runner.runPrompt({ lane: 'video', requestId: request.request_id, context });
+        return { ok: true, status: 'suggestion_ready', executed: true, model_called: true,
+            generation_executed: false, result, state: getNewProjectVideoPlan(options) };
+    } catch (error) {
+        return { ok: false, status: 'failed', executed: false, model_called: error?.modelCalled === true,
+            generation_executed: false, error: publicAgentError(error), state: getNewProjectVideoPlan(options) };
+    }
+}
+
+function decideVideoPromptAgentSuggestion(payload, options = {}) {
+    const { context, state } = videoPromptAgentState(options);
+    const result = promptPlanAgentProvider.decide({
+        lane: 'video', payload, state, planPaths: newProjectVideoPlanProvider.exactPaths(context.userDataPath),
+        save: (tasks, current) => newProjectVideoPlanProvider.saveNewProjectVideoPlan({
+            tasks,
+            expected_design_revision_sha256: current.design_revision_sha256,
+            expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+            expected_video_plan_revision_sha256: current.revision_sha256,
+        }, context),
+    });
+    return { ...result, state: getNewProjectVideoPlan(options) };
 }
 
 function prepareNewProjectVideoPlan(payload, options = {}) {
@@ -1628,6 +1739,9 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:connect-new-project-image-result', (_, payload) => connectNewProjectImageResult(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-image-result-preview', (_, payload) => getNewProjectImageResultPreview(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-image-retry-selection', (_, payload) => saveNewProjectImageRetrySelection(payload, options));
+    ipcApi.handle('film-pipeline:enqueue-image-prompt-agent-request', (_, payload) => enqueueImagePromptAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:run-image-prompt-agent-request', (_, payload) => runImagePromptAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:decide-image-prompt-agent-suggestion', (_, payload) => decideImagePromptAgentSuggestion(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-video-plan', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return getNewProjectVideoPlan(options);
@@ -1641,6 +1755,9 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:connect-new-project-video-result', (_, payload) => connectNewProjectVideoResult(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-video-result-preview', (_, payload) => getNewProjectVideoResultPreview(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-video-retry-selection', (_, payload) => saveNewProjectVideoRetrySelection(payload, options));
+    ipcApi.handle('film-pipeline:enqueue-video-prompt-agent-request', (_, payload) => enqueueVideoPromptAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:run-video-prompt-agent-request', (_, payload) => runVideoPromptAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:decide-video-prompt-agent-suggestion', (_, payload) => decideVideoPromptAgentSuggestion(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-execution-state', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return getNewProjectExecutionState(options);
@@ -1751,6 +1868,9 @@ module.exports = {
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
     saveNewProjectImageRetrySelection,
+    enqueueImagePromptAgentRequest,
+    runImagePromptAgentRequest,
+    decideImagePromptAgentSuggestion,
     getNewProjectVideoPlan,
     saveNewProjectVideoPlan,
     prepareNewProjectVideoPlan,
@@ -1758,6 +1878,9 @@ module.exports = {
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
     saveNewProjectVideoRetrySelection,
+    enqueueVideoPromptAgentRequest,
+    runVideoPromptAgentRequest,
+    decideVideoPromptAgentSuggestion,
     getNewProjectExecutionState,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,

@@ -935,6 +935,73 @@ export function PipelineStudio() {
                     newProjectImagePlanDirty = true;
                     newProjectImagePlanNotice = '저장하지 않은 프롬프트가 있습니다.';
                 },
+                onRequestImageAgentEdit: async (taskToken, instruction) => {
+                    newProjectImagePlanNotice = '현재 프롬프트를 저장하는 중…';
+                    render();
+                    try {
+                        let current = newProjectImagePlanState;
+                        if (newProjectImagePlanDirty || ['derived', 'design_changed'].includes(current.status)) {
+                            current = await pipelineClient.saveNewProjectImagePlan({
+                                tasks: newProjectImagePlanTasks,
+                                expected_design_revision_sha256: current.design_revision_sha256,
+                                expected_image_plan_revision_sha256: current.revision_sha256,
+                            });
+                            if (!current?.ok) throw new Error('IMAGE_PLAN_SAVE_FAILED');
+                            newProjectImagePlanTasks = structuredClone(current.tasks);
+                            newProjectImagePlanDirty = false;
+                        }
+                        const queued = await pipelineClient.enqueueImagePromptAgentRequest({
+                            task_token: taskToken, instruction,
+                            expected_design_revision_sha256: current.design_revision_sha256,
+                            expected_image_plan_revision_sha256: current.revision_sha256,
+                        });
+                        if (!queued?.ok || !queued?.state) throw new Error('IMAGE_AGENT_QUEUE_FAILED');
+                        newProjectImagePlanState = queued.state;
+                        newProjectImagePlanNotice = '에이전트가 수정안을 만들고 있습니다…';
+                        render();
+                        const result = await pipelineClient.runImagePromptAgentRequest({ task_token: taskToken });
+                        newProjectImagePlanState = result?.state || newProjectImagePlanState;
+                        newProjectImagePlanNotice = result?.ok
+                            ? '수정안이 도착했습니다. 현재 내용과 비교해 보세요.'
+                            : '수정안을 만들지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectImagePlanNotice = '수정안을 만들지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return { ok: false, executed: false, model_called: false, generation_executed: false };
+                    }
+                },
+                onDecideImageAgentEdit: async (suggestionToken, action) => {
+                    if (action === 'apply' && newProjectImagePlanDirty) {
+                        newProjectImagePlanNotice = '현재 프롬프트가 바뀌었습니다. 저장한 뒤 새로 요청하세요.';
+                        render();
+                        return { ok: false, status: 'stale' };
+                    }
+                    try {
+                        const result = await pipelineClient.decideImagePromptAgentSuggestion({
+                            suggestion_token: suggestionToken, action,
+                            expected_design_revision_sha256: newProjectImagePlanState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectImagePlanState.revision_sha256,
+                        });
+                        if (!result?.ok || !result?.state) throw new Error('IMAGE_AGENT_DECISION_FAILED');
+                        newProjectImagePlanState = result.state;
+                        if (action === 'apply') {
+                            newProjectImagePlanTasks = structuredClone(result.state.tasks);
+                            newProjectImagePlanDirty = false;
+                            await refreshNewProjectVideoPlan();
+                        }
+                        newProjectImagePlanNotice = action === 'apply'
+                            ? '수정안을 적용하고 저장했습니다. 생성은 시작하지 않았습니다.'
+                            : '현재 내용을 유지했습니다.';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectImagePlanNotice = '수정안을 처리하지 못했습니다. 새로 요청하세요.';
+                        render();
+                        return { ok: false, status: 'error' };
+                    }
+                },
                 onSaveImagePlan: async (tasks) => {
                     newProjectImagePlanState = { ...newProjectImagePlanState, status: 'saving' };
                     newProjectImagePlanNotice = '저장 중…';
@@ -1064,6 +1131,75 @@ export function PipelineStudio() {
                     ));
                     newProjectVideoPlanDirty = true;
                     newProjectVideoPlanNotice = '저장하지 않은 프롬프트가 있습니다.';
+                },
+                onRequestVideoAgentEdit: async (taskToken, instruction) => {
+                    newProjectVideoPlanNotice = '현재 프롬프트를 저장하는 중…';
+                    render();
+                    try {
+                        let current = newProjectVideoPlanState;
+                        if (newProjectVideoPlanDirty || ['derived', 'design_changed', 'image_changed'].includes(current.status)) {
+                            current = await pipelineClient.saveNewProjectVideoPlan({
+                                tasks: newProjectVideoPlanTasks,
+                                expected_design_revision_sha256: current.design_revision_sha256,
+                                expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+                                expected_video_plan_revision_sha256: current.revision_sha256,
+                            });
+                            if (!current?.ok) throw new Error('VIDEO_PLAN_SAVE_FAILED');
+                            newProjectVideoPlanTasks = structuredClone(current.tasks);
+                            newProjectVideoPlanDirty = false;
+                        }
+                        const queued = await pipelineClient.enqueueVideoPromptAgentRequest({
+                            task_token: taskToken, instruction,
+                            expected_design_revision_sha256: current.design_revision_sha256,
+                            expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: current.revision_sha256,
+                        });
+                        if (!queued?.ok || !queued?.state) throw new Error('VIDEO_AGENT_QUEUE_FAILED');
+                        newProjectVideoPlanState = queued.state;
+                        newProjectVideoPlanNotice = '에이전트가 수정안을 만들고 있습니다…';
+                        render();
+                        const result = await pipelineClient.runVideoPromptAgentRequest({ task_token: taskToken });
+                        newProjectVideoPlanState = result?.state || newProjectVideoPlanState;
+                        newProjectVideoPlanNotice = result?.ok
+                            ? '수정안이 도착했습니다. 현재 내용과 비교해 보세요.'
+                            : '수정안을 만들지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectVideoPlanNotice = '수정안을 만들지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return { ok: false, executed: false, model_called: false, generation_executed: false };
+                    }
+                },
+                onDecideVideoAgentEdit: async (suggestionToken, action) => {
+                    if (action === 'apply' && newProjectVideoPlanDirty) {
+                        newProjectVideoPlanNotice = '현재 프롬프트가 바뀌었습니다. 저장한 뒤 새로 요청하세요.';
+                        render();
+                        return { ok: false, status: 'stale' };
+                    }
+                    try {
+                        const result = await pipelineClient.decideVideoPromptAgentSuggestion({
+                            suggestion_token: suggestionToken, action,
+                            expected_design_revision_sha256: newProjectVideoPlanState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectVideoPlanState.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: newProjectVideoPlanState.revision_sha256,
+                        });
+                        if (!result?.ok || !result?.state) throw new Error('VIDEO_AGENT_DECISION_FAILED');
+                        newProjectVideoPlanState = result.state;
+                        if (action === 'apply') {
+                            newProjectVideoPlanTasks = structuredClone(result.state.tasks);
+                            newProjectVideoPlanDirty = false;
+                        }
+                        newProjectVideoPlanNotice = action === 'apply'
+                            ? '수정안을 적용하고 저장했습니다. 생성은 시작하지 않았습니다.'
+                            : '현재 내용을 유지했습니다.';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectVideoPlanNotice = '수정안을 처리하지 못했습니다. 새로 요청하세요.';
+                        render();
+                        return { ok: false, status: 'error' };
+                    }
                 },
                 onVideoProviderChange: (taskToken, provider) => {
                     newProjectVideoPlanTasks = newProjectVideoPlanTasks.map((task) => (
