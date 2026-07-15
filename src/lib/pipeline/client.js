@@ -260,6 +260,57 @@ export async function saveNewProjectImageRetrySelection(payload) {
     return unavailableImagePlanState('saveNewProjectImageRetrySelection');
 }
 
+function unavailableVideoPlanState(method) {
+    return {
+        ...unavailable(method), status: 'blocked', design_revision_sha256: '', image_plan_revision_sha256: '',
+        revision_sha256: '', tasks: [],
+        preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false, model_called: false,
+    };
+}
+
+export async function getNewProjectVideoPlan() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectVideoPlan === 'function') return bridge.getNewProjectVideoPlan();
+    return unavailableVideoPlanState('getNewProjectVideoPlan');
+}
+
+export async function saveNewProjectVideoPlan(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectVideoPlan === 'function') return bridge.saveNewProjectVideoPlan(payload);
+    return unavailableVideoPlanState('saveNewProjectVideoPlan');
+}
+
+export async function prepareNewProjectVideoPlan(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.prepareNewProjectVideoPlan === 'function') return bridge.prepareNewProjectVideoPlan(payload);
+    return { ...unavailableVideoPlanState('prepareNewProjectVideoPlan'), queued: false, task_count: 0 };
+}
+
+export async function getNewProjectVideoResultWorkspace() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectVideoResultWorkspace === 'function') return bridge.getNewProjectVideoResultWorkspace();
+    return { ...unavailable('getNewProjectVideoResultWorkspace'), status: 'blocked', candidates: [], blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false };
+}
+
+export async function connectNewProjectVideoResult(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.connectNewProjectVideoResult === 'function') return bridge.connectNewProjectVideoResult(payload);
+    return { ...unavailableVideoPlanState('connectNewProjectVideoResult'), connected: false, result_token: '' };
+}
+
+export async function getNewProjectVideoResultPreview(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectVideoResultPreview === 'function') return bridge.getNewProjectVideoResultPreview(payload);
+    return { ...unavailable('getNewProjectVideoResultPreview'), status: 'blocked', loaded: false, result_token: '', blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false };
+}
+
+export async function saveNewProjectVideoRetrySelection(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectVideoRetrySelection === 'function') return bridge.saveNewProjectVideoRetrySelection(payload);
+    return unavailableVideoPlanState('saveNewProjectVideoRetrySelection');
+}
+
 export async function copyNewProjectBuildCommand() {
     const bridge = getBridge();
     if (typeof bridge?.copyNewProjectBuildCommand === 'function') return bridge.copyNewProjectBuildCommand();
@@ -607,6 +658,13 @@ export const pipelineClient = Object.freeze({
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
     saveNewProjectImageRetrySelection,
+    getNewProjectVideoPlan,
+    saveNewProjectVideoPlan,
+    prepareNewProjectVideoPlan,
+    getNewProjectVideoResultWorkspace,
+    connectNewProjectVideoResult,
+    getNewProjectVideoResultPreview,
+    saveNewProjectVideoRetrySelection,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

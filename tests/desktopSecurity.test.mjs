@@ -184,6 +184,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'confirmDstBundleImport',
         'confirmVideoResultImport',
         'connectNewProjectImageResult',
+        'connectNewProjectVideoResult',
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
         'decideDesignAgentSuggestion',
@@ -203,6 +204,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getNewProjectImagePlan',
         'getNewProjectImageResultPreview',
         'getNewProjectImageResultWorkspace',
+        'getNewProjectVideoPlan',
+        'getNewProjectVideoResultPreview',
+        'getNewProjectVideoResultWorkspace',
         'getVideoResultImportWorkspace',
         'listAssets',
         'listProductionChildren',
@@ -215,6 +219,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'planG3ProductionPromotion',
         'planVideoResultImport',
         'prepareNewProjectImagePlan',
+        'prepareNewProjectVideoPlan',
         'previewCommand',
         'promoteG3ProductionSelection',
         'readJsonl',
@@ -225,6 +230,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'saveNewProjectDraft',
         'saveNewProjectImagePlan',
         'saveNewProjectImageRetrySelection',
+        'saveNewProjectVideoPlan',
+        'saveNewProjectVideoRetrySelection',
         'selectProductionRoot',
         'writePlanningFile',
     ]);
@@ -263,6 +270,13 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.connectNewProjectImageResult({ task_token: `task_${'a'.repeat(64)}` });
     await bridge.getNewProjectImageResultPreview({ result_token: `result_${'a'.repeat(64)}` });
     await bridge.saveNewProjectImageRetrySelection({ task_tokens: [] });
+    await bridge.getNewProjectVideoPlan();
+    await bridge.saveNewProjectVideoPlan({ tasks: [] });
+    await bridge.prepareNewProjectVideoPlan({ expected_video_plan_revision_sha256: 'a'.repeat(64) });
+    await bridge.getNewProjectVideoResultWorkspace();
+    await bridge.connectNewProjectVideoResult({ task_token: `task_${'a'.repeat(64)}` });
+    await bridge.getNewProjectVideoResultPreview({ result_token: `result_${'a'.repeat(64)}` });
+    await bridge.saveNewProjectVideoRetrySelection({ task_tokens: [] });
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
     await bridge.selectProductionRoot({ mode: 'production' });
@@ -312,6 +326,13 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:connect-new-project-image-result',
             'film-pipeline:get-new-project-image-result-preview',
             'film-pipeline:save-new-project-image-retry-selection',
+            'film-pipeline:get-new-project-video-plan',
+            'film-pipeline:save-new-project-video-plan',
+            'film-pipeline:prepare-new-project-video-plan',
+            'film-pipeline:get-new-project-video-result-workspace',
+            'film-pipeline:connect-new-project-video-result',
+            'film-pipeline:get-new-project-video-result-preview',
+            'film-pipeline:save-new-project-video-retry-selection',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
@@ -346,6 +367,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-new-project-design-state',
         'film-pipeline:get-new-project-image-plan',
         'film-pipeline:get-new-project-image-result-workspace',
+        'film-pipeline:get-new-project-video-plan',
+        'film-pipeline:get-new-project-video-result-workspace',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',

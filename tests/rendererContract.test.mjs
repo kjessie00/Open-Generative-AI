@@ -2698,6 +2698,92 @@ test('image preparation workbench keeps the ordered DST flow compact and editabl
     assert.ok(calls.some(([method]) => method === 'openReview'));
 });
 
+test('video preparation workbench keeps scene order, direct controls, local result review, and retry selection simple', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { VideoPreparationPanel } = await import('../src/components/pipeline/VideoPreparationPanel.js');
+    const tasks = [
+        {
+            task_token: 'video-task-2', kind: 'scene_video', source_id: 'secret-scene-2', sequence: 2,
+            label: '전화가 쏟아지는 사무실', provider: 'flow', prompt: '장면 2 프롬프트',
+            status: '준비', result_token: '',
+        },
+        {
+            task_token: 'video-task-1', kind: 'scene_video', source_id: 'secret-scene-1', sequence: 1,
+            label: '비 오는 아침', provider: 'grok', prompt: '장면 1 프롬프트',
+            status: '결과연결', result_token: 'private-result-1',
+        },
+        {
+            task_token: 'video-task-3', kind: 'scene_video', source_id: 'secret-scene-3', sequence: 3,
+            label: '밝아진 저녁', provider: 'replicate', prompt: '장면 3 프롬프트',
+            status: '재제작', result_token: 'private-result-3',
+        },
+    ];
+    const panel = VideoPreparationPanel({
+        videoPlanState: { status: 'ready', tasks }, videoPlanTasks: tasks,
+        videoResultWorkspace: {
+            candidates: [
+                { candidate_token: 'hidden-flow-result', provider: 'flow', result_id: 'internal-id', duration_seconds: 6, width: 1080, height: 1920 },
+                { candidate_token: 'hidden-grok-result', provider: 'grok', duration_seconds: 5, width: 720, height: 1280 },
+            ],
+        },
+        videoResultPreviews: { 'private-result-1': { source: 'blob:connected-video' } },
+        onVideoPromptChange: (...args) => calls.push(['prompt', ...args]),
+        onVideoProviderChange: (...args) => calls.push(['provider', ...args]),
+        onSaveVideoPlan: (...args) => calls.push(['save', ...args]),
+        onPrepareVideoPlan: (...args) => calls.push(['prepare', ...args]),
+        onToggleVideoRetry: (...args) => calls.push(['retry', ...args]),
+        onRefreshVideoResults: (...args) => calls.push(['refresh', ...args]),
+        onLoadVideoCandidatePreview: async (payload) => {
+            calls.push(['preview', payload]);
+            return { loaded: true, mime_type: 'video/mp4', byte_length: 4, base64: 'AAAAAA==' };
+        },
+        onConnectVideoResult: async (payload) => {
+            calls.push(['connect', payload]);
+            return { ok: true, connected: true };
+        },
+        onOpenVideoResultReview: () => calls.push(['review']),
+    });
+
+    assert.ok(byText(panel, 'h2', '영상 작업'));
+    assert.match(panel.textContent, /완료 1\/3 · 다시 만들기 1 · 다음: 2\. 전화가 쏟아지는 사무실/);
+    assert.deepEqual(findAll(panel, 'article').map((card) => findAll(card, 'h3')[0].textContent), [
+        '비 오는 아침', '전화가 쏟아지는 사무실', '밝아진 저녁',
+    ]);
+    assert.match(panel.textContent, /영상 작업 준비는 .* 영상 생성은 시작하지 않습니다/);
+    assert.doesNotMatch(panel.textContent, /video-task|secret-scene|private-result|hidden-|internal-id|\/private\//);
+    assert.deepEqual(findAll(panel, 'span').filter((node) => node.className.includes('text-[11px]')), []);
+
+    const prompt = byAttribute(panel, 'textarea', 'aria-label', '전화가 쏟아지는 사무실 프롬프트');
+    prompt.value = '수정한 장면 2 프롬프트';
+    await prompt.dispatchEvent({ type: 'input' });
+    const provider = byAttribute(panel, 'select', 'aria-label', '전화가 쏟아지는 사무실 생성 도구');
+    provider.value = 'bytedance';
+    await provider.dispatchEvent({ type: 'change' });
+    assert.deepEqual(calls.at(-2), ['prompt', 'video-task-2', '수정한 장면 2 프롬프트']);
+    assert.deepEqual(calls.at(-1), ['provider', 'video-task-2', 'bytedance']);
+
+    await byText(panel, 'button', '프롬프트 저장').dispatchEvent({ type: 'click' });
+    await byText(panel, 'button', '영상 작업 준비').dispatchEvent({ type: 'click' });
+    assert.ok(calls.some(([method]) => method === 'save'));
+    assert.ok(calls.some(([method]) => method === 'prepare'));
+
+    const retry = byAttribute(panel, 'input', 'aria-label', '비 오는 아침 다시 만들기');
+    retry.checked = true;
+    await retry.dispatchEvent({ type: 'change' });
+    assert.ok(calls.some((call) => call[0] === 'retry' && call[1] === 'video-task-1' && call[2] === true));
+
+    await byText(panel, 'button', '완료 영상 연결').dispatchEvent({ type: 'click' });
+    assert.match(panel.textContent, /Flow · 6\.0초 · 1080×1920/);
+    assert.doesNotMatch(panel.textContent, /internal-id|hidden-flow-result/);
+    await byText(panel, 'button', '영상 미리보기').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.ok(calls.some(([method, payload]) => method === 'preview' && payload.candidateToken === 'hidden-flow-result'));
+    await byText(panel, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    assert.ok(calls.some(([method, payload]) => method === 'connect' && payload.taskToken === 'video-task-2'));
+});
+
 test('PipelineStudio saves, prepares, connects, and retries image tasks with exact revision-bound payloads', async (t) => {
     const calls = [];
     const designRevision = 'd'.repeat(64);
@@ -2801,4 +2887,115 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
         expected_image_plan_revision_sha256: '3'.repeat(64),
     });
     assert.match(studio.textContent, /다시 만들기로 선택했습니다/);
+});
+
+test('PipelineStudio saves, prepares, connects, and retries video tasks with exact revision-bound payloads', async (t) => {
+    const calls = [];
+    const designRevision = 'd'.repeat(64);
+    const imageRevision = 'i'.repeat(64);
+    let planRevision = '1'.repeat(64);
+    let tasks = [{
+        task_token: 'task_'.concat('v'.repeat(64)), kind: 'scene_video', source_id: 'scene_01', sequence: 1,
+        label: '첫 장면', provider: 'flow', prompt: '초기 영상 프롬프트', status: '준비', result_token: '',
+    }];
+    const state = (status = 'restored') => ({
+        ok: true, status, design_revision_sha256: designRevision, image_plan_revision_sha256: imageRevision,
+        revision_sha256: planRevision, tasks: structuredClone(tasks),
+        preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
+        blockers: [], executed: false, generation_executed: false, model_called: false,
+    });
+    const bridge = {
+        async getConfig() { return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getHarnessContractStatus() { return { ok: true, ready: true, readiness: 'available', entries: [] }; },
+        async getNewProjectDraftState() { return { status: 'restored', draft: {}, collaboration: { recent_requests: [] }, blockers: [] }; },
+        async getNewProjectDesignState() {
+            return { ok: true, status: 'restored', board: { characters: [], locations: [], scenes: [] }, revision_sha256: designRevision, planning_revision_sha256: 'p'.repeat(64), collaboration: { recent_requests: [] }, blockers: [] };
+        },
+        async getNewProjectImagePlan() { return { ok: true, status: 'restored', design_revision_sha256: designRevision, revision_sha256: imageRevision, tasks: [], blockers: [] }; },
+        async getNewProjectImageResultWorkspace() { return { ok: true, status: 'empty', candidates: [], blockers: [] }; },
+        async getNewProjectVideoPlan() { calls.push(['getVideoPlan']); return state(); },
+        async getNewProjectVideoResultWorkspace() {
+            calls.push(['getVideoResults']);
+            return { ok: true, status: 'ready', candidates: [{ candidate_token: 'candidate-safe', provider: 'bytedance', duration_seconds: 5, width: 1080, height: 1920 }], blockers: [] };
+        },
+        async getVideoResultImportWorkspace() { return { status: 'empty', candidates: [], initial_targets: [], blockers: [] }; },
+        async saveNewProjectVideoPlan(payload) {
+            calls.push(['saveVideo', structuredClone(payload)]);
+            tasks = structuredClone(payload.tasks);
+            planRevision = '2'.repeat(64);
+            return state('saved');
+        },
+        async prepareNewProjectVideoPlan(payload) {
+            calls.push(['prepareVideo', structuredClone(payload)]);
+            return { ok: true, queued: true, executed: false, model_called: false, generation_executed: false, state: state() };
+        },
+        async loadVideoResultImportPreview(payload) {
+            calls.push(['candidateVideoPreview', structuredClone(payload)]);
+            return { ok: true, loaded: true, mime_type: 'video/mp4', byte_length: 4, base64: 'AAAAAA==' };
+        },
+        async connectNewProjectVideoResult(payload) {
+            calls.push(['connectVideo', structuredClone(payload)]);
+            tasks = tasks.map((task) => ({ ...task, status: '결과연결', result_token: 'result_'.concat('r'.repeat(64)) }));
+            planRevision = '3'.repeat(64);
+            return { ok: true, connected: true, result_token: tasks[0].result_token, state: state() };
+        },
+        async getNewProjectVideoResultPreview(payload) {
+            calls.push(['resultVideoPreview', structuredClone(payload)]);
+            return { ok: true, loaded: true, result_token: payload.result_token, mime_type: 'video/mp4', byte_length: 4, base64: 'AAAAAA==' };
+        },
+        async saveNewProjectVideoRetrySelection(payload) {
+            calls.push(['retryVideo', structuredClone(payload)]);
+            tasks = tasks.map((task) => ({ ...task, status: payload.task_tokens.includes(task.task_token) ? '재제작' : '결과연결' }));
+            planRevision = '4'.repeat(64);
+            return state('saved');
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'videos' } });
+
+    const prompt = byAttribute(studio, 'textarea', 'aria-label', '첫 장면 프롬프트');
+    prompt.value = '직접 수정한 영상 프롬프트';
+    await prompt.dispatchEvent({ type: 'input' });
+    const provider = byAttribute(studio, 'select', 'aria-label', '첫 장면 생성 도구');
+    provider.value = 'bytedance';
+    await provider.dispatchEvent({ type: 'change' });
+    await byText(studio, 'button', '프롬프트 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const saved = calls.find(([method]) => method === 'saveVideo')[1];
+    assert.equal(saved.tasks[0].prompt, '직접 수정한 영상 프롬프트');
+    assert.equal(saved.tasks[0].provider, 'bytedance');
+    assert.equal(saved.expected_design_revision_sha256, designRevision);
+    assert.equal(saved.expected_image_plan_revision_sha256, imageRevision);
+    assert.equal(saved.expected_video_plan_revision_sha256, '1'.repeat(64));
+
+    await byText(studio, 'button', '영상 작업 준비').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'prepareVideo')[1], {
+        expected_design_revision_sha256: designRevision,
+        expected_image_plan_revision_sha256: imageRevision,
+        expected_video_plan_revision_sha256: '2'.repeat(64),
+    });
+    assert.match(studio.textContent, /생성은 시작하지 않았습니다/);
+
+    await byText(studio, 'button', '완료 영상 연결').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'connectVideo')[1], {
+        task_token: tasks[0].task_token,
+        candidate_token: 'candidate-safe',
+        expected_design_revision_sha256: designRevision,
+        expected_image_plan_revision_sha256: imageRevision,
+        expected_video_plan_revision_sha256: '2'.repeat(64),
+    });
+    assert.ok(findAll(studio, 'video').some((video) => video.attributes.get('src')?.startsWith('blob:')));
+
+    const retry = byAttribute(studio, 'input', 'aria-label', '첫 장면 다시 만들기');
+    retry.checked = true;
+    await retry.dispatchEvent({ type: 'change' });
+    await flushRenderer();
+    assert.equal(calls.find(([method]) => method === 'retryVideo')[1].expected_video_plan_revision_sha256, '3'.repeat(64));
 });

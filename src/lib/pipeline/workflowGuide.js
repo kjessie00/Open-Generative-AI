@@ -11,6 +11,7 @@ export const WORKFLOW_STAGES = Object.freeze([
     ]) }),
     Object.freeze({ id: 'prepare', number: 3, label: '생성 준비', tabs: Object.freeze([
         Object.freeze({ id: 'assets', label: '이미지 작업' }),
+        Object.freeze({ id: 'videos', label: '영상 작업' }),
         Object.freeze({ id: 'prompts', label: '프롬프트 팩' }),
         Object.freeze({ id: 'gates', label: '검토 게이트' }),
         Object.freeze({ id: 'queue', label: '생성 대기열' }),

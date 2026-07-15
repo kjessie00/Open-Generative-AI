@@ -697,6 +697,85 @@ function getVideoResultImportPreview(payload, context = {}) {
     }
 }
 
+// Main-process-only handoff for private workbench imports. The renderer receives
+// only an opaque candidate token; this helper re-scans and re-verifies the
+// candidate, then performs a stable, bounded copy into a caller-owned private
+// staging directory without exposing the source path or loading the clip into
+// renderer memory.
+function copyVideoResultCandidateToPrivateFile(payload, context = {}) {
+    exactKeys(payload, ['candidateToken', 'destinationPath', 'destinationRoot'], 'VIDEO_IMPORT_PRIVATE_COPY_REQUEST_INVALID');
+    const token = safeOptionalText(payload.candidateToken, 256, 'VIDEO_IMPORT_CANDIDATE_TOKEN_INVALID');
+    if (!TOKEN_PATTERN.test(token)) throw failure('VIDEO_IMPORT_CANDIDATE_TOKEN_INVALID');
+    const destinationRoot = assertRealDirectory(payload.destinationRoot, 'VIDEO_IMPORT_PRIVATE_DESTINATION_UNSAFE');
+    if ((destinationRoot.stats.mode & 0o777) !== 0o700) throw failure('VIDEO_IMPORT_PRIVATE_DESTINATION_UNSAFE');
+    if (typeof payload.destinationPath !== 'string' || !path.isAbsolute(payload.destinationPath)
+        || path.normalize(payload.destinationPath) !== payload.destinationPath
+        || path.dirname(payload.destinationPath) !== destinationRoot.realPath
+        || !/^\.video-source-[a-f0-9]{24}\.tmp$/.test(path.basename(payload.destinationPath))) {
+        throw failure('VIDEO_IMPORT_PRIVATE_DESTINATION_UNSAFE');
+    }
+    const inventory = scanInventory(context);
+    const candidate = inventory.candidates.find((entry) => entry.token === token);
+    if (!candidate) throw failure('VIDEO_IMPORT_CANDIDATE_TOKEN_INVALID');
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') throw failure('VIDEO_IMPORT_NOFOLLOW_UNAVAILABLE');
+    let sourceDescriptor;
+    let destinationDescriptor;
+    let destinationCreated = false;
+    let completed = false;
+    try {
+        const sourceBefore = fs.lstatSync(candidate.filePath);
+        if (sourceBefore.isSymbolicLink() || !sourceBefore.isFile()
+            || !sameIdentity(identity(sourceBefore), candidate.source.identity)) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
+        sourceDescriptor = fs.openSync(candidate.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const sourceOpened = fs.fstatSync(sourceDescriptor);
+        if (!sameIdentity(identity(sourceOpened), candidate.source.identity)) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
+        destinationDescriptor = fs.openSync(payload.destinationPath, fs.constants.O_WRONLY | fs.constants.O_CREAT
+            | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+        destinationCreated = true;
+        const digest = crypto.createHash('sha256');
+        const chunk = Buffer.allocUnsafe(1024 * 1024);
+        let position = 0;
+        while (position < sourceOpened.size) {
+            const count = fs.readSync(sourceDescriptor, chunk, 0, Math.min(chunk.length, sourceOpened.size - position), position);
+            if (count <= 0) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
+            fs.writeSync(destinationDescriptor, chunk, 0, count, position);
+            digest.update(chunk.subarray(0, count));
+            position += count;
+        }
+        fs.fsyncSync(destinationDescriptor);
+        const sourceAfter = fs.fstatSync(sourceDescriptor);
+        const sourcePathAfter = fs.lstatSync(candidate.filePath);
+        const destinationAfter = fs.fstatSync(destinationDescriptor);
+        const copiedSha256 = digest.digest('hex');
+        if (position !== candidate.source.size || copiedSha256 !== candidate.source.sha256
+            || !sameIdentity(identity(sourceOpened), identity(sourceAfter))
+            || !sameIdentity(identity(sourceOpened), identity(sourcePathAfter))
+            || !destinationAfter.isFile() || (destinationAfter.mode & 0o777) !== 0o600
+            || destinationAfter.size !== position) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
+        fsyncDirectory(destinationRoot.realPath);
+        completed = true;
+        return {
+            provider: candidate.provider,
+            source_sha256: copiedSha256,
+            byte_length: position,
+            duration_seconds: candidate.probe.durationSeconds,
+            width: candidate.probe.width,
+            height: candidate.probe.height,
+            provenance_kind: candidate.provenanceKind || '',
+        };
+    } finally {
+        if (sourceDescriptor !== undefined) {
+            try { fs.closeSync(sourceDescriptor); } catch { /* already closed */ }
+        }
+        if (destinationDescriptor !== undefined) {
+            try { fs.closeSync(destinationDescriptor); } catch { /* already closed */ }
+        }
+        if (!completed && destinationCreated) {
+            try { fs.unlinkSync(payload.destinationPath); } catch { /* absent */ }
+        }
+    }
+}
+
 function assertProductionRoot(context = {}) {
     const info = assertRealDirectory(context.config?.productionRoot, 'VIDEO_IMPORT_PRODUCTION_ROOT_UNSAFE');
     return {
@@ -1473,6 +1552,7 @@ module.exports = {
     DEFAULT_PLAN_TTL_MS,
     getVideoResultImportWorkspace,
     getVideoResultImportPreview,
+    copyVideoResultCandidateToPrivateFile,
     planVideoResultImport,
     confirmVideoResultImport,
 };

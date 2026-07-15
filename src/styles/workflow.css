@@ -69,6 +69,7 @@
 .pipeline-subnav-item,
 .pipeline-mobile-subnav-item {
   width: 100%;
+  min-height: 2.75rem;
   border: 0;
   background: transparent;
   color: #919198;
@@ -79,13 +80,13 @@
 .pipeline-subnav-item.is-active,
 .pipeline-mobile-subnav-item.is-active { color: #65d9d3; }
 
-.pipeline-mobile-subnav { display: flex; overflow-x: auto; border-top: 1px solid #282828; }
-.pipeline-mobile-subnav-item { width: auto; flex: 0 0 auto; }
+.pipeline-mobile-subnav { display: flex; flex-wrap: wrap; border-top: 1px solid #282828; }
+.pipeline-mobile-subnav-item { width: auto; flex: 1 1 8rem; text-align: center; }
 .pipeline-production-details { margin-top: auto; }
 .pipeline-production-count { color: #8d8d95; font-variant-numeric: tabular-nums; }
 .pipeline-project-actions { display: grid; grid-template-columns: 1fr; gap: 0.5rem; }
 .pipeline-project-actions button {
-  min-height: 2.25rem;
+  min-height: 2.75rem;
   border: 1px solid #303030;
   border-radius: 6px;
   background: #151515;

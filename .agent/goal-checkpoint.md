@@ -148,9 +148,17 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - AC-UI6: PASS — 대상 19/19, 전체 203/203, 실제 synthetic temp selected-range 1/1, lint, 53-module build, diff check와 두 브라우저 경로가 통과했다.
 - Current round completion: `COMPLETED_AND_PUSHED`; 구현 커밋과 `origin/main` 반영이 완료되었고 post-push 저장소는 clean/no diff였다. 실제 production 사용과 사람 품질 승인은 이번 UI 단순화 완료조건 밖이며 별도 승인 단계로 남는다.
 
+### Current Round Completion Evidence (2026-07-16 Ordered Video Workbench)
+
+- Added private new-project `영상 작업` after `이미지 작업`: scene-order cards, Flow/Grok/Replicate/ByteDance selection, direct prompt edit/save, dry-run preparation, pathless local result preview/connect/playback, and retry-only selection.
+- Main process re-scans, hashes, ffprobes, and streams up to 512 MiB into private 0700/0600 storage; renderer preview limits are not used as the import limit, and ephemeral candidate tokens are not persisted.
+- Actual Electron E2E used a valid local ffmpeg MP4: 4/4 decoded at readyState 4, one non-first scene retry produced exactly one prepared task, full quit/relaunch restored 4 videos + 1 retry + prompt, 320/768/1024/1440 overflow/clipping 0 and minimum control height 44px, console/external requests 0.
+- Runtime verification found and fixed two real-only defects: env result roots were missing from the public preview context, and a retry subset beginning after sequence 1 was rejected by queue validation. Evidence: `docs/ui_integration/55_new_project_video_workbench.md` and `/Users/jessiek/.codex/visualizations/2026/07/16/open-ga-video-workbench-e2e/result.json`.
+- No paid generation, provider submit, browser automation, API key, upload, or production write occurred. Technical integration PASS does not claim live provider generation, output quality, or Jessie approval.
+
 ## Pending
 
-- Connect the private ordered image preparation queue to an explicitly authorized live DST executor and add progress/receipt ingestion without weakening the current no-generation default. Build the equivalent new-project video sequence/review/retry workbench for Flow, Grok and Replicate/ByteDance results. Keep real output quality and Jessie approval separate.
+- Connect the private ordered image and video preparation queues to explicitly authorized live DST/Flow/Grok/Replicate/ByteDance executors and add progress/receipt ingestion without weakening the current no-generation default. Keep real output quality and Jessie approval separate.
 - Re-run the Ep01 native folder selection manually or with a separately proven macOS dialog harness; keep its current sidebar/preload/data PASS separate from the native BLOCK.
 - Resolve or explicitly accept the offline OSV database gap without enabling network access implicitly.
 - Independent planning-write/path-provenance acceptance is BLOCK after the first verifier and exactly one fallback both failed at the pre-code cybersecurity classifier. Do not automatically call another verifier; root cannot final-accept this security patch.

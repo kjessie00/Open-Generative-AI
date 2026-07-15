@@ -6,7 +6,7 @@ import test from 'node:test';
 const root = path.resolve(import.meta.dirname, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
-test('Korean pipeline information architecture has five stages with all ten work panels', () => {
+test('Korean pipeline information architecture has five stages with all eleven work panels', () => {
     const studio = read('src/components/pipeline/PipelineStudio.js');
     const sidebar = read('src/components/pipeline/PipelineSidebar.js');
     const guide = read('src/lib/pipeline/workflowGuide.js');
@@ -19,6 +19,7 @@ test('Korean pipeline information architecture has five stages with all ten work
         'shot-designer',
         'motion',
         'assets',
+        'videos',
         'prompts',
         'gates',
         'queue',

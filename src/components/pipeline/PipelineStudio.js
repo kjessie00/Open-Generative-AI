@@ -18,6 +18,7 @@ import {
     normalizeFinishingWorkspace,
 } from '../../lib/pipeline/finishingWorkbenchState.js';
 import { deriveWorkflowGuide, stageForTab, WORKFLOW_STAGES } from '../../lib/pipeline/workflowGuide.js';
+import { createG3PreviewObjectUrl } from '../../lib/pipeline/g3PreviewObjectUrl.js';
 import { PipelineSidebar } from './PipelineSidebar.js';
 import { WorkflowOverview } from './WorkflowOverview.js';
 import { IntakePanel } from './IntakePanel.js';
@@ -25,6 +26,7 @@ import { StoryboardPanel } from './StoryboardPanel.js';
 import { ShotDesignerPanel } from './ShotDesignerPanel.js';
 import { MotionBoardPanel } from './MotionBoardPanel.js';
 import { GenerationPreparationPanel } from './GenerationPreparationPanel.js';
+import { VideoPreparationPanel } from './VideoPreparationPanel.js';
 import { PromptPackPanel } from './PromptPackPanel.js';
 import { ReviewGatesPanel } from './ReviewGatesPanel.js';
 import { QueuePanel } from './QueuePanel.js';
@@ -157,6 +159,18 @@ function emptyNewProjectImageResultWorkspace(status = 'empty', blocker = '') {
     return { status, candidates: [], blockers: blocker ? [blocker] : [] };
 }
 
+function emptyNewProjectVideoPlanState(status = 'empty', blocker = '') {
+    return {
+        ok: false, status, design_revision_sha256: '', image_plan_revision_sha256: '', revision_sha256: '', tasks: [],
+        preparation: { status: 'empty', items: [], executed: false, model_called: false },
+        blockers: blocker ? [blocker] : [],
+    };
+}
+
+function emptyNewProjectVideoResultWorkspace(status = 'empty', blocker = '') {
+    return { status, candidates: [], blockers: blocker ? [blocker] : [] };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
@@ -164,6 +178,7 @@ function renderPanel(tabId, state, config, actions) {
     if (tabId === 'shot-designer') return ShotDesignerPanel(props);
     if (tabId === 'motion') return MotionBoardPanel(props);
     if (tabId === 'assets') return GenerationPreparationPanel(props);
+    if (tabId === 'videos') return VideoPreparationPanel(props);
     if (tabId === 'prompts') return PromptPackPanel(props);
     if (tabId === 'gates') return ReviewGatesPanel(props);
     if (tabId === 'queue') return QueuePanel(props);
@@ -215,6 +230,12 @@ export function PipelineStudio() {
     let newProjectImagePlanNotice = '';
     let newProjectImageResultWorkspace = emptyNewProjectImageResultWorkspace('loading');
     let newProjectImageResultPreviews = {};
+    let newProjectVideoPlanState = emptyNewProjectVideoPlanState('loading');
+    let newProjectVideoPlanTasks = [];
+    let newProjectVideoPlanDirty = false;
+    let newProjectVideoPlanNotice = '';
+    let newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('loading');
+    let newProjectVideoResultPreviews = {};
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
     let g3PromotionPlan = emptyG3PromotionPlan();
@@ -326,6 +347,49 @@ export function PipelineStudio() {
             }
             render();
             return newProjectImageResultWorkspace;
+        };
+
+        const refreshNewProjectVideoPreviews = async (tasks = newProjectVideoPlanTasks) => {
+            const tokens = Array.from(new Set((tasks || []).map((task) => task.result_token).filter(Boolean)));
+            const loaded = await Promise.all(tokens.map(async (resultToken) => {
+                try {
+                    const raw = await pipelineClient.getNewProjectVideoResultPreview({ result_token: resultToken });
+                    const prepared = createG3PreviewObjectUrl(raw);
+                    return prepared.ok ? [resultToken, { source: prepared.url, dispose: prepared.dispose }] : [resultToken, null];
+                } catch {
+                    return [resultToken, null];
+                }
+            }));
+            Object.values(newProjectVideoResultPreviews).forEach((preview) => preview?.dispose?.());
+            newProjectVideoResultPreviews = Object.fromEntries(loaded.filter(([, value]) => value?.source));
+        };
+
+        const refreshNewProjectVideoPlan = async ({ preserveLocalEdits = false } = {}) => {
+            const localTasks = newProjectVideoPlanTasks;
+            try {
+                const result = await pipelineClient.getNewProjectVideoPlan();
+                newProjectVideoPlanState = result;
+                if (!(preserveLocalEdits && newProjectVideoPlanDirty)) {
+                    newProjectVideoPlanTasks = structuredClone(result?.tasks || []);
+                    newProjectVideoPlanDirty = false;
+                    await refreshNewProjectVideoPreviews(newProjectVideoPlanTasks);
+                } else {
+                    newProjectVideoPlanTasks = localTasks;
+                }
+            } catch {
+                newProjectVideoPlanState = emptyNewProjectVideoPlanState('error', 'VIDEO_PLAN_READ_FAILED');
+                newProjectVideoPlanNotice = '영상 작업을 불러오지 못했습니다.';
+            }
+        };
+
+        const refreshNewProjectVideoResults = async () => {
+            try {
+                newProjectVideoResultWorkspace = await pipelineClient.getNewProjectVideoResultWorkspace();
+            } catch {
+                newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('error', 'VIDEO_RESULT_WORKSPACE_READ_FAILED');
+            }
+            render();
+            return newProjectVideoResultWorkspace;
         };
 
         const openProductionFolder = async () => {
@@ -485,6 +549,13 @@ export function PipelineStudio() {
                 imageResultWorkspace: newProjectImageResultWorkspace,
                 imageResultPreviews: newProjectImageResultPreviews,
                 onOpenImageResultReview: () => switchTab('storyboard'),
+                videoPlanState: newProjectVideoPlanState,
+                videoPlanTasks: newProjectVideoPlanTasks,
+                videoPlanDirty: newProjectVideoPlanDirty,
+                videoPlanNotice: newProjectVideoPlanNotice,
+                videoResultWorkspace: newProjectVideoResultWorkspace,
+                videoResultPreviews: newProjectVideoResultPreviews,
+                onOpenVideoResultReview: () => switchTab('qa'),
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
                     if (field === 'brief' || field === 'script') newProjectDraftDirty[field] = true;
@@ -864,6 +935,148 @@ export function PipelineStudio() {
                         return { ok: false, connected: false, executed: false };
                     }
                 },
+                onVideoPromptChange: (taskToken, prompt) => {
+                    newProjectVideoPlanTasks = newProjectVideoPlanTasks.map((task) => (
+                        task.task_token === taskToken ? { ...task, prompt } : task
+                    ));
+                    newProjectVideoPlanDirty = true;
+                    newProjectVideoPlanNotice = '저장하지 않은 프롬프트가 있습니다.';
+                },
+                onVideoProviderChange: (taskToken, provider) => {
+                    newProjectVideoPlanTasks = newProjectVideoPlanTasks.map((task) => (
+                        task.task_token === taskToken ? { ...task, provider } : task
+                    ));
+                    newProjectVideoPlanDirty = true;
+                    newProjectVideoPlanNotice = '저장하지 않은 생성 도구 변경이 있습니다.';
+                },
+                onSaveVideoPlan: async (tasks) => {
+                    newProjectVideoPlanState = { ...newProjectVideoPlanState, status: 'saving' };
+                    newProjectVideoPlanNotice = '저장 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectVideoPlan({
+                            tasks,
+                            expected_design_revision_sha256: newProjectVideoPlanState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectVideoPlanState.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: newProjectVideoPlanState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!nextState?.ok || !Array.isArray(nextState.tasks)) throw new Error('VIDEO_PLAN_SAVE_FAILED');
+                        newProjectVideoPlanState = nextState;
+                        newProjectVideoPlanTasks = structuredClone(nextState.tasks);
+                        newProjectVideoPlanDirty = false;
+                        newProjectVideoPlanNotice = '프롬프트와 생성 도구를 저장했습니다.';
+                        render();
+                        return nextState;
+                    } catch {
+                        newProjectVideoPlanState = { ...newProjectVideoPlanState, status: 'error' };
+                        newProjectVideoPlanNotice = '영상 작업을 저장하지 못했습니다.';
+                        render();
+                        return { ok: false, executed: false, model_called: false };
+                    }
+                },
+                onPrepareVideoPlan: async (tasks) => {
+                    const needsSave = newProjectVideoPlanDirty
+                        || ['derived', 'design_changed', 'image_changed'].includes(newProjectVideoPlanState.status);
+                    newProjectVideoPlanState = { ...newProjectVideoPlanState, status: 'preparing' };
+                    newProjectVideoPlanNotice = '영상 작업 순서를 준비하는 중…';
+                    render();
+                    try {
+                        let current = newProjectVideoPlanState;
+                        if (needsSave) {
+                            const saved = await pipelineClient.saveNewProjectVideoPlan({
+                                tasks,
+                                expected_design_revision_sha256: current.design_revision_sha256,
+                                expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+                                expected_video_plan_revision_sha256: current.revision_sha256,
+                            });
+                            current = saved?.state || saved;
+                            if (!current?.ok) throw new Error('VIDEO_PLAN_SAVE_FAILED');
+                        }
+                        const prepared = await pipelineClient.prepareNewProjectVideoPlan({
+                            expected_design_revision_sha256: current.design_revision_sha256,
+                            expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: current.revision_sha256,
+                        });
+                        const nextState = prepared?.state || prepared;
+                        if (!nextState?.ok) throw new Error('VIDEO_PLAN_PREPARE_FAILED');
+                        newProjectVideoPlanState = nextState;
+                        newProjectVideoPlanTasks = structuredClone(nextState.tasks || current.tasks || tasks);
+                        newProjectVideoPlanDirty = false;
+                        newProjectVideoPlanNotice = '영상 작업 순서를 준비했습니다. 생성은 시작하지 않았습니다.';
+                        render();
+                        return prepared;
+                    } catch {
+                        newProjectVideoPlanState = { ...newProjectVideoPlanState, status: 'error' };
+                        newProjectVideoPlanNotice = '영상 작업 준비를 저장하지 못했습니다.';
+                        render();
+                        return { ok: false, executed: false, model_called: false };
+                    }
+                },
+                onToggleVideoRetry: async (taskToken, selected) => {
+                    const previous = newProjectVideoPlanTasks;
+                    const nextTasks = previous.map((task) => task.task_token === taskToken
+                        ? { ...task, status: selected ? '재제작' : task.result_token ? '결과연결' : '준비' }
+                        : task);
+                    newProjectVideoPlanTasks = nextTasks;
+                    newProjectVideoPlanNotice = '다시 만들 항목을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectVideoRetrySelection({
+                            task_tokens: nextTasks.filter((task) => task.status === '재제작').map((task) => task.task_token),
+                            expected_design_revision_sha256: newProjectVideoPlanState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectVideoPlanState.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: newProjectVideoPlanState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!nextState?.ok) throw new Error('VIDEO_RETRY_SAVE_FAILED');
+                        newProjectVideoPlanState = nextState;
+                        newProjectVideoPlanTasks = structuredClone(nextState.tasks);
+                        newProjectVideoPlanNotice = selected ? '다시 만들기로 선택했습니다.' : '다시 만들기 선택을 해제했습니다.';
+                    } catch {
+                        newProjectVideoPlanTasks = previous;
+                        newProjectVideoPlanNotice = '다시 만들 선택을 저장하지 못했습니다.';
+                    }
+                    render();
+                },
+                onRefreshVideoResults: refreshNewProjectVideoResults,
+                onLoadVideoCandidatePreview: (payload) => pipelineClient.loadVideoResultImportPreview(payload),
+                onConnectVideoResult: async ({ taskToken, candidateToken }) => {
+                    newProjectVideoPlanNotice = '완료 영상을 연결하는 중…';
+                    render();
+                    try {
+                        let current = newProjectVideoPlanState;
+                        if (newProjectVideoPlanDirty || ['derived', 'design_changed', 'image_changed'].includes(current.status)) {
+                            const saved = await pipelineClient.saveNewProjectVideoPlan({
+                                tasks: newProjectVideoPlanTasks,
+                                expected_design_revision_sha256: current.design_revision_sha256,
+                                expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+                                expected_video_plan_revision_sha256: current.revision_sha256,
+                            });
+                            current = saved?.state || saved;
+                            if (!current?.ok) throw new Error('VIDEO_PLAN_SAVE_FAILED');
+                        }
+                        const result = await pipelineClient.connectNewProjectVideoResult({
+                            task_token: taskToken,
+                            candidate_token: candidateToken,
+                            expected_design_revision_sha256: current.design_revision_sha256,
+                            expected_image_plan_revision_sha256: current.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: current.revision_sha256,
+                        });
+                        if (!result?.connected || !result?.state) throw new Error('VIDEO_RESULT_CONNECT_FAILED');
+                        newProjectVideoPlanState = result.state;
+                        newProjectVideoPlanTasks = structuredClone(result.state.tasks);
+                        newProjectVideoPlanDirty = false;
+                        await refreshNewProjectVideoPreviews(newProjectVideoPlanTasks);
+                        newProjectVideoPlanNotice = '완료 영상을 연결했습니다.';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectVideoPlanNotice = '완료 영상을 연결하지 못했습니다.';
+                        render();
+                        return { ok: false, connected: false, executed: false };
+                    }
+                },
                 onSavePlanningFile: async (payload) => {
                     try {
                         const result = await pipelineClient.writePlanningFile(payload);
@@ -1172,13 +1385,15 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoImportResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, videoImportResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
             pipelineClient.getNewProjectDesignState(),
             pipelineClient.getNewProjectImagePlan(),
             pipelineClient.getNewProjectImageResultWorkspace(),
+            pipelineClient.getNewProjectVideoPlan(),
+            pipelineClient.getNewProjectVideoResultWorkspace(),
             pipelineClient.getVideoResultImportWorkspace(),
         ]);
         if (configResult.status === 'fulfilled') {
@@ -1226,6 +1441,28 @@ export function PipelineStudio() {
             newProjectImageResultWorkspace = imageWorkspaceResult.value;
         } else {
             newProjectImageResultWorkspace = emptyNewProjectImageResultWorkspace('error', 'IMAGE_RESULT_WORKSPACE_READ_FAILED');
+        }
+        if (videoPlanResult.status === 'fulfilled' && videoPlanResult.value) {
+            newProjectVideoPlanState = videoPlanResult.value;
+            newProjectVideoPlanTasks = structuredClone(videoPlanResult.value.tasks || []);
+            newProjectVideoPlanDirty = false;
+            const resultTokens = Array.from(new Set(newProjectVideoPlanTasks.map((task) => task.result_token).filter(Boolean)));
+            const loadedPreviews = await Promise.all(resultTokens.map(async (resultToken) => {
+                try {
+                    const prepared = createG3PreviewObjectUrl(await pipelineClient.getNewProjectVideoResultPreview({ result_token: resultToken }));
+                    return prepared.ok ? [resultToken, { source: prepared.url, dispose: prepared.dispose }] : [resultToken, null];
+                } catch {
+                    return [resultToken, null];
+                }
+            }));
+            newProjectVideoResultPreviews = Object.fromEntries(loadedPreviews.filter(([, value]) => value?.source));
+        } else {
+            newProjectVideoPlanState = emptyNewProjectVideoPlanState('error', 'VIDEO_PLAN_READ_FAILED');
+        }
+        if (videoWorkspaceResult.status === 'fulfilled' && videoWorkspaceResult.value) {
+            newProjectVideoResultWorkspace = videoWorkspaceResult.value;
+        } else {
+            newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('error', 'VIDEO_RESULT_WORKSPACE_READ_FAILED');
         }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;

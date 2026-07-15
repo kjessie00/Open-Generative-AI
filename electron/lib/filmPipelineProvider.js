@@ -6,6 +6,7 @@ const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
+const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
@@ -1064,6 +1065,61 @@ function saveNewProjectImageRetrySelection(payload, options = {}) {
     return newProjectImagePlanProvider.saveNewProjectImageRetrySelection(payload, newProjectImagePlanContext(options));
 }
 
+function newProjectVideoPlanContext(options = {}) {
+    const env = options.env || process.env;
+    return {
+        ...options,
+        config: getConfig(options),
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT,
+        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT,
+        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT,
+        replicateReceiptResultsRoot: options.replicateReceiptResultsRoot
+            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT,
+        bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
+            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
+        ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
+    };
+}
+
+function getNewProjectVideoPlan(options = {}) {
+    return newProjectVideoPlanProvider.getNewProjectVideoPlan(newProjectVideoPlanContext(options));
+}
+
+function saveNewProjectVideoPlan(payload, options = {}) {
+    return newProjectVideoPlanProvider.saveNewProjectVideoPlan(payload, newProjectVideoPlanContext(options));
+}
+
+function prepareNewProjectVideoPlan(payload, options = {}) {
+    const result = newProjectVideoPlanProvider.prepareNewProjectVideoPlan(payload, newProjectVideoPlanContext(options));
+    sendProgress({
+        phase: 'new-project-video-plan-prepared', status: result.status,
+        taskCount: result.task_count, executed: false, modelCalled: false, generationExecuted: false,
+    });
+    return result;
+}
+
+function getNewProjectVideoResultWorkspace(options = {}) {
+    return newProjectVideoPlanProvider.getNewProjectVideoResultWorkspace(newProjectVideoPlanContext(options));
+}
+
+function connectNewProjectVideoResult(payload, options = {}) {
+    const result = newProjectVideoPlanProvider.connectNewProjectVideoResult(payload, newProjectVideoPlanContext(options));
+    sendProgress({
+        phase: 'new-project-video-result-connected', status: result.status,
+        executed: false, generationExecuted: false,
+    });
+    return result;
+}
+
+function getNewProjectVideoResultPreview(payload, options = {}) {
+    return newProjectVideoPlanProvider.getNewProjectVideoResultPreview(payload, newProjectVideoPlanContext(options));
+}
+
+function saveNewProjectVideoRetrySelection(payload, options = {}) {
+    return newProjectVideoPlanProvider.saveNewProjectVideoRetrySelection(payload, newProjectVideoPlanContext(options));
+}
+
 function saveNewProjectDraft(payload, options = {}) {
     const result = newProjectDraftProvider.saveNewProjectDraft(payload, newProjectContext(options));
     sendProgress({
@@ -1167,10 +1223,19 @@ function confirmDstBundleImport(payload, options = {}) {
 }
 
 function videoResultImportContext(options = {}) {
+    const env = options.env || process.env;
     return {
         ...options,
         config: getConfig(options),
         userDataPath: options.userDataPath || app.getPath('userData'),
+        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT,
+        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT,
+        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT,
+        replicateReceiptResultsRoot: options.replicateReceiptResultsRoot
+            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT,
+        bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
+            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
+        ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
     };
 }
 
@@ -1465,6 +1530,19 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:connect-new-project-image-result', (_, payload) => connectNewProjectImageResult(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-image-result-preview', (_, payload) => getNewProjectImageResultPreview(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-image-retry-selection', (_, payload) => saveNewProjectImageRetrySelection(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-video-plan', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectVideoPlan(options);
+    });
+    ipcApi.handle('film-pipeline:save-new-project-video-plan', (_, payload) => saveNewProjectVideoPlan(payload, options));
+    ipcApi.handle('film-pipeline:prepare-new-project-video-plan', (_, payload) => prepareNewProjectVideoPlan(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-video-result-workspace', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectVideoResultWorkspace(options);
+    });
+    ipcApi.handle('film-pipeline:connect-new-project-video-result', (_, payload) => connectNewProjectVideoResult(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-video-result-preview', (_, payload) => getNewProjectVideoResultPreview(payload, options));
+    ipcApi.handle('film-pipeline:save-new-project-video-retry-selection', (_, payload) => saveNewProjectVideoRetrySelection(payload, options));
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1569,6 +1647,13 @@ module.exports = {
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
     saveNewProjectImageRetrySelection,
+    getNewProjectVideoPlan,
+    saveNewProjectVideoPlan,
+    prepareNewProjectVideoPlan,
+    getNewProjectVideoResultWorkspace,
+    connectNewProjectVideoResult,
+    getNewProjectVideoResultPreview,
+    saveNewProjectVideoRetrySelection,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

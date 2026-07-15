@@ -241,6 +241,42 @@ test('MOCK ffprobe: workspace discovers only bounded Flow/Grok result shapes and
     }
 });
 
+test('MOCK ffprobe: main-only private copy imports a clip larger than the renderer preview limit by stable streaming', (t) => {
+    const fx = fixture(t);
+    const large = Buffer.concat([MP4.subarray(0, 24), Buffer.alloc((33 * 1024 * 1024) - 24, 0x2a)]);
+    writeFlow(fx.flowResultsRoot, 'large-flow-result', large);
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    const candidate = candidateFor(workspace, 'flow');
+    assert.equal(candidate.preview_allowed, false);
+    const privateRoot = path.join(fx.base, 'private-results');
+    fs.mkdirSync(privateRoot, { mode: 0o700 });
+    const destinationPath = path.join(privateRoot, '.video-source-0123456789abcdef01234567.tmp');
+    const copied = provider.copyVideoResultCandidateToPrivateFile({
+        candidateToken: candidate.candidate_token,
+        destinationPath,
+        destinationRoot: privateRoot,
+    }, fx.context);
+    assert.equal(copied.provider, 'flow');
+    assert.equal(copied.byte_length, large.byteLength);
+    assert.equal(copied.source_sha256, crypto.createHash('sha256').update(large).digest('hex'));
+    assert.equal(copied.duration_seconds, 6);
+    assert.equal(fs.lstatSync(destinationPath).mode & 0o777, 0o600);
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(destinationPath)).digest('hex'), copied.source_sha256);
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'media', 'imports')), false,
+        'main-only private copy never writes into production');
+    const protectedFile = path.join(fx.base, 'protected.txt');
+    fs.writeFileSync(protectedFile, 'keep');
+    const occupiedPath = path.join(privateRoot, '.video-source-abcdef0123456789abcdef01.tmp');
+    fs.symlinkSync(protectedFile, occupiedPath);
+    assert.throws(() => provider.copyVideoResultCandidateToPrivateFile({
+        candidateToken: candidate.candidate_token,
+        destinationPath: occupiedPath,
+        destinationRoot: privateRoot,
+    }, fx.context), { code: 'EEXIST' });
+    assert.equal(fs.lstatSync(occupiedPath).isSymbolicLink(), true, 'failed O_EXCL never removes a pre-existing entry');
+    assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'keep');
+});
+
 test('MOCK ffprobe: storyboard-authoritative initial video targets are pathless, ordered, and use short Korean labels', (t) => {
     const fx = initialFixture(t);
     writeFlow(fx.flowResultsRoot);
