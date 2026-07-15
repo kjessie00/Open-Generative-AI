@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     runVideoPromptAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:run-video-prompt-agent-request', payload),
     decideVideoPromptAgentSuggestion: (payload) => ipcRenderer.invoke('film-pipeline:decide-video-prompt-agent-suggestion', payload),
     getNewProjectExecutionState: () => ipcRenderer.invoke('film-pipeline:get-new-project-execution-state'),
+    stageNewProjectExecutionHandoff: (payload) => ipcRenderer.invoke('film-pipeline:stage-new-project-execution-handoff', payload),
     copyNewProjectBuildCommand: () => ipcRenderer.invoke('film-pipeline:copy-new-project-build-command'),
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),

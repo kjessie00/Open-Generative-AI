@@ -673,6 +673,13 @@ function publishExecutionReceipt(payload, context = {}) {
                 throw failure('EXECUTION_RECEIPT_TRANSITION_INVALID');
             }
         }
+        if (receipt.status === 'succeeded') {
+            const task = manifest.tasks[taskIndex];
+            const expectedProvider = task.lane === 'image' ? 'dst' : task.provider;
+            if (!receipt.result_locator.startsWith(`${expectedProvider}:`)) {
+                throw failure('EXECUTION_RESULT_PROVIDER_MISMATCH');
+            }
+        }
         privateWrite(receiptPath(paths, receipt.task_token), Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));
         return { ok: true, already_published: false, state: publicSelections(selectLanes(context), context) };
     } finally { release(); }

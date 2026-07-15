@@ -1284,9 +1284,9 @@ function saveNewProjectVideoRetrySelection(payload, options = {}) {
     return newProjectVideoPlanProvider.saveNewProjectVideoRetrySelection(payload, newProjectVideoPlanContext(options));
 }
 
-function getNewProjectExecutionState(options = {}) {
+function newProjectExecutionContext(options = {}) {
     const env = options.env || process.env;
-    return newProjectExecutionProvider.getNewProjectExecutionState({
+    return {
         ...options,
         userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
         dstImagesRoot: options.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT,
@@ -1298,7 +1298,29 @@ function getNewProjectExecutionState(options = {}) {
         bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
             || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
         ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
+    };
+}
+
+function getNewProjectExecutionState(options = {}) {
+    return newProjectExecutionProvider.getNewProjectExecutionState(newProjectExecutionContext(options));
+}
+
+function stageNewProjectExecutionHandoff(payload, options = {}) {
+    const input = exactAgentRunPayload(payload, ['expected_revision_sha256'], 'EXECUTION_STAGE_SHAPE_INVALID');
+    const context = newProjectExecutionContext(options);
+    const result = newProjectExecutionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: input.expected_revision_sha256,
+        new_attempt: false,
+    }, context);
+    sendProgress({
+        phase: 'new-project-execution-handoff-staged',
+        taskCount: result.task_count,
+        alreadyPrepared: result.already_prepared === true,
+        executed: false,
+        modelCalled: false,
+        generationExecuted: false,
     });
+    return result;
 }
 
 function saveNewProjectDraft(payload, options = {}) {
@@ -1762,6 +1784,7 @@ function register(ipcApi = ipcMain, options = {}) {
         assertNoRendererPathArgument(pathArgument);
         return getNewProjectExecutionState(options);
     });
+    ipcApi.handle('film-pipeline:stage-new-project-execution-handoff', (_, payload) => stageNewProjectExecutionHandoff(payload, options));
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1882,6 +1905,7 @@ module.exports = {
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,
     getNewProjectExecutionState,
+    stageNewProjectExecutionHandoff,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

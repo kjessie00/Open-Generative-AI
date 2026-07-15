@@ -10,6 +10,7 @@ import designProvider from '../electron/lib/newProjectDesignProvider.js';
 import imagePlanProvider from '../electron/lib/newProjectImagePlanProvider.js';
 import videoPlanProvider from '../electron/lib/newProjectVideoPlanProvider.js';
 import executionProvider from '../electron/lib/newProjectExecutionProvider.js';
+import filmProvider from '../electron/lib/filmPipelineProvider.js';
 
 const CLI = path.resolve('scripts/new-project-execution-handoff.cjs');
 
@@ -117,6 +118,34 @@ test('MOCK: current image and video preparations become lane-private revision-bo
     }, context), { code: 'EXECUTION_REVISION_STALE' });
 });
 
+test('MOCK: renderer staging accepts only the current revision and never exposes retry or execution controls', (t) => {
+    const parts = fixture(t, 'open-ga-execution-stage-');
+    const context = fakeContext(parts);
+    const initial = filmProvider.getNewProjectExecutionState(context);
+
+    assert.equal(initial.prepared, false);
+    const staged = filmProvider.stageNewProjectExecutionHandoff({
+        expected_revision_sha256: initial.revision_sha256,
+    }, context);
+    assert.equal(staged.prepared, true);
+    assert.equal(staged.already_prepared, false);
+    assert.equal(staged.external_call_performed, false);
+    assert.equal(staged.model_called, false);
+    assert.equal(staged.generation_executed, false);
+
+    const repeated = filmProvider.stageNewProjectExecutionHandoff({
+        expected_revision_sha256: initial.revision_sha256,
+    }, context);
+    assert.equal(repeated.already_prepared, true);
+    assert.throws(() => filmProvider.stageNewProjectExecutionHandoff({
+        expected_revision_sha256: initial.revision_sha256,
+        new_attempt: true,
+    }, context), { code: 'EXECUTION_STAGE_SHAPE_INVALID' });
+    assert.throws(() => filmProvider.stageNewProjectExecutionHandoff({
+        expected_revision_sha256: '0'.repeat(64),
+    }, context), { code: 'EXECUTION_REVISION_STALE' });
+});
+
 test('MOCK: receipts restore progress, expose only safe result arrival, enforce transitions, and reject symlinked private storage', (t) => {
     const parts = fixture(t);
     const context = fakeContext(parts);
@@ -149,6 +178,9 @@ test('MOCK: receipts restore progress, expose only safe result arrival, enforce 
         status: 'succeeded', progress: 100, result_received: true,
         result_locator: `dst:fixture-bundle:1:${'9'.repeat(64)}`, reported_at: '2026-07-16T01:02:00.000Z',
     });
+    assert.throws(() => executionProvider.publishExecutionReceipt({
+        ...succeeded, result_locator: `flow:wrong-provider:${'9'.repeat(64)}`,
+    }, context), { code: 'EXECUTION_RESULT_PROVIDER_MISMATCH' });
     context.resolveDstExecutionResultLocator = (locator) => locator === succeeded.result_locator
         ? { candidate_token: 'candidate-session-token', image_index: 1 } : null;
     const completed = executionProvider.publishExecutionReceipt(succeeded, context).state;
@@ -204,7 +236,7 @@ test('MOCK: one lane executes strictly in sequence and partial success remains v
     ), context), { code: 'EXECUTION_RECEIPT_SEQUENCE_INVALID' });
     assert.throws(() => executionProvider.publishExecutionReceipt(receipt(
         { revision_sha256: runRevision }, firstTask,
-        { status: 'succeeded', progress: 100, result_received: true, result_locator: 'result:first' },
+        { status: 'succeeded', progress: 100, result_received: true, result_locator: `dst:first:1:${'7'.repeat(64)}` },
     ), context), { code: 'EXECUTION_RECEIPT_SEQUENCE_INVALID' });
 
     const firstRunning = receipt({ revision_sha256: runRevision }, firstTask);
@@ -217,7 +249,7 @@ test('MOCK: one lane executes strictly in sequence and partial success remains v
     }, context), { code: 'EXECUTION_RECEIPT_TIMESTAMP_STALE' });
 
     executionProvider.publishExecutionReceipt(receipt({ revision_sha256: runRevision }, firstTask, {
-        status: 'succeeded', progress: 100, result_received: true, result_locator: 'result:first',
+        status: 'succeeded', progress: 100, result_received: true, result_locator: `dst:first:1:${'7'.repeat(64)}`,
         reported_at: '2026-07-16T01:01:00.000Z',
     }), context);
     const partial = executionProvider.getNewProjectExecutionState(context);

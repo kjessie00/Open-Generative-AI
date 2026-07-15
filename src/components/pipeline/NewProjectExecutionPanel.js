@@ -78,9 +78,31 @@ function laneSection(lane, tasks, onOpenWorkItem) {
     ]);
 }
 
+function stageGuide(imageTasks, videoTasks, prepared) {
+    const count = (tasks, status) => tasks.filter((task) => task.result_match_status === status).length;
+    const rows = [
+        ['1', '이미지 목록', imageTasks.length ? `${imageTasks.length}개 ${prepared ? '준비됨' : '확인됨'}` : '준비 전'],
+        ['2', '이미지 결과', `${count(imageTasks, 'connected')}/${imageTasks.length}개 연결`],
+        ['3', '영상 목록', videoTasks.length ? `${videoTasks.length}개 ${prepared ? '준비됨' : '확인됨'}` : '이미지 다음'],
+        ['4', '영상 결과', `${count(videoTasks, 'connected')}/${videoTasks.length}개 연결`],
+    ];
+    return el('ol', {
+        className: 'grid min-w-0 gap-2 sm:grid-cols-2',
+        attrs: { 'aria-label': '이미지부터 영상까지 작업 순서' },
+    }, rows.map(([number, title, status]) => el('li', {
+        className: 'flex min-w-0 items-center gap-3 rounded-md border border-white/10 bg-black/15 px-3 py-3',
+    }, [
+        el('span', { text: number, className: 'text-sm font-bold text-cyan-200', attrs: { 'aria-hidden': 'true' } }),
+        el('span', { className: 'min-w-0' }, [
+            el('strong', { text: title, className: 'block text-sm text-white' }),
+            el('span', { text: status, className: 'block text-xs leading-5 text-secondary' }),
+        ]),
+    ])));
+}
+
 export function NewProjectExecutionPanel({
     executionState, executionNotice = '', executionRefreshing = false,
-    hasProductionRoot = false, onRefreshExecution, onOpenWorkItem, onOpenLegacyQueue,
+    hasProductionRoot = false, onRefreshExecution, onStageExecution, onOpenWorkItem, onOpenLegacyQueue,
 }) {
     const tasks = Array.isArray(executionState?.tasks) ? executionState.tasks : [];
     const summary = executionState?.summary || {};
@@ -91,7 +113,7 @@ export function NewProjectExecutionPanel({
         || tasks.find((task) => task.status === 'queued');
     const nextText = next ? `${laneTitle(next.lane)} ${next.sequence}. ${shortLabel(next.label)}` : tasks.length ? '도착한 결과 확인' : '이미지 작업 준비';
 
-    return panelShell('작업 진행', '이미지와 영상이 어디까지 왔는지 순서대로 확인합니다.', [
+    return panelShell('작업 진행', '이미지를 먼저 완성한 뒤 영상을 만듭니다.', [
         el('section', {
             className: 'flex min-w-0 flex-col gap-4',
             attrs: { 'data-work-progress': '', 'aria-label': '새 프로젝트 작업 진행' },
@@ -102,7 +124,21 @@ export function NewProjectExecutionPanel({
                     className: 'text-sm font-semibold leading-6 text-white', attrs: { role: 'status', 'aria-live': 'polite' },
                 }),
                 el('p', { text: `다음 할 일: ${nextText}`, className: 'mt-1 text-sm leading-6 text-secondary' }),
+                el('p', {
+                    text: '작업 목록 준비는 프롬프트와 순서만 저장합니다. 이미지나 영상 생성은 시작하지 않습니다.',
+                    className: 'mt-1 text-xs leading-5 text-secondary',
+                }),
+                el('div', { className: 'mt-3' }, [stageGuide(imageTasks, videoTasks, executionState?.prepared === true)]),
                 el('div', { className: 'mt-3 flex flex-wrap items-center gap-3' }, [
+                    tasks.length && !executionState?.prepared
+                        ? actionButton(executionRefreshing ? '준비 중…' : '실행 목록 준비', {
+                            variant: 'primary', disabled: executionRefreshing,
+                            onClick: () => onStageExecution?.(),
+                        })
+                        : tasks.length ? el('span', {
+                            text: '실행 목록 준비됨 · 생성은 아직 시작하지 않음',
+                            className: 'text-sm font-semibold text-emerald-200',
+                        }) : null,
                     el('button', {
                         text: executionRefreshing ? '확인 중…' : '새로고침',
                         disabled: executionRefreshing,

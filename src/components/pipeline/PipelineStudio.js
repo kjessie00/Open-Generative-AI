@@ -427,6 +427,28 @@ export function PipelineStudio() {
             return newProjectExecutionState;
         };
 
+        const stageNewProjectExecution = async () => {
+            if (!newProjectExecutionState?.revision_sha256) {
+                newProjectExecutionNotice = '먼저 이미지 또는 영상 작업을 준비하세요.';
+                render();
+                return newProjectExecutionState;
+            }
+            newProjectExecutionRefreshing = true;
+            newProjectExecutionNotice = '실행 목록을 준비하는 중…';
+            render();
+            try {
+                newProjectExecutionState = await pipelineClient.stageNewProjectExecutionHandoff({
+                    expected_revision_sha256: newProjectExecutionState.revision_sha256,
+                });
+                newProjectExecutionNotice = '실행 목록을 준비했습니다. 생성은 시작하지 않았습니다.';
+            } catch {
+                newProjectExecutionNotice = '실행 목록을 준비하지 못했습니다. 작업 상태를 새로고침하세요.';
+            }
+            newProjectExecutionRefreshing = false;
+            render();
+            return newProjectExecutionState;
+        };
+
         const openProductionFolder = async () => {
             try {
                 const selected = await pipelineClient.selectProductionRoot({ mode: 'production' });
@@ -595,6 +617,7 @@ export function PipelineStudio() {
                 executionRefreshing: newProjectExecutionRefreshing,
                 hasProductionRoot: Boolean(config.productionRoot),
                 onRefreshExecution: refreshNewProjectExecution,
+                onStageExecution: stageNewProjectExecution,
                 onOpenWorkItem: async ({ kind, sequence, candidateToken = '', imageIndex = 0 }) => {
                     if (candidateToken) {
                         if (kind === 'video') await refreshNewProjectVideoResults();

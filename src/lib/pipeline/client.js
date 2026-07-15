@@ -377,6 +377,17 @@ export async function getNewProjectExecutionState() {
     };
 }
 
+export async function stageNewProjectExecutionHandoff(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.stageNewProjectExecutionHandoff === 'function') return bridge.stageNewProjectExecutionHandoff(payload);
+    return {
+        ...await getNewProjectExecutionState(),
+        ok: false,
+        prepared: false,
+        error: 'FILM_PIPELINE_BRIDGE_UNAVAILABLE',
+    };
+}
+
 export async function copyNewProjectBuildCommand() {
     const bridge = getBridge();
     if (typeof bridge?.copyNewProjectBuildCommand === 'function') return bridge.copyNewProjectBuildCommand();
@@ -740,6 +751,7 @@ export const pipelineClient = Object.freeze({
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,
     getNewProjectExecutionState,
+    stageNewProjectExecutionHandoff,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

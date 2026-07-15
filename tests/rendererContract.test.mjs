@@ -159,9 +159,11 @@ test('new project execution panel shows short Korean progress without private me
     const { NewProjectExecutionPanel } = await import('../src/components/pipeline/NewProjectExecutionPanel.js');
     const opened = [];
     let refreshed = 0;
+    let staged = 0;
     const panel = NewProjectExecutionPanel({
         executionState: {
             status: 'running',
+            prepared: false,
             summary: { queued: 1, running: 1, succeeded: 1, failed: 1 },
             tasks: [
                 { task_token: 'private-image-token', lane: 'image', sequence: 1, label: '인물 시트 · 주인공', provider_label: 'DST 이미지', status: 'succeeded', progress: 100, result_received: true },
@@ -171,11 +173,14 @@ test('new project execution panel shows short Korean progress without private me
             ],
         },
         onRefreshExecution: () => { refreshed += 1; },
+        onStageExecution: () => { staged += 1; },
         onOpenWorkItem: (payload) => opened.push(payload),
     });
     document.body.appendChild(panel);
 
     assert.match(panel.textContent, /대기 1 · 진행 1 · 결과 1 · 문제 1/);
+    assert.match(panel.textContent, /이미지를 먼저 완성한 뒤 영상을 만듭니다/);
+    assert.match(panel.textContent, /작업 목록 준비는 .* 생성은 시작하지 않습니다/);
     assert.match(panel.textContent, /결과 도착|문제 발생|진행 중 35%/);
     assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|task_|result_|preparation_|[a-f0-9]{64}/);
     assert.ok(byAttribute(panel, 'section', 'data-work-progress', ''));
@@ -184,8 +189,10 @@ test('new project execution panel shows short Korean progress without private me
     assert.equal(findAll(panel, 'span').some((span) => span.className.includes('text-[11px]')), false, 'progress UI uses no badges');
 
     await byAttribute(panel, 'button', 'aria-label', '작업 상태 새로고침').dispatchEvent({ type: 'click' });
+    await byText(panel, 'button', '실행 목록 준비').dispatchEvent({ type: 'click' });
     await byText(panel, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
     assert.equal(refreshed, 1);
+    assert.equal(staged, 1);
     assert.deepEqual(opened, [{ kind: 'video', sequence: 3, candidateToken: '', imageIndex: 0 }]);
 });
 
