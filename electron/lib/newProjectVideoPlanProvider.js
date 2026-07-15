@@ -220,29 +220,32 @@ function deriveTasks(board, imageTasks, aspectRatio = '9:16') {
     });
 }
 
-function validateTask(value, sequence) {
+function validateTask(value, sequence, { canonicalizeProviderLabel = false } = {}) {
     exactKeys(value, [
         'task_token', 'kind', 'source_id', 'sequence', 'label', 'provider', 'provider_label', 'prompt',
         'reference_image_task_token', 'reference_image_result_token', 'status', 'result_token',
     ], 'VIDEO_PLAN_TASK_SHAPE_INVALID');
-    if (!TASK_TOKEN.test(value.task_token) || value.kind !== 'scene_video' || value.sequence !== sequence
-        || !PROVIDERS.has(value.provider) || value.provider_label !== PROVIDER_LABELS[value.provider]
-        || !TASK_TOKEN.test(value.reference_image_task_token) || !RESULT_TOKEN.test(value.reference_image_result_token)
-        || !TASK_STATUSES.has(value.status)) throw failure('VIDEO_PLAN_TASK_INVALID');
-    if (value.result_token && !RESULT_TOKEN.test(value.result_token)) throw failure('VIDEO_PLAN_RESULT_TOKEN_INVALID');
-    if (value.status === '준비' && value.result_token) throw failure('VIDEO_PLAN_TASK_STATUS_INVALID');
-    if (value.status !== '준비' && !value.result_token) throw failure('VIDEO_PLAN_TASK_STATUS_INVALID');
+    const task = canonicalizeProviderLabel
+        ? { ...value, provider_label: PROVIDER_LABELS[value.provider] }
+        : value;
+    if (!TASK_TOKEN.test(task.task_token) || task.kind !== 'scene_video' || task.sequence !== sequence
+        || !PROVIDERS.has(task.provider) || task.provider_label !== PROVIDER_LABELS[task.provider]
+        || !TASK_TOKEN.test(task.reference_image_task_token) || !RESULT_TOKEN.test(task.reference_image_result_token)
+        || !TASK_STATUSES.has(task.status)) throw failure('VIDEO_PLAN_TASK_INVALID');
+    if (task.result_token && !RESULT_TOKEN.test(task.result_token)) throw failure('VIDEO_PLAN_RESULT_TOKEN_INVALID');
+    if (task.status === '준비' && task.result_token) throw failure('VIDEO_PLAN_TASK_STATUS_INVALID');
+    if (task.status !== '준비' && !task.result_token) throw failure('VIDEO_PLAN_TASK_STATUS_INVALID');
     return {
-        ...value,
-        source_id: boundedText(value.source_id, 128, 'VIDEO_PLAN_TASK_INVALID'),
-        label: boundedText(value.label, 1024, 'VIDEO_PLAN_TASK_INVALID'),
-        prompt: boundedText(value.prompt, MAX_PROMPT_BYTES, 'VIDEO_PLAN_PROMPT_INVALID'),
+        ...task,
+        source_id: boundedText(task.source_id, 128, 'VIDEO_PLAN_TASK_INVALID'),
+        label: boundedText(task.label, 1024, 'VIDEO_PLAN_TASK_INVALID'),
+        prompt: boundedText(task.prompt, MAX_PROMPT_BYTES, 'VIDEO_PLAN_PROMPT_INVALID'),
     };
 }
 
-function validateTasks(value) {
+function validateTasks(value, options) {
     if (!Array.isArray(value) || !value.length || value.length > 20) throw failure('VIDEO_PLAN_TASKS_INVALID');
-    const tasks = value.map((task, index) => validateTask(task, index + 1));
+    const tasks = value.map((task, index) => validateTask(task, index + 1, options));
     if (new Set(tasks.map((task) => task.task_token)).size !== tasks.length) throw failure('VIDEO_PLAN_TASK_TOKEN_DUPLICATE');
     return tasks;
 }
@@ -423,7 +426,7 @@ function saveNewProjectVideoPlan(payload, context = {}) {
     ], 'VIDEO_PLAN_SAVE_SHAPE_INVALID');
     const state = getNewProjectVideoPlan(context);
     assertExpected(payload, state);
-    const tasks = validateTasks(payload.tasks);
+    const tasks = validateTasks(payload.tasks, { canonicalizeProviderLabel: true });
     const upstream = loadUpstream(context);
     const derived = deriveTasks(upstream.design.board, upstream.sceneImages, upstream.design.aspect_ratio);
     validateIdentity(tasks, derived);

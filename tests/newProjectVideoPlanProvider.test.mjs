@@ -163,6 +163,40 @@ test('video plan follows scene order, carries accepted image dependencies, and s
     assert.equal(JSON.stringify(saved).includes(parts.base), false, 'normal renderer state stays pathless');
 });
 
+test('video plan canonicalizes renderer provider labels for all supported provider switches', (t) => {
+    const parts = setup(t);
+    let state = videoPlanProvider.getNewProjectVideoPlan(parts);
+    const providers = [
+        ['flow', '플로우'],
+        ['grok', '그록'],
+        ['replicate', '리플리케이트'],
+        ['bytedance', '바이트댄스'],
+    ];
+
+    for (const [provider, providerLabel] of providers) {
+        const edited = structuredClone(state.tasks);
+        edited[0].provider = provider;
+        edited[0].provider_label = '렌더러에 남은 이전 라벨';
+        state = videoPlanProvider.saveNewProjectVideoPlan({
+            tasks: edited, ...revisions(state),
+        }, parts);
+        assert.equal(state.tasks[0].provider, provider);
+        assert.equal(state.tasks[0].provider_label, providerLabel);
+    }
+
+    const invalidProvider = structuredClone(state.tasks);
+    invalidProvider[0].provider = 'unknown';
+    assert.throws(() => videoPlanProvider.saveNewProjectVideoPlan({
+        tasks: invalidProvider, ...revisions(state),
+    }, parts), { code: 'VIDEO_PLAN_TASK_INVALID' });
+
+    const extraShape = structuredClone(state.tasks);
+    extraShape[0].unexpected = true;
+    assert.throws(() => videoPlanProvider.saveNewProjectVideoPlan({
+        tasks: extraShape, ...revisions(state),
+    }, parts), { code: 'VIDEO_PLAN_TASK_SHAPE_INVALID' });
+});
+
 test('video prompts follow the saved 16:9 planning format instead of a fixed vertical default', (t) => {
     const parts = setup(t, '16:9');
     const derived = videoPlanProvider.getNewProjectVideoPlan(parts);

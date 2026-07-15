@@ -3,6 +3,13 @@ import { VIDEO_PROVIDER_LABELS } from './videoPreparationUi.js';
 import { VideoResultConnector } from './VideoResultConnector.js';
 import { PromptAgentEditor } from './PromptAgentEditor.js';
 
+const PROVIDER_HELP_TEXT = Object.freeze({
+    flow: '현재 참조 이미지 1장으로는 준비할 수 없습니다. 완료 영상을 연결하거나 다른 도구를 선택하세요.',
+    grok: '6초, 10초 또는 15초를 지원합니다. 완료 영상을 연결하거나 다른 도구를 선택하세요.',
+    replicate: '이 작업대에서는 완료 영상만 연결할 수 있습니다.',
+    bytedance: '이 작업대에서는 완료 영상만 연결할 수 있습니다.',
+});
+
 function resultSlot(task, resultPreview) {
     if (resultPreview?.source) {
         return el('video', {
@@ -24,12 +31,20 @@ export function VideoTaskCard({ task, resultPreview, resultWorkspace, agentReque
         attrs: { 'data-work-target': 'video', 'data-sequence': task.sequence, tabindex: -1 },
     });
     const render = () => {
+        const providerHelp = el('p', {
+            text: PROVIDER_HELP_TEXT[task.provider] || '완료 영상을 연결하거나 다른 도구를 선택하세요.',
+            className: 'mt-1 text-xs leading-5 text-secondary',
+            attrs: { 'aria-live': 'polite' },
+        });
         const provider = el('select', {
             className: 'min-h-11 w-full rounded-md border border-white/10 bg-black/40 px-3 text-sm text-white',
             attrs: { 'aria-label': `${task.label} 생성 도구` },
         }, Object.entries(VIDEO_PROVIDER_LABELS).map(([value, text]) => el('option', { value, text })));
         provider.value = task.provider;
-        provider.addEventListener('change', () => onProviderChange?.(task.task_token, provider.value));
+        provider.addEventListener('change', () => {
+            providerHelp.textContent = PROVIDER_HELP_TEXT[provider.value] || '완료 영상을 연결하거나 다른 도구를 선택하세요.';
+            onProviderChange?.(task.task_token, provider.value);
+        });
 
         const prompt = el('textarea', {
             value: task.prompt,
@@ -58,6 +73,7 @@ export function VideoTaskCard({ task, resultPreview, resultWorkspace, agentReque
                 el('div', { className: 'flex min-w-0 flex-col gap-3 sm:col-span-2' }, [
                     el('label', { className: 'text-xs font-semibold text-secondary' }, [
                         el('span', { text: '생성 도구', className: 'mb-1 block' }), provider,
+                        providerHelp,
                     ]),
                     el('details', { className: 'rounded-md border border-white/10 bg-black/20 px-3' }, [
                         el('summary', { text: '프롬프트 수정', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),

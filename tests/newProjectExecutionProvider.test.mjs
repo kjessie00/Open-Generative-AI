@@ -70,7 +70,7 @@ function fakeContext(parts, states = fakeStates()) {
         getNewProjectDesignState: () => ({
             ok: true, status: 'restored', revision_sha256: designRevision,
             planning_revision_sha256: draft.revision_sha256,
-            board: { scenes: [{ id: 'scene_01', duration: 5 }] }, blockers: [],
+            board: { scenes: [{ id: 'scene_01', duration: states.sceneDuration || 5 }] }, blockers: [],
         }),
         getNewProjectImagePlan: () => structuredClone(states.image),
         getNewProjectVideoPlan: () => structuredClone(states.video),
@@ -428,14 +428,24 @@ function board() {
     };
 }
 
-test('provider execution previews build only an exact DST sheet command and fail closed for unfinished adapters', (t) => {
+test('provider execution previews build exact private DST and Grok commands while live submission stays blocked', (t) => {
     const parts = fixture(t, 'open-ga-provider-preview-');
     const runtimeRoot = path.join(parts.base, 'runtime');
     const dstModule = path.join(runtimeRoot, 'dst');
     const dstPython = path.join(runtimeRoot, 'python');
+    const grokRoot = path.join(runtimeRoot, 'grok-browser');
+    const grokPythonTarget = path.join(runtimeRoot, 'python3.11');
+    const grokPython = path.join(runtimeRoot, 'python3');
+    const grokCli = path.join(grokRoot, 'grok_imagine_bot.py');
+    const outputsRoot = path.join(parts.base, 'outputs');
     fs.mkdirSync(dstModule, { recursive: true, mode: 0o700 });
     fs.writeFileSync(dstPython, '#!/bin/sh\n', { mode: 0o700 });
-    const context = { runtimePaths: { dstPython, dstModule } };
+    fs.mkdirSync(grokRoot, { mode: 0o700 });
+    fs.mkdirSync(outputsRoot, { mode: 0o700 });
+    fs.writeFileSync(grokPythonTarget, '#!/bin/sh\n', { mode: 0o700 });
+    fs.symlinkSync(grokPythonTarget, grokPython);
+    fs.writeFileSync(grokCli, '# grok fixture\n', { mode: 0o600 });
+    const context = { runtimePaths: { dstPython, dstModule, grokPython, grokCli, grokRoot } };
     const task = {
         lane: 'image', kind: 'character_sheet', provider: 'dst_image',
         prompt: '9:16 영화 제작용 인물 시트', aspect_ratio: '9:16',
@@ -495,23 +505,93 @@ test('provider execution previews build only an exact DST sheet command and fail
     }, context);
     assert.deepEqual(flowStaged.blockers, ['FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED']);
 
+    const grokTaskToken = `task_${'8'.repeat(64)}`;
+    const grokOutput = path.join(outputsRoot, `${grokTaskToken}.mp4`);
     const grok = providerExecutionPreview.buildProviderExecutionPreview({
         lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, output_path: grokOutput,
         aspect_ratio: '9:16', reference_result_tokens: [`result_${'3'.repeat(64)}`], duration_seconds: 5,
     }, context);
     assert.deepEqual(grok.blockers, ['GROK_DURATION_UNSUPPORTED']);
     assert.equal(grok.command_spec.command, '');
     const grokReference = providerExecutionPreview.buildProviderExecutionPreview({
         lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, output_path: grokOutput,
         aspect_ratio: '9:16', reference_result_tokens: [`result_${'3'.repeat(64)}`], duration_seconds: 6,
     }, context);
     assert.deepEqual(grokReference.blockers, ['GROK_REFERENCE_STAGING_REQUIRED']);
+    assert.equal(grokReference.command_spec.command, '');
+    const grokTooManyReferences = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, output_path: grokOutput,
+        aspect_ratio: '9:16', reference_result_tokens: stagedReferences.map((item) => item.result_token),
+        reference_files: stagedReferences, duration_seconds: 6,
+    }, context);
+    assert.deepEqual(grokTooManyReferences.blockers, ['GROK_REFERENCE_COUNT_MUST_BE_ZERO_OR_ONE']);
+    assert.equal(grokTooManyReferences.command_spec.command, '');
+    const grokRuntimeMissing = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, output_path: grokOutput,
+        aspect_ratio: '9:16', reference_result_tokens: [stagedReferences[0].result_token],
+        reference_files: [stagedReferences[0]], duration_seconds: 6,
+    }, { runtimePaths: { ...context.runtimePaths, grokRoot: path.join(parts.base, 'missing') } });
+    assert.deepEqual(grokRuntimeMissing.blockers, ['GROK_RUNTIME_MISSING']);
+    assert.equal(grokRuntimeMissing.command_spec.command, '');
+    const grokOutputMissing = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, aspect_ratio: '9:16',
+        reference_result_tokens: [stagedReferences[0].result_token],
+        reference_files: [stagedReferences[0]], duration_seconds: 6,
+    }, context);
+    assert.deepEqual(grokOutputMissing.blockers, ['GROK_OUTPUT_STAGING_REQUIRED']);
+    assert.equal(grokOutputMissing.command_spec.command, '');
     const grokStaged = providerExecutionPreview.buildProviderExecutionPreview({
         lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, output_path: grokOutput,
         aspect_ratio: '9:16', reference_result_tokens: [stagedReferences[0].result_token],
         reference_files: [stagedReferences[0]], duration_seconds: 6,
     }, context);
-    assert.deepEqual(grokStaged.blockers, ['GROK_NO_NONSUBMIT_MODE']);
+    assert.equal(grokStaged.readiness, 'preview_ready_live_blocked');
+    assert.deepEqual(grokStaged.blockers, [
+        'GROK_NO_NONSUBMIT_MODE',
+        'GROK_ACCOUNT_ROTATION_CANNOT_BE_DISABLED',
+        'GROK_I2V_RATIO_NOT_CONFIGURABLE',
+    ]);
+    assert.equal(grokStaged.command_spec.command, grokPythonTarget);
+    assert.equal(grokStaged.command_spec.cwd, grokRoot);
+    assert.deepEqual(grokStaged.command_spec.args, [
+        grokCli, 'i2v', '--image', stagedReferences[0].path,
+        '--prompt', '움직임', '--duration', '6', '--output', grokOutput, '--timeout', '180',
+    ]);
+    assert.equal(grokStaged.command_spec.args.includes('--ratio'), false);
+    assert.equal(grokStaged.command_spec.args.includes('--quality'), false);
+    assert.equal(grokStaged.command_spec.preview_only, true);
+    assert.equal(grokStaged.command_spec.live_submit_allowed, false);
+    assert.equal(grokStaged.command_spec.copy_allowed, false);
+
+    const grokText = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '텍스트 영상',
+        task_token: grokTaskToken, output_path: grokOutput,
+        aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 10,
+    }, context);
+    assert.equal(grokText.readiness, 'preview_ready_live_blocked');
+    assert.deepEqual(grokText.blockers, [
+        'GROK_NO_NONSUBMIT_MODE', 'GROK_ACCOUNT_ROTATION_CANNOT_BE_DISABLED',
+    ]);
+    assert.deepEqual(grokText.command_spec.args, [
+        grokCli, 'video', '--prompt', '텍스트 영상', '--ratio', '9:16',
+        '--duration', '10', '--quality', '480p', '--output', grokOutput, '--timeout', '180',
+    ]);
+
+    fs.writeFileSync(grokOutput, 'existing output', { mode: 0o600 });
+    const existingOutput = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        task_token: grokTaskToken, output_path: grokOutput,
+        aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 6,
+    }, context);
+    assert.deepEqual(existingOutput.blockers, ['GROK_OUTPUT_STAGING_REQUIRED']);
+    assert.equal(existingOutput.command_spec.command, '');
+    fs.unlinkSync(grokOutput);
 
     for (const provider of ['replicate', 'bytedance']) {
         const missing = providerExecutionPreview.buildProviderExecutionPreview({
@@ -541,6 +621,89 @@ test('provider execution previews build only an exact DST sheet command and fail
     assert.notEqual(sheet.contract_revision_sha256, changedPrompt.contract_revision_sha256);
     assert.notEqual(sheet.contract_revision_sha256, changedAspect.contract_revision_sha256);
     assert.notEqual(fourSeconds.contract_revision_sha256, fiveSeconds.contract_revision_sha256);
+});
+
+test('MOCK: main stages a private absent Grok output target and renderer sees only Korean setup or review guidance', (t) => {
+    const parts = fixture(t, 'open-ga-grok-output-');
+    const states = fakeStates();
+    states.image.preparation = { status: 'empty', task_count: 0, task_tokens: [] };
+    states.video.tasks[0].provider = 'grok';
+    states.video.tasks[0].provider_label = '그록';
+    states.sceneDuration = 6;
+
+    const runtimeRoot = path.join(parts.base, 'runtime');
+    const grokRoot = path.join(runtimeRoot, 'grok-browser');
+    const grokPython = path.join(runtimeRoot, 'python3.11');
+    const grokCli = path.join(grokRoot, 'grok_imagine_bot.py');
+    fs.mkdirSync(grokRoot, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(grokPython, '#!/bin/sh\n', { mode: 0o700 });
+    fs.writeFileSync(grokCli, '# fixture\n', { mode: 0o600 });
+    const context = {
+        ...fakeContext(parts, states),
+        runtimePaths: { grokPython, grokCli, grokRoot },
+    };
+
+    let state = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(state.prepared, false);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    assert.equal(state.prepared, true);
+    assert.deepEqual(state.tasks[0].execution_preview, {
+        mode: 'review_required', status_label: '실행 전 확인', reason: 'private_review_required',
+        user_status: '작업 내용은 준비되었지만 실행 전 확인이 필요합니다.',
+        next_action: '영상 작업에서 프롬프트와 길이를 확인하세요.',
+        output_kind: 'video', output_count: 1, preview_only: true,
+    });
+    assert.doesNotMatch(JSON.stringify(state.tasks),
+        /output_path|command_spec|GROK_|grok_imagine_bot|\.mp4|\/Users\//);
+
+    let handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    const task = handoff.tasks[0];
+    const paths = executionProvider.exactPaths(parts.userDataPath, `run_${task.run_revision_sha256}`);
+    const expectedOutput = path.join(paths.outputsRoot, `${task.task_token}.mp4`);
+    assert.equal(fs.lstatSync(paths.outputsRoot).mode & 0o777, 0o700);
+    assert.equal(task.output_path, expectedOutput);
+    assert.equal(fs.existsSync(expectedOutput), false);
+    assert.equal(task.provider_execution_preview.readiness, 'preview_ready_live_blocked');
+    assert.deepEqual(task.provider_execution_preview.command_spec.args, [
+        grokCli, 'video', '--prompt', task.prompt, '--ratio', '9:16',
+        '--duration', '6', '--quality', '480p', '--output', expectedOutput, '--timeout', '180',
+    ]);
+    assert.equal(task.provider_execution_preview.command_spec.preview_only, true);
+    assert.equal(task.provider_execution_preview.command_spec.live_submit_allowed, false);
+
+    const renderer = filmProvider.getNewProjectExecutionState(context);
+    assert.equal(renderer.tasks[0].execution_preview.mode, 'review_required');
+    assert.doesNotMatch(JSON.stringify(renderer),
+        /"task_token"|output_path|command_spec|GROK_|grok_imagine_bot|\.mp4|\/Users\//);
+
+    fs.rmSync(paths.outputsRoot, { recursive: true });
+    const incomplete = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(incomplete.prepared, false);
+    const recovered = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: incomplete.revision_sha256, new_attempt: false,
+    }, context);
+    assert.equal(recovered.prepared, true);
+    assert.equal(fs.lstatSync(paths.outputsRoot).mode & 0o777, 0o700);
+    handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    assert.equal(handoff.tasks[0].output_path, expectedOutput);
+
+    fs.writeFileSync(expectedOutput, 'existing output', { mode: 0o600 });
+    assert.equal(executionProvider.getNewProjectExecutionState(context).prepared, false);
+    assert.throws(() => executionProvider.inspectExecutionHandoff(context, { new_attempt: false }), {
+        code: 'EXECUTION_OUTPUT_TARGET_EXISTS',
+    });
+
+    states.sceneDuration = 5;
+    const unsupported = executionProvider.getNewProjectExecutionState(context);
+    assert.deepEqual(unsupported.tasks[0].execution_preview, {
+        mode: 'setup_required', status_label: '준비 필요', reason: 'video_duration_required',
+        user_status: '영상 길이를 지원되는 값으로 바꿔야 합니다.',
+        next_action: '설계에서 장면 길이를 6초, 10초 또는 15초로 바꾸세요.',
+        output_kind: 'video', output_count: 1, preview_only: true,
+    });
+    assert.doesNotMatch(JSON.stringify(unsupported.tasks[0].execution_preview), /GROK_|grok|\/Users\//i);
 });
 
 test('MOCK: DST scene references stage as immutable typed run inputs and recover before becoming prepared', (t) => {
@@ -766,6 +929,15 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
     assert.equal(videoTask.duration_seconds, 5);
     assert.equal(videoTask.source_id, 'scene_01');
     assert.match(videoTask.prompt, /주인공이 사다리차를 붙든다/);
+    const publicVideo = executionProvider.getNewProjectExecutionState(parts).tasks
+        .find((task) => task.lane === 'video');
+    assert.deepEqual(publicVideo.execution_preview, {
+        mode: 'setup_required', status_label: '준비 필요', reason: 'video_reference_count_required',
+        user_status: '영상 참조 이미지 구성을 다시 확인해야 합니다.',
+        next_action: '영상 작업에서 참조 이미지를 0장 또는 2장으로 맞추세요.',
+        output_kind: 'video', output_count: 1, preview_only: true,
+    });
+    assert.doesNotMatch(JSON.stringify(publicVideo.execution_preview), /FLOW_|flow|\/Users\//i);
     assert.equal(executionProvider.getNewProjectExecutionHistory(parts).runs.length, 2,
         'image run remains after image revision drift and video preparation');
 

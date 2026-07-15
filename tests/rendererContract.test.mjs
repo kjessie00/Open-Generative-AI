@@ -177,8 +177,26 @@ test('new project execution panel shows short Korean progress without private me
                     user_status: '참조 이미지와 작업 내용이 준비되었습니다.',
                     next_action: '이미지 작업에서 장면 프롬프트를 확인하세요.',
                 } },
-                { task_token: 'private-video-token', lane: 'video', sequence: 3, label: '장면 영상 · 첫 만남', provider_label: '플로우', status: 'running', progress: 35, result_received: false, execution_preview: executionPreview('video') },
-                { task_token: 'private-wait-token', lane: 'video', sequence: 4, label: '장면 영상 · 결심', provider_label: '그록', status: 'queued', progress: 0, result_received: false, execution_preview: executionPreview('video') },
+                { task_token: 'private-video-token', lane: 'video', sequence: 3, label: '장면 영상 · 첫 만남', provider_label: '플로우', status: 'running', progress: 35, result_received: false, execution_preview: {
+                    mode: 'review_required', status_label: '확인 필요',
+                    user_status: '현재 참조 구성으로는 영상 작업을 준비할 수 없습니다.',
+                    next_action: '영상 작업에서 다른 도구를 선택하거나 완료 영상을 연결하세요.',
+                    output_kind: 'video', output_count: 1, preview_only: true,
+                    provider: 'flow', blockers: ['FLOW_REFERENCE_COUNT_MUST_BE_ZERO_OR_TWO'],
+                    path: '/private/hidden/reference.png', token: 'private-flow-preview-token',
+                    hash: 'a'.repeat(64), command: 'flow submit --reference private.png',
+                    mime_type: 'image/png', size_bytes: 4096,
+                } },
+                { task_token: 'private-wait-token', lane: 'video', sequence: 4, label: '장면 영상 · 결심', provider_label: '그록', status: 'queued', progress: 0, result_received: false, execution_preview: {
+                    mode: 'setup_required', status_label: '준비 필요',
+                    user_status: '현재 장면 길이는 이 도구에서 지원되지 않습니다.',
+                    next_action: '완료 영상을 연결하거나 설계에서 장면 길이를 확인하세요.',
+                    output_kind: 'video', output_count: 1, preview_only: true,
+                    provider: 'grok', blockers: ['GROK_DURATION_UNSUPPORTED'],
+                    path: '/private/hidden/grok.mp4', token: 'private-grok-preview-token',
+                    hash: 'b'.repeat(64), command: 'grok submit --duration 5',
+                    mime_type: 'video/mp4', size_bytes: 8192,
+                } },
             ],
         },
         onRefreshExecution: () => { refreshed += 1; },
@@ -196,9 +214,16 @@ test('new project execution panel shows short Korean progress without private me
     assert.match(panel.textContent, /다음 행동: 이미지 작업에서 장면 프롬프트를 확인하세요/);
     assert.match(panel.textContent, /실행 전 확인/);
     assert.match(panel.textContent, /다음 행동: 프롬프트를 확인하세요/);
+    assert.match(panel.textContent, /확인 필요 · 작업 조건을 확인하세요/);
+    assert.match(panel.textContent, /현재 참조 구성으로는 영상 작업을 준비할 수 없습니다/);
+    assert.match(panel.textContent, /다음 행동: 영상 작업에서 다른 도구를 선택하거나 완료 영상을 연결하세요/);
+    assert.match(panel.textContent, /현재 장면 길이는 이 도구에서 지원되지 않습니다/);
+    assert.match(panel.textContent, /다음 행동: 완료 영상을 연결하거나 설계에서 장면 길이를 확인하세요/);
+    const reviewDetails = findAll(panel, 'details').find((node) => node.textContent.includes('현재 참조 구성으로는'));
+    assert.match(reviewDetails?.textContent || '', /확인 필요 · 작업 조건을 확인하세요/, 'review-required copy stays inside existing details');
     assert.match(panel.textContent, /예상 결과: 이미지 1장|예상 결과: 영상 1개/);
     assert.doesNotMatch(panel.textContent, /DST 이미지|플로우|그록/);
-    assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|task_|result_|preparation_|reference_files|relative_path|\.png|[a-f0-9]{64}/);
+    assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|FLOW_REFERENCE_COUNT_MUST_BE_ZERO_OR_TWO|GROK_DURATION_UNSUPPORTED|task_|result_|preparation_|reference_files|relative_path|\.png|\.mp4|flow submit|grok submit|image\/png|video\/mp4|4096|8192|[a-f0-9]{64}/);
     assert.ok(byAttribute(panel, 'section', 'data-work-progress', ''));
     assert.ok(byAttribute(panel, 'section', 'data-work-lane', 'image'));
     assert.ok(byAttribute(panel, 'section', 'data-work-lane', 'video'));
@@ -2921,6 +2946,9 @@ test('video preparation workbench keeps scene order, direct controls, local resu
         '비 오는 아침', '전화가 쏟아지는 사무실', '밝아진 저녁',
     ]);
     assert.match(panel.textContent, /영상 작업 준비는 .* 영상 생성은 시작하지 않습니다/);
+    assert.match(panel.textContent, /현재 참조 이미지 1장으로는 준비할 수 없습니다\. 완료 영상을 연결하거나 다른 도구를 선택하세요/);
+    assert.match(panel.textContent, /6초, 10초 또는 15초를 지원합니다\. 완료 영상을 연결하거나 다른 도구를 선택하세요/);
+    assert.match(panel.textContent, /이 작업대에서는 완료 영상만 연결할 수 있습니다/);
     assert.doesNotMatch(panel.textContent, /video-task|secret-scene|private-result|hidden-|internal-id|\/private\//);
     assert.deepEqual(findAll(panel, 'span').filter((node) => node.className.includes('text-[11px]')), []);
 
@@ -2930,6 +2958,9 @@ test('video preparation workbench keeps scene order, direct controls, local resu
     const provider = byAttribute(panel, 'select', 'aria-label', '전화가 쏟아지는 사무실 생성 도구');
     provider.value = 'bytedance';
     await provider.dispatchEvent({ type: 'change' });
+    const flowCard = findAll(panel, 'article').find((card) => card.textContent.includes('전화가 쏟아지는 사무실'));
+    assert.match(flowCard.textContent, /이 작업대에서는 완료 영상만 연결할 수 있습니다/);
+    assert.match(provider.className, /min-h-11/);
     assert.deepEqual(calls.at(-2), ['prompt', 'video-task-2', '수정한 장면 2 프롬프트']);
     assert.deepEqual(calls.at(-1), ['provider', 'video-task-2', 'bytedance']);
 

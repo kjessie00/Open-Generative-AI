@@ -6,7 +6,13 @@ const PREVIEW_SCHEMA = 'film_pipeline.provider_execution_preview.v1';
 const DEFAULT_RUNTIME_PATHS = Object.freeze({
     dstPython: '/Users/jessiek/StudioProjects/deepSearchTeam/.venv/bin/python',
     dstModule: '/Users/jessiek/StudioProjects/deepSearchTeam/dst',
+    grokPython: '/Users/jessiek/.pyenv/versions/3.11.7/bin/python3',
+    grokCli: '/Users/jessiek/StudioProjects/grok-auto/grok-browser/grok_imagine_bot.py',
+    grokRoot: '/Users/jessiek/StudioProjects/grok-auto/grok-browser',
 });
+const TASK_TOKEN = /^task_[a-f0-9]{64}$/;
+const GROK_DURATIONS = new Set([6, 10, 15]);
+const GROK_ASPECT_RATIOS = new Set(['16:9', '9:16', '1:1', '3:2', '2:3']);
 
 function sha256(value) {
     return crypto.createHash('sha256').update(value).digest('hex');
@@ -76,8 +82,8 @@ function contract(task, provider, readiness, blockers, spec) {
     return { ...base, contract_revision_sha256: sha256(JSON.stringify(revision)) };
 }
 
-function blocked(task, provider, blocker) {
-    return contract(task, provider, 'blocked', [blocker], commandSpec());
+function blocked(task, provider, blockers) {
+    return contract(task, provider, 'blocked', Array.isArray(blockers) ? blockers : [blockers], commandSpec());
 }
 
 function dstPreview(task, runtime) {
@@ -121,15 +127,73 @@ function flowPreview(task) {
     return blocked(task, 'flow', 'FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED');
 }
 
-function grokPreview(task) {
-    if (![6, 10, 15].includes(task.duration_seconds)) {
+function grokOutputPath(task) {
+    try {
+        if (!TASK_TOKEN.test(task.task_token || '') || typeof task.output_path !== 'string'
+            || !path.isAbsolute(task.output_path) || path.normalize(task.output_path) !== task.output_path
+            || path.basename(task.output_path) !== `${task.task_token}.mp4`) return '';
+        const parent = path.dirname(task.output_path);
+        const parentStats = fs.lstatSync(parent);
+        if (!parentStats.isDirectory() || parentStats.isSymbolicLink() || (parentStats.mode & 0o777) !== 0o700
+            || fs.realpathSync.native(parent) !== parent) return '';
+        try {
+            fs.lstatSync(task.output_path);
+            return '';
+        } catch (error) {
+            return error.code === 'ENOENT' ? task.output_path : '';
+        }
+    } catch { return ''; }
+}
+
+function grokRuntime(runtime) {
+    const python = resolvedFile(runtime.grokPython);
+    const cli = resolvedFile(runtime.grokCli);
+    const root = resolvedDirectory(runtime.grokRoot);
+    if (!python || !cli || !root || path.dirname(cli) !== root
+        || path.basename(cli) !== 'grok_imagine_bot.py') return null;
+    return { python, cli, root };
+}
+
+function grokPreview(task, runtime) {
+    if (!GROK_DURATIONS.has(task.duration_seconds)) {
         return blocked(task, 'grok', 'GROK_DURATION_UNSUPPORTED');
     }
-    if (task.reference_result_tokens.length > 0
-        && task.reference_files.length !== task.reference_result_tokens.length) {
+    const referenceCount = task.reference_result_tokens.length;
+    if (![0, 1].includes(referenceCount)) {
+        return blocked(task, 'grok', 'GROK_REFERENCE_COUNT_MUST_BE_ZERO_OR_ONE');
+    }
+    if (task.reference_files.length !== referenceCount) {
         return blocked(task, 'grok', 'GROK_REFERENCE_STAGING_REQUIRED');
     }
-    return blocked(task, 'grok', 'GROK_NO_NONSUBMIT_MODE');
+    const resolvedRuntime = grokRuntime(runtime);
+    if (!resolvedRuntime) return blocked(task, 'grok', 'GROK_RUNTIME_MISSING');
+    const outputPath = grokOutputPath(task);
+    if (!outputPath) return blocked(task, 'grok', 'GROK_OUTPUT_STAGING_REQUIRED');
+
+    const blockers = ['GROK_NO_NONSUBMIT_MODE', 'GROK_ACCOUNT_ROTATION_CANNOT_BE_DISABLED'];
+    let args;
+    if (referenceCount === 1) {
+        blockers.push('GROK_I2V_RATIO_NOT_CONFIGURABLE');
+        args = [
+            resolvedRuntime.cli, 'i2v', '--image', task.reference_files[0].path,
+            '--prompt', task.prompt, '--duration', String(task.duration_seconds),
+            '--output', outputPath, '--timeout', '180',
+        ];
+    } else {
+        if (!GROK_ASPECT_RATIOS.has(task.aspect_ratio)) {
+            return blocked(task, 'grok', 'GROK_ASPECT_RATIO_UNSUPPORTED');
+        }
+        args = [
+            resolvedRuntime.cli, 'video', '--prompt', task.prompt,
+            '--ratio', task.aspect_ratio, '--duration', String(task.duration_seconds),
+            '--quality', '480p', '--output', outputPath, '--timeout', '180',
+        ];
+    }
+    return contract(task, 'grok', 'preview_ready_live_blocked', blockers, commandSpec({
+        command: resolvedRuntime.python,
+        args,
+        cwd: resolvedRuntime.root,
+    }));
 }
 
 function buildProviderExecutionPreview(task, context = {}) {
@@ -140,10 +204,11 @@ function buildProviderExecutionPreview(task, context = {}) {
             ? task.reference_result_tokens : [],
         reference_files: Array.isArray(task?.reference_files)
             ? task.reference_files.map(resolvedReferenceFile).filter(Boolean) : [],
+        output_path: typeof task?.output_path === 'string' ? task.output_path : '',
     };
     if (normalized.lane === 'image') return dstPreview(normalized, runtime);
     if (normalized.provider === 'flow') return flowPreview(normalized);
-    if (normalized.provider === 'grok') return grokPreview(normalized);
+    if (normalized.provider === 'grok') return grokPreview(normalized, runtime);
     const blocker = normalized.provider === 'replicate'
         ? 'MISSING_REPLICATE_GENERATION_ADAPTER'
         : normalized.provider === 'bytedance'

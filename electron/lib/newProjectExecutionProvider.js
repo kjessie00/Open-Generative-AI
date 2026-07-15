@@ -18,6 +18,7 @@ const RUNS_DIRECTORY = 'runs';
 const MANIFEST_FILE = 'manifest.json';
 const RECEIPTS_DIRECTORY = 'receipts';
 const REFERENCES_DIRECTORY = 'references';
+const OUTPUTS_DIRECTORY = 'outputs';
 const REFERENCES_MANIFEST_FILE = 'manifest.json';
 const REFERENCES_SCHEMA = 'film_pipeline.new_project_execution_references.v1';
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
@@ -85,6 +86,7 @@ function exactPaths(userDataPath, runToken = '') {
         receiptsRoot: path.join(runRoot, RECEIPTS_DIRECTORY),
         referencesRoot: path.join(runRoot, REFERENCES_DIRECTORY),
         referencesManifestPath: path.join(runRoot, REFERENCES_DIRECTORY, REFERENCES_MANIFEST_FILE),
+        outputsRoot: path.join(runRoot, OUTPUTS_DIRECTORY),
     };
 }
 
@@ -118,6 +120,37 @@ function ensureRunDirectories(paths) {
 function ensureReferencesDirectory(paths) {
     ensureRunDirectories(paths);
     ensureDirectory(paths.referencesRoot, paths.runRoot);
+}
+
+function executionOutputPath(paths, taskToken) {
+    if (!TASK_TOKEN.test(taskToken || '')) throw failure('EXECUTION_TASK_TOKEN_INVALID');
+    return path.join(paths.outputsRoot, `${taskToken}.mp4`);
+}
+
+function loadExecutionOutputTargets(selection) {
+    if (selection.manifest.lane !== 'video') return new Map();
+    assertPrivateDirectory(selection.paths.outputsRoot, 'EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    const targets = new Map();
+    for (const task of selection.manifest.tasks) {
+        const target = executionOutputPath(selection.paths, task.task_token);
+        try {
+            fs.lstatSync(target);
+            throw failure('EXECUTION_OUTPUT_TARGET_EXISTS');
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        targets.set(task.task_token, target);
+    }
+    const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
+    if (entries.length) throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    return targets;
+}
+
+function stageExecutionOutputs(selection) {
+    if (selection.manifest.lane !== 'video') return new Map();
+    ensureRunDirectories(selection.paths);
+    ensureDirectory(selection.paths.outputsRoot, selection.paths.runRoot);
+    return loadExecutionOutputTargets(selection);
 }
 
 function sameFile(left, right) {
@@ -380,13 +413,15 @@ function stageExecutionReferences(selection, context) {
 }
 
 function selectionPrepared(selection, context = {}) {
-    if (!referencePairs(selection.manifest).length) return true;
     try {
-        const image = (context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan)(context);
-        if (!image?.ok || image.status !== 'restored' || image.blockers?.length
-            || image.design_revision_sha256 !== selection.manifest.design_revision_sha256
-            || image.revision_sha256 !== selection.manifest.image_plan_revision_sha256) return false;
-        loadReferenceCommit(selection.paths, selection.manifest);
+        if (referencePairs(selection.manifest).length) {
+            const image = (context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan)(context);
+            if (!image?.ok || image.status !== 'restored' || image.blockers?.length
+                || image.design_revision_sha256 !== selection.manifest.design_revision_sha256
+                || image.revision_sha256 !== selection.manifest.image_plan_revision_sha256) return false;
+            loadReferenceCommit(selection.paths, selection.manifest);
+        }
+        loadExecutionOutputTargets(selection);
         return true;
     } catch { return false; }
 }
@@ -788,6 +823,7 @@ function publicSelections(selections, context = {}) {
     for (const selection of selections) {
         const receipts = laneReceipts(selection);
         let referencesByTask = new Map();
+        let outputTargets = new Map();
         if (selection.prepared && referencePairs(selection.manifest).length) {
             try {
                 referencesByTask = referenceFilesByTask(
@@ -796,12 +832,17 @@ function publicSelections(selections, context = {}) {
                 );
             } catch { /* incomplete staging stays a simple setup state */ }
         }
+        if (selection.prepared && selection.manifest.lane === 'video') {
+            try { outputTargets = loadExecutionOutputTargets(selection); }
+            catch { /* missing or unsafe output staging stays private and blocked */ }
+        }
         selection.manifest.tasks.forEach((task, index) => {
             const receipt = receipts[index];
             const status = receipt?.status || 'queued';
             const referenceFiles = referencesByTask.get(task.task_token) || [];
             const providerPreview = providerExecutionPreview.buildProviderExecutionPreview({
                 ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
+                output_path: outputTargets.get(task.task_token) || '',
             }, context);
             tasks.push({
                 task_token: task.task_token, lane: task.lane, kind: task.kind, sequence: task.sequence,
@@ -813,6 +854,7 @@ function publicSelections(selections, context = {}) {
                 generation_executed: receipt?.generation_executed || false,
                 result_locator: receipt?.result_locator || '',
                 provider_preview_readiness: providerPreview.readiness,
+                provider_preview_blockers: providerPreview.blockers,
                 reference_setup_missing: task.reference_result_tokens.length > referenceFiles.length,
                 ...providerReadiness(task, context),
             });
@@ -840,6 +882,7 @@ function publicSelections(selections, context = {}) {
             ? match.image_index : 0;
         task.execution_preview = executionPreview(task);
         delete task.provider_preview_readiness;
+        delete task.provider_preview_blockers;
         delete task.reference_setup_missing;
         delete task.result_locator;
     }
@@ -878,6 +921,45 @@ function getNewProjectExecutionState(context = {}) {
 
 function executionPreview(task) {
     const resultAvailable = task.result_match_status === 'ready';
+    const previewBlockers = Array.isArray(task.provider_preview_blockers)
+        ? task.provider_preview_blockers : [];
+    if (!resultAvailable && previewBlockers.includes('GROK_DURATION_UNSUPPORTED')) {
+        return {
+            mode: 'setup_required',
+            status_label: '준비 필요',
+            reason: 'video_duration_required',
+            user_status: '영상 길이를 지원되는 값으로 바꿔야 합니다.',
+            next_action: '설계에서 장면 길이를 6초, 10초 또는 15초로 바꾸세요.',
+            output_kind: 'video',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
+    if (!resultAvailable && previewBlockers.includes('FLOW_REFERENCE_COUNT_MUST_BE_ZERO_OR_TWO')) {
+        return {
+            mode: 'setup_required',
+            status_label: '준비 필요',
+            reason: 'video_reference_count_required',
+            user_status: '영상 참조 이미지 구성을 다시 확인해야 합니다.',
+            next_action: '영상 작업에서 참조 이미지를 0장 또는 2장으로 맞추세요.',
+            output_kind: 'video',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
+    if (!resultAvailable && task.lane === 'video'
+        && task.provider_preview_readiness === 'preview_ready_live_blocked') {
+        return {
+            mode: 'review_required',
+            status_label: '실행 전 확인',
+            reason: 'private_review_required',
+            user_status: '작업 내용은 준비되었지만 실행 전 확인이 필요합니다.',
+            next_action: '영상 작업에서 프롬프트와 길이를 확인하세요.',
+            output_kind: 'video',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
     if (!resultAvailable && task.lane === 'image' && task.kind === 'scene_image'
         && task.provider_preview_readiness === 'preview_ready') {
         return {
@@ -945,7 +1027,9 @@ function materialize(selection, context) {
     if (loaded.run_revision_sha256 !== record.run_revision_sha256) throw failure('EXECUTION_MANIFEST_CONFLICT');
     const staged = { paths: selection.paths, manifest: loaded, prepared: false };
     stageExecutionReferences(staged, context);
-    if (!selectionPrepared(staged, context)) throw failure('EXECUTION_REFERENCE_PREPARATION_INCOMPLETE');
+    stageExecutionOutputs(staged);
+    if (!selectionPrepared(staged, context)) throw failure(selection.manifest.lane === 'video'
+        ? 'EXECUTION_OUTPUT_PREPARATION_INCOMPLETE' : 'EXECUTION_REFERENCE_PREPARATION_INCOMPLETE');
     return { ...staged, prepared: true, alreadyPrepared: false };
 }
 
@@ -1091,14 +1175,17 @@ function inspectExecutionHandoff(context = {}, options = {}) {
             selection.manifest,
             stageExecutionReferences(selection, context),
         );
+        const outputTargets = stageExecutionOutputs(selection);
         return selection.manifest.tasks.map((task) => {
             const referenceFiles = referencesByTask.get(task.task_token) || [];
+            const outputPath = outputTargets.get(task.task_token) || '';
             return {
                 ...task, run_revision_sha256: selection.manifest.run_revision_sha256,
                 attempt: selection.manifest.attempt, aspect_ratio: selection.manifest.aspect_ratio,
-                reference_files: referenceFiles,
+                reference_files: referenceFiles, output_path: outputPath,
                 provider_execution_preview: providerExecutionPreview.buildProviderExecutionPreview({
                     ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
+                    output_path: outputPath,
                 }, context),
             };
         });

@@ -20,6 +20,7 @@ const EXECUTION_PREVIEW_TEXT = Object.freeze({
     preview_ready: '내용 확인 가능 · 작업 내용이 준비되었습니다.',
     runnable: '실행 가능 · 필요한 자료가 준비되었습니다.',
     setup_required: '준비 필요 · 먼저 필요한 자료를 확인하세요.',
+    review_required: '확인 필요 · 작업 조건을 확인하세요.',
     result_only: '결과만 연결 · 이 작업대에서는 생성을 시작하지 않습니다.',
 });
 
@@ -27,17 +28,22 @@ function executionPreviewDetails(task) {
     const preview = task.execution_preview;
     if (!preview || !EXECUTION_PREVIEW_TEXT[preview.mode]) return null;
     const output = preview.output_kind === 'video' ? '영상 1개' : '이미지 1장';
+    const reviewRequired = preview.mode === 'review_required';
     return el('div', { className: 'mt-2' }, [
-        el('p', {
+        !reviewRequired ? el('p', {
             text: EXECUTION_PREVIEW_TEXT[preview.mode],
             className: 'text-xs font-semibold leading-5 text-secondary',
-        }),
+        }) : null,
         el('details', { className: 'mt-1 max-w-xl' }, [
             el('summary', {
                 text: '실행 전 확인',
                 className: 'min-h-11 cursor-pointer py-3 text-xs font-semibold text-cyan-100',
             }),
             el('div', { className: 'space-y-1 border-l border-white/10 pb-2 pl-3 text-xs leading-5 text-secondary' }, [
+                reviewRequired ? el('p', {
+                    text: EXECUTION_PREVIEW_TEXT[preview.mode],
+                    className: 'font-semibold',
+                }) : null,
                 el('p', { text: preview.user_status }),
                 preview.next_action ? el('p', { text: `다음 행동: ${preview.next_action}` }) : null,
                 el('p', { text: `예상 결과: ${output}` }),
