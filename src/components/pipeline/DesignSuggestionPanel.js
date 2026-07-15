@@ -100,7 +100,7 @@ export function DesignSuggestionPanel({ view, currentBoard, onDecide, registerDi
             status,
             el('div', { className: 'flex flex-wrap gap-2' }, [
                 apply,
-                actionButton('보류', { variant: 'muted', onClick: () => onDecide?.({ suggestion_token: view.suggestion?.suggestion_token, action: 'hold' }) }),
+                actionButton('현재 내용 유지', { variant: 'muted', onClick: () => onDecide?.({ suggestion_token: view.suggestion?.suggestion_token, action: 'hold' }) }),
             ]),
         ]),
     ]);

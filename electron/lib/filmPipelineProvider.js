@@ -8,6 +8,7 @@ const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const newProjectExecutionProvider = require('./newProjectExecutionProvider');
+const { defaultLocalAgentSuggestionRunner } = require('./localAgentSuggestionRunner');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
@@ -1007,6 +1008,57 @@ function enqueueDesignAgentRequest(payload, options = {}) {
     return result;
 }
 
+function exactAgentRunPayload(payload, expected, code) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+        || Object.keys(payload).sort().join(',') !== [...expected].sort().join(',')) {
+        const error = new Error(code);
+        error.code = code;
+        throw error;
+    }
+    return payload;
+}
+
+const PUBLIC_AGENT_ERRORS = new Set([
+    'CODEX_CLI_UNAVAILABLE', 'CODEX_AUTH_REQUIRED', 'CODEX_RATE_LIMITED',
+    'AGENT_TIMEOUT', 'AGENT_OUTPUT_TOO_LARGE', 'AGENT_OUTPUT_INVALID',
+    'AGENT_EXECUTION_FAILED',
+]);
+
+function publicAgentError(error) {
+    return PUBLIC_AGENT_ERRORS.has(error?.code) ? error.code : 'AGENT_EXECUTION_FAILED';
+}
+
+async function runPlanningAgentRequest(payload, options = {}) {
+    const input = exactAgentRunPayload(payload, ['stage'], 'PLANNING_AGENT_RUN_SHAPE_INVALID');
+    if (!['brief', 'script'].includes(input.stage)) {
+        const error = new Error('PLANNING_AGENT_RUN_STAGE_INVALID');
+        error.code = 'PLANNING_AGENT_RUN_STAGE_INVALID';
+        throw error;
+    }
+    const context = newProjectContext(options);
+    const current = newProjectDraftProvider.getNewProjectDraftState(context);
+    const request = current.collaboration?.recent_requests?.find((item) => (
+        item?.stage === input.stage && item?.status === 'queued_local_handoff' && !item.suggestion
+    ));
+    if (!request?.request_id) {
+        return { ok: false, status: 'not_ready', executed: false, model_called: false, error: 'AGENT_REQUEST_NOT_READY', state: current };
+    }
+    sendProgress({ phase: 'planning-agent-running', stage: input.stage, executed: false, modelCalled: false });
+    try {
+        const runner = options.localAgentSuggestionRunner || defaultLocalAgentSuggestionRunner;
+        const result = await runner.runPlanning({ requestId: request.request_id, context });
+        const state = newProjectDraftProvider.getNewProjectDraftState(context);
+        sendProgress({ phase: 'planning-agent-suggestion-ready', stage: input.stage, executed: true, modelCalled: true });
+        return { ok: true, status: 'suggestion_ready', executed: true, model_called: true, result, state };
+    } catch (error) {
+        const state = newProjectDraftProvider.getNewProjectDraftState(context);
+        const publicError = publicAgentError(error);
+        const modelCalled = error?.modelCalled === true;
+        sendProgress({ phase: 'planning-agent-failed', stage: input.stage, executed: false, modelCalled, error: publicError });
+        return { ok: false, status: 'failed', executed: false, model_called: modelCalled, error: publicError, state };
+    }
+}
+
 function decideDesignAgentSuggestion(payload, options = {}) {
     const result = newProjectDesignProvider.decideDesignAgentSuggestion(payload, newProjectDesignContext(options));
     sendProgress({
@@ -1160,6 +1212,32 @@ function enqueuePlanningAgentRequest(payload, options = {}) {
         modelCalled: false,
     });
     return result;
+}
+
+async function runDesignAgentRequest(payload, options = {}) {
+    exactAgentRunPayload(payload, [], 'DESIGN_AGENT_RUN_SHAPE_INVALID');
+    const context = newProjectDesignContext(options);
+    const current = newProjectDesignProvider.getNewProjectDesignState(context);
+    const request = current.collaboration?.recent_requests?.find((item) => (
+        item?.status === 'queued_local_handoff' && !item.suggestion
+    ));
+    if (!request?.request_id) {
+        return { ok: false, status: 'not_ready', executed: false, model_called: false, error: 'AGENT_REQUEST_NOT_READY', state: current };
+    }
+    sendProgress({ phase: 'design-agent-running', executed: false, modelCalled: false });
+    try {
+        const runner = options.localAgentSuggestionRunner || defaultLocalAgentSuggestionRunner;
+        const result = await runner.runDesign({ requestId: request.request_id, context });
+        const state = newProjectDesignProvider.getNewProjectDesignState(context);
+        sendProgress({ phase: 'design-agent-suggestion-ready', executed: true, modelCalled: true });
+        return { ok: true, status: 'suggestion_ready', executed: true, model_called: true, result, state };
+    } catch (error) {
+        const state = newProjectDesignProvider.getNewProjectDesignState(context);
+        const publicError = publicAgentError(error);
+        const modelCalled = error?.modelCalled === true;
+        sendProgress({ phase: 'design-agent-failed', executed: false, modelCalled, error: publicError });
+        return { ok: false, status: 'failed', executed: false, model_called: modelCalled, error: publicError, state };
+    }
 }
 
 function decidePlanningAgentSuggestion(payload, options = {}) {
@@ -1527,6 +1605,7 @@ function register(ipcApi = ipcMain, options = {}) {
     });
     ipcApi.handle('film-pipeline:save-new-project-draft', (_, payload) => saveNewProjectDraft(payload, options));
     ipcApi.handle('film-pipeline:enqueue-planning-agent-request', (_, payload) => enqueuePlanningAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:run-planning-agent-request', (_, payload) => runPlanningAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-planning-agent-suggestion', (_, payload) => decidePlanningAgentSuggestion(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-design-state', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
@@ -1534,6 +1613,7 @@ function register(ipcApi = ipcMain, options = {}) {
     });
     ipcApi.handle('film-pipeline:save-new-project-design-board', (_, payload) => saveNewProjectDesignBoard(payload, options));
     ipcApi.handle('film-pipeline:enqueue-design-agent-request', (_, payload) => enqueueDesignAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:run-design-agent-request', (_, payload) => runDesignAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-design-agent-suggestion', (_, payload) => decideDesignAgentSuggestion(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-image-plan', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
@@ -1657,10 +1737,12 @@ module.exports = {
     getNewProjectDraftState,
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
+    runPlanningAgentRequest,
     decidePlanningAgentSuggestion,
     getNewProjectDesignState,
     saveNewProjectDesignBoard,
     enqueueDesignAgentRequest,
+    runDesignAgentRequest,
     decideDesignAgentSuggestion,
     getNewProjectImagePlan,
     saveNewProjectImagePlan,

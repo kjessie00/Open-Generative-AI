@@ -58,7 +58,7 @@ export function PlanningSuggestionPanel({
         disabled: applyDisabled,
         onClick: () => onDecide?.({ stage, suggestion_token: suggestion?.suggestion_token, action: 'apply' }),
     });
-    const holdButton = actionButton('보류', {
+    const holdButton = actionButton('현재 내용 유지', {
         disabled,
         variant: 'muted',
         onClick: () => onDecide?.({ stage, suggestion_token: suggestion?.suggestion_token, action: 'hold' }),

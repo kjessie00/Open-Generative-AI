@@ -1566,6 +1566,23 @@ test('new-project intake keeps direct edits and local agent handoffs distinct wi
                 },
             };
         },
+        async runPlanningAgentRequest(payload) {
+            calls.push(['runPlanningAgentRequest', structuredClone(payload)]);
+            return {
+                ok: false,
+                status: 'failed',
+                state: {
+                    ...readyState(),
+                    collaboration: {
+                        status: 'queued', total_request_count: 1, truncated: false, blockers: [],
+                        recent_requests: [{
+                            request_id: 'hidden-request-id', stage: payload.stage,
+                            status: 'queued_local_handoff', executed: false, model_called: false,
+                        }],
+                    },
+                },
+            };
+        },
         async previewCommand(command) {
             calls.push(['previewCommand', command]);
         },
@@ -1609,15 +1626,15 @@ test('new-project intake keeps direct edits and local agent handoffs distinct wi
         assert.match(control.className, /min-h-11|min-h-\[/, `${id} must keep a 44px-class touch target`);
     }
     for (const [id, label] of [
-        ['planning-brief-agent-request', '무엇을 바꿀까요?'],
-        ['planning-script-agent-request', '무엇을 바꿀까요?'],
+        ['planning-brief-agent-request', '어떻게 바꿀까요?'],
+        ['planning-script-agent-request', '어떻게 바꿀까요?'],
     ]) {
         assert.equal(byAttribute(studio, 'label', 'for', id)?.textContent.trim(), label);
         assert.ok(byAttribute(studio, 'textarea', 'id', id));
     }
     assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '직접 저장').length, 2);
-    assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트에게 요청').length, 2);
-    assert.match(studio.textContent, /저장하거나 요청을 남겨도 제작이나 생성은 시작되지 않습니다/);
+    assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트 작업 시작').length, 2);
+    assert.match(studio.textContent, /에이전트는 기획과 대본만 다듬습니다/);
     assert.match(studio.textContent, /빌드 명령 미리보기/);
     assert.ok(byText(studio, 'button', '새 프로젝트 초안'), 'project bar must expose direct intake navigation');
 
@@ -1642,7 +1659,7 @@ test('new-project intake keeps direct edits and local agent handoffs distinct wi
 
     const requestInput = byAttribute(studio, 'textarea', 'id', 'planning-brief-agent-request');
     requestInput.value = '핵심 갈등을 더 선명하게 다듬어줘';
-    const requestButtons = findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트에게 요청');
+    const requestButtons = findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트 작업 시작');
     await requestButtons[0].dispatchEvent({ type: 'click' });
     await flushRenderer();
     const enqueueCall = calls.find(([method]) => method === 'enqueuePlanningAgentRequest');
@@ -1652,7 +1669,8 @@ test('new-project intake keeps direct edits and local agent handoffs distinct wi
         expected_revision_sha256: 'a'.repeat(64),
     });
     assert.equal(calls.at(calls.indexOf(enqueueCall) - 1)[0], 'saveNewProjectDraft', 'request must save the full draft first');
-    assert.match(studio.textContent, /요청 저장됨 · 아직 실행 전/);
+    assert.deepEqual(calls.find(([method]) => method === 'runPlanningAgentRequest')[1], { stage: 'brief' });
+    assert.match(studio.textContent, /수정안을 만들지 못했습니다|수정안이 도착했습니다/);
     assert.doesNotMatch(studio.textContent, /hidden-request-id|queued_local_handoff|실행 완료|작업 완료/);
 
     await byText(studio, 'button', '빌드 명령 복사').dispatchEvent({ type: 'click' });
@@ -2362,6 +2380,84 @@ test('planning suggestions compare each stage independently and keep decisions e
     assert.equal(dirtyApplyButtons[1].disabled, false, 'brief edit must not stale a held script suggestion');
 });
 
+test('PipelineStudio refreshes design authority immediately after applying a planning suggestion', async (t) => {
+    const planningBefore = 'a'.repeat(64);
+    const planningAfter = 'b'.repeat(64);
+    const designBefore = 'd'.repeat(64);
+    const designAfter = 'e'.repeat(64);
+    const proposedBrief = '목표와 갈등이 선명한 새 기획';
+    const draft = {
+        production_id: 'planning-design-refresh', brief: '기존 기획', script: '기존 대본',
+        route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 4,
+    };
+    let designReads = 0;
+    let designSavePayload;
+    const suggestion = {
+        suggestion_token: 'private-planning-refresh-token', review_status: 'ready',
+        summary: '목표와 갈등을 앞에 배치했습니다.', proposed_text: proposedBrief,
+        apply_allowed: true, published_at: '2026-07-16T00:00:00.000Z',
+    };
+    const bridge = {
+        async getConfig() { return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getHarnessContractStatus() { return { ok: true, ready: true, readiness: 'available', entries: [] }; },
+        async getVideoResultImportWorkspace() { return { status: 'empty', candidates: [], blockers: [] }; },
+        async getNewProjectDraftState() {
+            return {
+                ok: true, status: 'restored', draft, revision_sha256: planningBefore, blockers: [],
+                preview: { copyAllowed: false, shellSafeCommand: '' },
+                collaboration: { status: 'suggestion_ready', blockers: [], recent_requests: [{ stage: 'brief', status: 'queued_local_handoff', suggestion }] },
+            };
+        },
+        async decidePlanningAgentSuggestion() {
+            return {
+                ok: true, applied: true,
+                state: {
+                    ok: true, status: 'saved', draft: { ...draft, brief: proposedBrief }, revision_sha256: planningAfter, blockers: [],
+                    preview: { copyAllowed: false, shellSafeCommand: '' },
+                    collaboration: { status: 'applied', blockers: [], recent_requests: [{ stage: 'brief', status: 'queued_local_handoff', suggestion: { ...suggestion, review_status: 'applied' } }] },
+                },
+            };
+        },
+        async getNewProjectDesignState() {
+            designReads += 1;
+            return {
+                ok: true, status: 'empty', board: { characters: [], locations: [], scenes: [] }, blockers: [],
+                planning_revision_sha256: designReads === 1 ? planningBefore : planningAfter,
+                revision_sha256: designReads === 1 ? designBefore : designAfter,
+                collaboration: { recent_requests: [], blockers: [] },
+            };
+        },
+        async saveNewProjectDesignBoard(payload) {
+            designSavePayload = structuredClone(payload);
+            return { ok: true, state: { ok: true, status: 'saved', board: payload.board, blockers: [], planning_revision_sha256: planningAfter, revision_sha256: 'f'.repeat(64), collaboration: { recent_requests: [], blockers: [] } } };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await byAttribute(studio, 'button', 'aria-label', '1 기획·대본').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '수정안 적용').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.equal(designReads, 2, 'planning apply must refresh the design revision immediately');
+    await byAttribute(studio, 'button', 'aria-label', '2 설계').dispatchEvent({ type: 'click' });
+    for (const [id, value] of [
+        ['design-character-1-name', '지아'], ['design-location-1-name', '사진관'],
+        ['design-scene-1-title', '재회'], ['design-scene-1-dramatic_beat', '두 사람이 마주친다'],
+        ['design-scene-1-action', '걸음을 멈춘다'],
+    ]) {
+        const input = byAttribute(studio, 'input', 'id', id) || byAttribute(studio, 'textarea', 'id', id);
+        input.value = value; await input.dispatchEvent({ type: 'input' });
+    }
+    const location = byAttribute(studio, 'select', 'id', 'design-scene-1-location');
+    location.value = 'location_01'; await location.dispatchEvent({ type: 'change' });
+    await byText(studio, 'button', '직접 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.equal(designSavePayload.expected_planning_revision_sha256, planningAfter);
+    assert.equal(designSavePayload.expected_design_revision_sha256, designAfter);
+});
+
 test('new project design board stays compact while supporting direct full-board edits', async (t) => {
     const changes = [];
     const saves = [];
@@ -2410,7 +2506,7 @@ test('new project design board stays compact while supporting direct full-board 
     assert.equal(saves[0].scenes[0].location_id, 'location_01');
     const request = byAttribute(node, 'textarea', 'id', 'design-agent-request');
     request.value = '장면 전환을 더 선명하게';
-    await byText(node, 'button', '에이전트에게 요청').dispatchEvent({ type: 'click' });
+    await byText(node, 'button', '에이전트 작업 시작').dispatchEvent({ type: 'click' });
     assert.equal(requests[0].instruction, '장면 전환을 더 선명하게');
     assert.deepEqual(requests[0].board, saves[0]);
 
@@ -2469,7 +2565,7 @@ test('design agent state uses newest request and exposes queued, compare, stale,
     assert.doesNotMatch(ready.textContent, /private-new-token|private-old-token|suggestion_ready|review_status|location_01/);
     assert.ok(descendants(ready).some((item) => item.className.includes('xl:grid-cols-2')));
     const apply = byText(ready, 'button', '수정안 적용');
-    const hold = byText(ready, 'button', '보류');
+    const hold = byText(ready, 'button', '현재 내용 유지');
     assert.ok(apply.className.includes('min-h-11'));
     await apply.dispatchEvent({ type: 'click' });
     await hold.dispatchEvent({ type: 'click' });
@@ -2510,7 +2606,7 @@ test('design agent state uses newest request and exposes queued, compare, stale,
         boardValue: board,
         onRefresh: () => refreshes.push(true),
     });
-    assert.match(queued.textContent, /요청 저장됨 · 아직 실행 전/);
+    assert.match(queued.textContent, /요청이 저장됐습니다/);
     await byText(queued, 'button', '수정안 확인').dispatchEvent({ type: 'click' });
     assert.equal(refreshes.length, 1);
 });
@@ -2545,6 +2641,10 @@ test('PipelineStudio sends exact design revisions for save, enqueue, and suggest
             state = { ...state, collaboration: { recent_requests: [{ status: 'queued_local_handoff' }], blockers: [] } };
             return { ok: true, queued: true, state: structuredClone(state) };
         },
+        async runDesignAgentRequest() {
+            calls.push(['run']);
+            return { ok: false, status: 'failed', state: structuredClone(state) };
+        },
         async decideDesignAgentSuggestion(payload) {
             calls.push(['decide', structuredClone(payload)]);
             return { ok: true, applied: true, state: { ...structuredClone(state), collaboration: { recent_requests: [], blockers: [] } } };
@@ -2571,7 +2671,7 @@ test('PipelineStudio sends exact design revisions for save, enqueue, and suggest
 
     const instruction = byAttribute(studio, 'textarea', 'id', 'design-agent-request');
     instruction.value = '장면 전환을 다듬어줘';
-    await byText(studio, 'button', '에이전트에게 요청').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '에이전트 작업 시작').dispatchEvent({ type: 'click' });
     await flushRenderer();
     const enqueue = calls.find(([method]) => method === 'enqueue')[1];
     assert.deepEqual(enqueue, {
@@ -2579,6 +2679,7 @@ test('PipelineStudio sends exact design revisions for save, enqueue, and suggest
         expected_planning_revision_sha256: planningRevision,
         expected_design_revision_sha256: 'e'.repeat(64),
     });
+    assert.equal(calls.filter(([method]) => method === 'run').length, 1);
 
     const proposed = structuredClone(state.board);
     proposed.scenes[0].dramatic_beat = '더 선명한 전환';
@@ -2619,6 +2720,10 @@ test('PipelineStudio queues the first design request from a clean empty board wi
             calls.push(['enqueue', structuredClone(payload)]);
             return { ok: true, queued: true, state: { ...structuredClone(emptyState), collaboration: { recent_requests: [{ status: 'queued_local_handoff' }], blockers: [] } } };
         },
+        async runDesignAgentRequest() {
+            calls.push(['run']);
+            return { ok: false, status: 'failed', state: { ...structuredClone(emptyState), collaboration: { recent_requests: [{ status: 'queued_local_handoff' }], blockers: [] } } };
+        },
     };
     const { restore } = installDeterministicDom(bridge);
     t.after(restore);
@@ -2628,7 +2733,7 @@ test('PipelineStudio queues the first design request from a clean empty board wi
     await byAttribute(studio, 'button', 'aria-label', '2 설계').dispatchEvent({ type: 'click' });
     const instruction = byAttribute(studio, 'textarea', 'id', 'design-agent-request');
     instruction.value = '기획과 대본을 바탕으로 첫 설계를 만들어줘';
-    await byText(studio, 'button', '에이전트에게 요청').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '에이전트 작업 시작').dispatchEvent({ type: 'click' });
     await flushRenderer();
 
     assert.equal(calls.filter(([method]) => method === 'save').length, 0);
@@ -2637,7 +2742,8 @@ test('PipelineStudio queues the first design request from a clean empty board wi
         expected_planning_revision_sha256: planningRevision,
         expected_design_revision_sha256: designRevision,
     });
-    assert.match(studio.textContent, /요청 저장됨 · 아직 실행 전/);
+    assert.equal(calls.filter(([method]) => method === 'run').length, 1);
+    assert.match(studio.textContent, /수정안을 만들지 못했습니다|수정안이 도착했습니다/);
 });
 
 test('image preparation workbench keeps the ordered DST flow compact and editable without exposing internal metadata', async (t) => {

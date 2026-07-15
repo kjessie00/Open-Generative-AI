@@ -59,7 +59,7 @@ function statusText(status) {
     if (status === 'restored') return '저장한 내용을 불러왔습니다.';
     if (status === 'saved') return '직접 저장됨';
     if (status === 'saving') return '저장 중…';
-    if (status === 'requesting') return '요청 저장 중…';
+    if (status === 'requesting') return '에이전트가 수정안을 작성 중…';
     if (status === 'copying') return '명령 복사 중…';
     if (status === 'error') return '저장하지 못했습니다.';
     return '아직 저장된 내용이 없습니다.';
@@ -67,7 +67,7 @@ function statusText(status) {
 
 function collaborationSection({
     number, title, stage, createDraftControl, draftValue, disabled, draftDirty, collaboration,
-    onSave, onEnqueue, onRefresh, onDecide,
+    onSave, onEnqueue, onRun, onRefresh, onDecide,
 }) {
     const stageDirty = draftDirty?.settings === true || draftDirty?.[stage] === true;
     const view = planningSuggestionView(collaboration, stage, stageDirty);
@@ -75,8 +75,8 @@ function collaborationSection({
     const requestId = `planning-${stage}-agent-request`;
     const requestStatus = el('p', {
         text: view.queued
-            ? '요청 대기 · 아직 실행 전'
-            : '요청 대기',
+            ? '요청이 저장됐습니다 · 에이전트 작업을 다시 시작할 수 있습니다.'
+            : '직접 수정하거나 에이전트에게 맡길 수 있습니다.',
         className: 'text-xs leading-5 text-secondary',
         attrs: { role: 'status', 'aria-live': 'polite' },
     });
@@ -86,10 +86,10 @@ function collaborationSection({
         attrs: {
             id: requestId,
             maxlength: 4000,
-            placeholder: stage === 'brief' ? '예: 핵심 갈등이 더 선명하도록 다듬어줘' : '예: 첫 3초의 몰입감을 높여줘',
+            placeholder: stage === 'brief' ? '예: 주인공의 목표와 갈등이 첫 문단에서 보이게 다듬어줘' : '예: 첫 3초에 핵심 갈등이 드러나게 고쳐줘',
         },
     });
-    const requestButton = actionButton('에이전트에게 요청', {
+    const requestButton = actionButton('에이전트 작업 시작', {
         disabled,
         onClick: async () => {
             const instruction = requestInput.value.trim();
@@ -103,12 +103,13 @@ function collaborationSection({
     });
     const requestComposer = el('div', { className: 'flex min-w-0 flex-col gap-3 rounded-md border border-white/10 bg-black/20 p-3' }, [
         el('div', {}, [
-            el('h5', { text: '에이전트에게 요청', className: 'text-sm font-semibold text-white' }),
-            el('p', { text: '요청은 로컬에 저장되며 아직 실행되지 않습니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
+            el('h5', { text: '에이전트와 함께 수정', className: 'text-sm font-semibold text-white' }),
+            el('p', { text: '시작하면 현재 내용을 먼저 저장합니다. 이미지나 영상 생성은 실행하지 않습니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
         ]),
-        fieldShell('무엇을 바꿀까요?', requestId, requestInput),
+        fieldShell('어떻게 바꿀까요?', requestId, requestInput),
         el('div', { className: 'flex flex-wrap gap-2' }, [
             requestButton,
+            view.queued ? actionButton('다시 시도', { disabled, variant: 'muted', onClick: () => onRun?.({ stage }) }) : null,
             view.queued ? actionButton('수정안 확인', { disabled, variant: 'muted', onClick: () => onRefresh?.() }) : null,
         ].filter(Boolean)),
         requestStatus,
@@ -162,7 +163,7 @@ function collaborationSection({
 
 export function NewProjectDraftForm({
     draftState, draftValue, notice = '', onDraftChange, onSaveNewProjectDraft,
-    onEnqueuePlanningAgentRequest, onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
+    onEnqueuePlanningAgentRequest, onRunPlanningAgentRequest, onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
     onCopyNewProjectBuildCommand, draftDirty = false,
 }) {
     const loading = ['loading', 'saving', 'requesting', 'copying'].includes(draftState?.status);
@@ -183,7 +184,7 @@ export function NewProjectDraftForm({
     return card([
         el('div', {}, [
             el('h3', { text: '기획·대본 작업', className: 'text-base font-bold text-white' }),
-            el('p', { text: '직접 고치거나, 같은 화면에서 에이전트에게 다음 작업을 남길 수 있습니다.', className: 'mt-1 text-sm leading-6 text-secondary' }),
+            el('p', { text: '직접 고치거나, 원하는 변경을 적어 에이전트가 바로 작업하게 하세요.', className: 'mt-1 text-sm leading-6 text-secondary' }),
         ]),
         el('p', {
             text: notice || statusText(draftState?.status),
@@ -228,13 +229,13 @@ export function NewProjectDraftForm({
             collaborationSection({
                 number: 1, title: '기획', stage: 'brief', createDraftControl: createBriefControl, draftValue,
                 disabled: loading, draftDirty, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
-                onEnqueue: onEnqueuePlanningAgentRequest, onRefresh: onRefreshNewProjectDraft,
+                onEnqueue: onEnqueuePlanningAgentRequest, onRun: onRunPlanningAgentRequest, onRefresh: onRefreshNewProjectDraft,
                 onDecide: onDecidePlanningAgentSuggestion,
             }),
             collaborationSection({
                 number: 2, title: '스크립트', stage: 'script', createDraftControl: createScriptControl, draftValue,
                 disabled: loading, draftDirty, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
-                onEnqueue: onEnqueuePlanningAgentRequest, onRefresh: onRefreshNewProjectDraft,
+                onEnqueue: onEnqueuePlanningAgentRequest, onRun: onRunPlanningAgentRequest, onRefresh: onRefreshNewProjectDraft,
                 onDecide: onDecidePlanningAgentSuggestion,
             }),
         ]),
@@ -243,7 +244,7 @@ export function NewProjectDraftForm({
                 disabled: loading || !readyToCopy, variant: 'muted', onClick: () => onCopyNewProjectBuildCommand?.(),
             }),
             el('p', {
-                text: '저장하거나 요청을 남겨도 제작이나 생성은 시작되지 않습니다.',
+                text: '에이전트는 기획과 대본만 다듬습니다. 제작이나 생성은 시작되지 않습니다.',
                 className: 'mt-2 text-xs leading-5 text-secondary',
             }),
         ]),

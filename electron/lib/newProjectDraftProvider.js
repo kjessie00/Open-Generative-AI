@@ -751,7 +751,7 @@ function snapshotForRequest(paths, request, currentDraft = null) {
     };
 }
 
-function planningAgentSuggestionToken({ request, proposedTextSha256, summary }) {
+function planningAgentSuggestionToken({ request, proposedTextSha256, summary, appModelCalled = false }) {
     return `${PLANNING_AGENT_SUGGESTION_PREFIX}${sha256(JSON.stringify({
         schema_version: PLANNING_AGENT_SUGGESTION_SCHEMA,
         request_id: request.request_id,
@@ -761,7 +761,7 @@ function planningAgentSuggestionToken({ request, proposedTextSha256, summary }) 
         proposed_text_sha256: proposedTextSha256,
         summary,
         produced_by_agent: true,
-        app_model_called: false,
+        app_model_called: appModelCalled,
     }))}`;
 }
 
@@ -784,7 +784,12 @@ function validatePlanningAgentSuggestion(record, request) {
         MAX_PLANNING_AGENT_SUMMARY_BYTES,
     );
     const sourceHash = request.stage === 'brief' ? request.brief_sha256 : request.script_sha256;
-    const expectedToken = planningAgentSuggestionToken({ request, proposedTextSha256: proposedHash, summary });
+    const expectedToken = planningAgentSuggestionToken({
+        request,
+        proposedTextSha256: proposedHash,
+        summary,
+        appModelCalled: record.app_model_called,
+    });
     if (record.schema_version !== PLANNING_AGENT_SUGGESTION_SCHEMA
         || record.suggestion_token !== expectedToken
         || record.request_id !== request.request_id
@@ -796,7 +801,7 @@ function validatePlanningAgentSuggestion(record, request) {
         || record.summary !== summary
         || !Number.isFinite(Date.parse(record.published_at))
         || record.produced_by_agent !== true
-        || record.app_model_called !== false
+        || typeof record.app_model_called !== 'boolean'
         || record.status !== 'ready_for_review') {
         throw bootstrapError('PLANNING_AGENT_SUGGESTION_INVALID', 'Planning agent suggestion is invalid');
     }
@@ -1427,7 +1432,8 @@ function publishPlanningAgentSuggestion(payload, context = {}) {
         throw bootstrapError('PLANNING_AGENT_DRAFT_NOT_SAVED', 'A saved draft is required for agent suggestion');
     }
     ensurePrivatePlanningAgentDirectories(loaded.paths, [PLANNING_AGENT_SUGGESTION_DIRECTORY]);
-    const token = planningAgentSuggestionToken({ request, proposedTextSha256, summary });
+    const appModelCalled = context.appModelCalled === true;
+    const token = planningAgentSuggestionToken({ request, proposedTextSha256, summary, appModelCalled });
     const filePath = suggestionPath(loaded.paths, request.request_id);
     let existing;
     try { existing = readPlanningAgentSuggestion(loaded.paths, request); } catch (error) { throw error; }
@@ -1446,7 +1452,7 @@ function publishPlanningAgentSuggestion(payload, context = {}) {
             proposed_text_sha256: proposedTextSha256,
             proposed_text_bytes: Buffer.byteLength(proposedText, 'utf8'),
             status: 'ready_for_review',
-            app_model_called: false,
+            app_model_called: existing.app_model_called,
         };
     }
     const record = {
@@ -1461,7 +1467,7 @@ function publishPlanningAgentSuggestion(payload, context = {}) {
         summary,
         published_at: new Date().toISOString(),
         produced_by_agent: true,
-        app_model_called: false,
+        app_model_called: appModelCalled,
         status: 'ready_for_review',
     };
     validatePlanningAgentSuggestion(record, request);
@@ -1482,7 +1488,7 @@ function publishPlanningAgentSuggestion(payload, context = {}) {
             suggestion_token: token, request_id: request.request_id,
             proposed_text_sha256: proposedTextSha256,
             proposed_text_bytes: Buffer.byteLength(proposedText, 'utf8'),
-            status: 'ready_for_review', app_model_called: false,
+            status: 'ready_for_review', app_model_called: raced.app_model_called,
         };
     }
     return {
@@ -1494,7 +1500,7 @@ function publishPlanningAgentSuggestion(payload, context = {}) {
         proposed_text_sha256: proposedTextSha256,
         proposed_text_bytes: Buffer.byteLength(proposedText, 'utf8'),
         status: 'ready_for_review',
-        app_model_called: false,
+        app_model_called: appModelCalled,
     };
 }
 

@@ -659,16 +659,51 @@ export function PipelineStudio() {
                             expected_revision_sha256: saved.revision_sha256,
                         });
                         if (!result?.queued || !result?.state) throw new Error('REQUEST_QUEUE_FAILED');
-                        newProjectDraftState = result.state;
+                        newProjectDraftState = { ...result.state, status: 'requesting' };
                         if (result.state.draft) newProjectDraftValue = { ...result.state.draft };
-                        newProjectNotice = '요청 저장됨 · 아직 실행 전';
+                        newProjectNotice = stage === 'brief'
+                            ? '에이전트가 기획을 수정하고 있습니다…'
+                            : '에이전트가 스크립트를 수정하고 있습니다…';
+                        render();
+                        const agent = await pipelineClient.runPlanningAgentRequest({ stage });
+                        if (agent?.state) {
+                            newProjectDraftState = agent.state;
+                            if (agent.state.draft) newProjectDraftValue = { ...agent.state.draft };
+                        }
+                        newProjectNotice = agent?.ok
+                            ? '수정안이 도착했습니다. 현재 내용과 비교해 보세요.'
+                            : '수정안을 만들지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return { ...result, agent };
+                    } catch {
+                        newProjectDraftState = { ...newProjectDraftState, status: 'error' };
+                        newProjectNotice = '작업을 시작하지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return { ok: false, queued: false, executed: false, model_called: false };
+                    }
+                },
+                onRunPlanningAgentRequest: async ({ stage }) => {
+                    newProjectDraftState = { ...newProjectDraftState, status: 'requesting' };
+                    newProjectNotice = stage === 'brief'
+                        ? '에이전트가 기획을 수정하고 있습니다…'
+                        : '에이전트가 스크립트를 수정하고 있습니다…';
+                    render();
+                    try {
+                        const result = await pipelineClient.runPlanningAgentRequest({ stage });
+                        if (result?.state) {
+                            newProjectDraftState = result.state;
+                            if (result.state.draft) newProjectDraftValue = { ...result.state.draft };
+                        }
+                        newProjectNotice = result?.ok
+                            ? '수정안이 도착했습니다. 현재 내용과 비교해 보세요.'
+                            : '수정안을 만들지 못했습니다. 다시 시도하세요.';
                         render();
                         return result;
                     } catch {
                         newProjectDraftState = { ...newProjectDraftState, status: 'error' };
-                        newProjectNotice = '요청을 저장하지 못했습니다.';
+                        newProjectNotice = '수정안을 만들지 못했습니다. 다시 시도하세요.';
                         render();
-                        return { ok: false, queued: false, executed: false, model_called: false };
+                        return { ok: false, status: 'failed' };
                     }
                 },
                 onRefreshNewProjectDraft: async () => {
@@ -717,6 +752,7 @@ export function PipelineStudio() {
                             script: localDirty.script && !(action === 'apply' && stage === 'script'),
                             settings: localDirty.settings,
                         };
+                        if (action === 'apply') await refreshNewProjectDesign();
                         newProjectNotice = action === 'apply' ? '수정안을 적용했습니다.' : '보류함 · 원문은 그대로';
                         render();
                         return result;
@@ -810,16 +846,47 @@ export function PipelineStudio() {
                             expected_design_revision_sha256: savedState.revision_sha256,
                         });
                         if (!result?.queued || !result?.state) throw new Error('DESIGN_REQUEST_FAILED');
-                        newProjectDesignState = result.state;
+                        newProjectDesignState = { ...result.state, status: 'requesting' };
                         newProjectDesignBoard = structuredClone(result.state.board);
-                        newProjectDesignNotice = '요청 저장됨 · 아직 실행 전';
+                        newProjectDesignNotice = '에이전트가 설계를 정리하고 있습니다…';
+                        render();
+                        const agent = await pipelineClient.runDesignAgentRequest();
+                        if (agent?.state) {
+                            newProjectDesignState = agent.state;
+                            newProjectDesignBoard = structuredClone(agent.state.board);
+                        }
+                        newProjectDesignNotice = agent?.ok
+                            ? '수정안이 도착했습니다. 현재 설계와 비교해 보세요.'
+                            : '수정안을 만들지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return { ...result, agent };
+                    } catch {
+                        newProjectDesignState = { ...newProjectDesignState, status: 'error' };
+                        newProjectDesignNotice = '작업을 시작하지 못했습니다. 다시 시도하세요.';
+                        render();
+                        return { ok: false, queued: false, executed: false, model_called: false };
+                    }
+                },
+                onRunDesignAgentRequest: async () => {
+                    newProjectDesignState = { ...newProjectDesignState, status: 'requesting' };
+                    newProjectDesignNotice = '에이전트가 설계를 정리하고 있습니다…';
+                    render();
+                    try {
+                        const result = await pipelineClient.runDesignAgentRequest();
+                        if (result?.state) {
+                            newProjectDesignState = result.state;
+                            newProjectDesignBoard = structuredClone(result.state.board);
+                        }
+                        newProjectDesignNotice = result?.ok
+                            ? '수정안이 도착했습니다. 현재 설계와 비교해 보세요.'
+                            : '수정안을 만들지 못했습니다. 다시 시도하세요.';
                         render();
                         return result;
                     } catch {
                         newProjectDesignState = { ...newProjectDesignState, status: 'error' };
-                        newProjectDesignNotice = '필수 내용을 채운 뒤 다시 요청하세요.';
+                        newProjectDesignNotice = '수정안을 만들지 못했습니다. 다시 시도하세요.';
                         render();
-                        return { ok: false, queued: false, executed: false, model_called: false };
+                        return { ok: false, status: 'failed' };
                     }
                 },
                 onRefreshNewProjectDesign: async () => {

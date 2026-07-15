@@ -452,13 +452,13 @@ function readRequest(paths, idValue) {
     return record;
 }
 
-function suggestionToken(request, proposedHash, summary) {
+function suggestionToken(request, proposedHash, summary, appModelCalled = false) {
     return `suggestion_${sha256(JSON.stringify({
         schema_version: SUGGESTION_SCHEMA, request_id: request.request_id, stage: 'design',
         base_revision_sha256: request.design_revision_sha256,
         target_source_sha256: request.board_sha256,
         proposed_board_sha256: proposedHash, summary,
-        produced_by_agent: true, app_model_called: false,
+        produced_by_agent: true, app_model_called: appModelCalled,
     }))}`;
 }
 
@@ -476,14 +476,14 @@ function validateSuggestion(record, request) {
     const summary = text(record.summary, 'DESIGN_AGENT_SUGGESTION_INVALID', MAX_SUMMARY_BYTES);
     const proposedHash = boardHash(board);
     if (record.schema_version !== SUGGESTION_SCHEMA
-        || record.suggestion_token !== suggestionToken(request, proposedHash, summary)
+        || record.suggestion_token !== suggestionToken(request, proposedHash, summary, record.app_model_called)
         || record.request_id !== request.request_id || record.stage !== 'design'
         || record.base_revision_sha256 !== request.design_revision_sha256
         || record.target_source_sha256 !== request.board_sha256
         || record.proposed_board_sha256 !== proposedHash || record.summary !== summary
         || JSON.stringify(record.proposed_board) !== JSON.stringify(board)
         || !Number.isFinite(Date.parse(record.published_at))
-        || record.produced_by_agent !== true || record.app_model_called !== false
+        || record.produced_by_agent !== true || typeof record.app_model_called !== 'boolean'
         || record.status !== 'ready_for_review') throw failure('DESIGN_AGENT_SUGGESTION_INVALID');
     if (proposedHash === request.board_sha256) throw failure('DESIGN_AGENT_SUGGESTION_NOOP');
     return { ...record, proposed_board: board };
@@ -722,7 +722,8 @@ function publishDesignAgentSuggestion(payload, context = {}) {
     const summary = text(payload.summary, 'DESIGN_AGENT_SUMMARY_INVALID', MAX_SUMMARY_BYTES);
     const proposedHash = boardHash(board);
     if (proposedHash === handoff.request.board_sha256) throw failure('DESIGN_AGENT_SUGGESTION_NOOP');
-    const token = suggestionToken(handoff.request, proposedHash, summary);
+    const appModelCalled = context.appModelCalled === true;
+    const token = suggestionToken(handoff.request, proposedHash, summary, appModelCalled);
     const paths = exactPaths(context.userDataPath);
     ensureDirectories(paths, [SUGGESTION_DIRECTORY]);
     const existing = readSuggestion(paths, handoff.request);
@@ -731,7 +732,7 @@ function publishDesignAgentSuggestion(payload, context = {}) {
         return {
             ok: true, published: true, already_published: true, request_id: handoff.request.request_id,
             suggestion_token: token, proposed_board_sha256: proposedHash,
-            proposed_board_bytes: Buffer.byteLength(JSON.stringify(board)), status: 'ready_for_review', app_model_called: false,
+            proposed_board_bytes: Buffer.byteLength(JSON.stringify(board)), status: 'ready_for_review', app_model_called: existing.app_model_called,
         };
     }
     const record = {
@@ -741,7 +742,7 @@ function publishDesignAgentSuggestion(payload, context = {}) {
         target_source_sha256: handoff.request.board_sha256,
         proposed_board_sha256: proposedHash, proposed_board: board, summary,
         published_at: new Date().toISOString(), produced_by_agent: true,
-        app_model_called: false, status: 'ready_for_review',
+        app_model_called: appModelCalled, status: 'ready_for_review',
     };
     validateSuggestion(record, handoff.request);
     const buffer = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
@@ -754,13 +755,13 @@ function publishDesignAgentSuggestion(payload, context = {}) {
         return {
             ok: true, published: true, already_published: true, request_id: handoff.request.request_id,
             suggestion_token: token, proposed_board_sha256: proposedHash,
-            proposed_board_bytes: Buffer.byteLength(JSON.stringify(board)), status: 'ready_for_review', app_model_called: false,
+            proposed_board_bytes: Buffer.byteLength(JSON.stringify(board)), status: 'ready_for_review', app_model_called: raced.app_model_called,
         };
     }
     return {
         ok: true, published: true, already_published: false, request_id: handoff.request.request_id,
         suggestion_token: token, proposed_board_sha256: proposedHash,
-        proposed_board_bytes: Buffer.byteLength(JSON.stringify(board)), status: 'ready_for_review', app_model_called: false,
+        proposed_board_bytes: Buffer.byteLength(JSON.stringify(board)), status: 'ready_for_review', app_model_called: appModelCalled,
     };
 }
 

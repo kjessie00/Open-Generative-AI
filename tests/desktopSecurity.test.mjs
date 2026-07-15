@@ -228,6 +228,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'promoteG3ProductionSelection',
         'readJsonl',
         'readProductionState',
+        'runDesignAgentRequest',
+        'runPlanningAgentRequest',
         'runSafeCommand',
         'saveG3ReviewDraft',
         'saveNewProjectDesignBoard',
@@ -256,6 +258,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.enqueuePlanningAgentRequest({
         stage: 'brief', instruction: '기획을 검토해 주세요.', expected_revision_sha256: 'a'.repeat(64),
     });
+    await bridge.runPlanningAgentRequest({ stage: 'brief' });
     await bridge.decidePlanningAgentSuggestion({
         suggestion_token: `suggestion_${'a'.repeat(64)}`,
         action: 'hold',
@@ -264,6 +267,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.getNewProjectDesignState();
     await bridge.saveNewProjectDesignBoard({ board: {}, expected_design_revision_sha256: 'a'.repeat(64) });
     await bridge.enqueueDesignAgentRequest({ instruction: '설계해 주세요.', expected_design_revision_sha256: 'a'.repeat(64) });
+    await bridge.runDesignAgentRequest();
     await bridge.decideDesignAgentSuggestion({
         suggestion_token: `suggestion_${'a'.repeat(64)}`, action: 'hold', expected_design_revision_sha256: 'a'.repeat(64),
     });
@@ -319,10 +323,12 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:get-new-project-draft-state',
             'film-pipeline:save-new-project-draft',
             'film-pipeline:enqueue-planning-agent-request',
+            'film-pipeline:run-planning-agent-request',
             'film-pipeline:decide-planning-agent-suggestion',
             'film-pipeline:get-new-project-design-state',
             'film-pipeline:save-new-project-design-board',
             'film-pipeline:enqueue-design-agent-request',
+            'film-pipeline:run-design-agent-request',
             'film-pipeline:decide-design-agent-suggestion',
             'film-pipeline:get-new-project-image-plan',
             'film-pipeline:save-new-project-image-plan',

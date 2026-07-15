@@ -147,6 +147,15 @@ export async function enqueuePlanningAgentRequest(payload) {
     };
 }
 
+export async function runPlanningAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.runPlanningAgentRequest === 'function') return bridge.runPlanningAgentRequest(payload);
+    return {
+        ...unavailable('runPlanningAgentRequest'), status: 'blocked', executed: false, model_called: false,
+        state: await getNewProjectDraftState(),
+    };
+}
+
 export async function decidePlanningAgentSuggestion(payload) {
     const bridge = getBridge();
     if (typeof bridge?.decidePlanningAgentSuggestion === 'function') {
@@ -198,6 +207,15 @@ export async function enqueueDesignAgentRequest(payload) {
     return {
         ...unavailableDesignState('enqueueDesignAgentRequest'), queued: false,
         already_queued: false, request_id: '', model_called: false,
+    };
+}
+
+export async function runDesignAgentRequest() {
+    const bridge = getBridge();
+    if (typeof bridge?.runDesignAgentRequest === 'function') return bridge.runDesignAgentRequest();
+    return {
+        ...unavailableDesignState('runDesignAgentRequest'), executed: false, model_called: false,
+        state: await getNewProjectDesignState(),
     };
 }
 
@@ -658,10 +676,12 @@ export const pipelineClient = Object.freeze({
     getNewProjectDraftState,
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
+    runPlanningAgentRequest,
     decidePlanningAgentSuggestion,
     getNewProjectDesignState,
     saveNewProjectDesignBoard,
     enqueueDesignAgentRequest,
+    runDesignAgentRequest,
     decideDesignAgentSuggestion,
     getNewProjectImagePlan,
     saveNewProjectImagePlan,

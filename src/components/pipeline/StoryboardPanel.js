@@ -48,6 +48,7 @@ export function StoryboardPanel({
     onNewProjectDesignChange,
     onSaveNewProjectDesign,
     onEnqueueDesignAgentRequest,
+    onRunDesignAgentRequest,
     onRefreshNewProjectDesign,
     onDecideDesignAgentSuggestion,
 }) {
@@ -189,6 +190,7 @@ export function StoryboardPanel({
                 onBoardChange: onNewProjectDesignChange,
                 onSave: onSaveNewProjectDesign,
                 onEnqueue: onEnqueueDesignAgentRequest,
+                onRun: onRunDesignAgentRequest,
                 onRefresh: onRefreshNewProjectDesign,
                 onDecide: onDecideDesignAgentSuggestion,
             }),
