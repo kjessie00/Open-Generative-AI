@@ -65,9 +65,13 @@ export function MediaRetryPlanBand({
     const videoItems = items.filter((item) => item.kind === 'video'
         && ['flow', 'grok', 'replicate', 'bytedance'].includes(String(item.provider || '').toLowerCase()));
     const loading = plan?.status === 'loading';
-    const hasInitialTargets = Array.isArray(dstBundleImportWorkspace?.initial_targets)
+    const hasDstInitialTargets = Array.isArray(dstBundleImportWorkspace?.initial_targets)
         && dstBundleImportWorkspace.initial_targets.length > 0;
-    const showRetryPlan = items.length > 0 || !hasInitialTargets;
+    const hasVideoInitialTargets = Array.isArray(videoResultImportWorkspace?.initial_targets)
+        && videoResultImportWorkspace.initial_targets.length > 0;
+    const showRetryPlan = items.length > 0 || (!hasDstInitialTargets && !hasVideoInitialTargets);
+    const showDstBand = showRetryPlan || dstImageItems.length > 0 || hasDstInitialTargets;
+    const showVideoBand = showRetryPlan || videoItems.length > 0 || hasVideoInitialTargets;
     return el('section', { className: 'media-review-band' }, [
         showRetryPlan ? el('header', { className: 'media-review-band-head' }, [
             el('div', {}, [
@@ -87,7 +91,7 @@ export function MediaRetryPlanBand({
         items.length
             ? el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, items.map(retryPlanItem))
             : showRetryPlan ? emptyState('검토 초안을 저장한 뒤 실행 계획을 확인하세요.') : null,
-        DstBundleImportBand({
+        showDstBand ? DstBundleImportBand({
             retryItems: dstImageItems,
             workspace: dstBundleImportWorkspace,
             preview: dstBundleImportPreview,
@@ -96,8 +100,8 @@ export function MediaRetryPlanBand({
             onLoadPreview: onLoadDstBundleImportPreview,
             onPlan: onPlanDstBundleImport,
             onConfirm: onConfirmDstBundleImport,
-        }),
-        showRetryPlan ? VideoResultImportBand({
+        }) : null,
+        showVideoBand ? VideoResultImportBand({
             retryItems: videoItems,
             workspace: videoResultImportWorkspace,
             plan: videoResultImportPlan,

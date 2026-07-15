@@ -168,6 +168,27 @@ function fixture(t, options = {}) {
     };
 }
 
+function writeStoryboard(productionRoot, clips) {
+    const directory = path.join(productionRoot, 'storyboard');
+    fs.mkdirSync(directory, { recursive: true });
+    const storyboardPath = path.join(directory, 'storyboard.json');
+    fs.writeFileSync(storyboardPath, `${JSON.stringify({ clips })}\n`);
+    return storyboardPath;
+}
+
+function initialFixture(t, options = {}) {
+    const fx = fixture(t, options);
+    fs.rmSync(path.join(fx.productionRoot, 'media_attempts.jsonl'));
+    fs.rmSync(path.join(fx.productionRoot, 'reviews'), { recursive: true });
+    const clips = options.clips || [
+        { clip_id: 'clip_001', title: '비 오는 골목의 첫 장면', scene_title: '대체 장면 이름', scene_id: 'scene_001' },
+        { clip_id: 'clip_002', scene_title: '낡은 차 안의 대화', scene_id: 'scene_002' },
+        { clip_id: 'clip_003', scene_id: 'scene_003' },
+    ];
+    const storyboardPath = writeStoryboard(fx.productionRoot, clips);
+    return { ...fx, clips, storyboardPath };
+}
+
 function candidateFor(workspace, providerName) {
     const candidate = workspace.candidates.find((item) => item.provider === providerName);
     assert.ok(candidate, JSON.stringify(workspace));
@@ -220,6 +241,191 @@ test('MOCK ffprobe: workspace discovers only bounded Flow/Grok result shapes and
     }
 });
 
+test('MOCK ffprobe: storyboard-authoritative initial video targets are pathless, ordered, and use short Korean labels', (t) => {
+    const fx = initialFixture(t);
+    writeFlow(fx.flowResultsRoot);
+
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    assert.deepEqual(workspace.initial_targets.map((target) => ({
+        kind: target.kind,
+        id: target.target_id,
+        label: target.target_label,
+        sequence: target.sequence,
+    })), [
+        { kind: 'video', id: 'clip_001', label: '비 오는 골목의 첫 장면', sequence: 1 },
+        { kind: 'video', id: 'clip_002', label: '낡은 차 안의 대화', sequence: 2 },
+        { kind: 'video', id: 'clip_003', label: 'scene_003', sequence: 3 },
+    ]);
+    for (const target of workspace.initial_targets) {
+        assert.deepEqual(Object.keys(target).sort(), [
+            'kind', 'sequence', 'target_id', 'target_label', 'target_token',
+        ]);
+        assert.match(target.target_token, /^[A-Za-z0-9_-]{43}$/);
+    }
+    assert.equal(JSON.stringify(workspace.initial_targets).includes(fx.base), false);
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'media_attempts.jsonl')), false);
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'reviews')), false);
+});
+
+test('MOCK ffprobe: initial Flow result imports as attempt one without retry sources and is idempotent', (t) => {
+    const fx = initialFixture(t);
+    writeFlow(fx.flowResultsRoot);
+    let workspace = provider.getVideoResultImportWorkspace(fx.context);
+    let candidate = candidateFor(workspace, 'flow');
+    const initialTarget = workspace.initial_targets[0];
+    let plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        initialTargetToken: initialTarget.target_token,
+    }, fx.context);
+
+    assert.equal(plan.schema_version, provider.PLAN_SCHEMA);
+    assert.equal(plan.status, 'ready', JSON.stringify(plan));
+    assert.equal(plan.import_mode, 'initial');
+    assert.equal(plan.retry_media_id, '');
+    assert.equal(plan.target_id, 'clip_001');
+    assert.equal(plan.target_label, '비 오는 골목의 첫 장면');
+    assert.equal(plan.source_provider, 'flow');
+    assert.equal(JSON.stringify(plan).includes(fx.base), false);
+
+    let result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.equal(result.import_mode, 'initial');
+    assert.equal(result.target_label, '비 오는 골목의 첫 장면');
+    assert.deepEqual({ imported: result.imported, copied: result.copied, ledger: result.ledger_appended }, {
+        imported: true,
+        copied: true,
+        ledger: true,
+    });
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse);
+    assert.equal(records.length, 1);
+    assert.deepEqual({
+        kind: records[0].kind,
+        target: records[0].target_id,
+        label: records[0].target_label,
+        provider: records[0].provider,
+        sourceProvider: records[0].source_provider,
+        attempt: records[0].attempt,
+        retry: records[0].retry_of,
+        review: records[0].review_status,
+    }, {
+        kind: 'video',
+        target: 'clip_001',
+        label: '비 오는 골목의 첫 장면',
+        provider: 'flow',
+        sourceProvider: 'flow',
+        attempt: 1,
+        retry: '',
+        review: 'unreviewed',
+    });
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'reviews')), false);
+    const target = contentTarget(fx.productionRoot, 'flow');
+    assert.deepEqual(fs.readFileSync(target), MP4);
+    assert.equal(fs.lstatSync(target).mode & 0o777, 0o600);
+
+    workspace = provider.getVideoResultImportWorkspace(fx.context);
+    assert.deepEqual(workspace.initial_targets.map((targetValue) => targetValue.target_id), ['clip_002', 'clip_003']);
+    candidate = candidateFor(workspace, 'flow');
+    plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        initialTargetToken: initialTarget.target_token,
+    }, fx.context);
+    assert.equal(plan.status, 'already_current', JSON.stringify(plan));
+    result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.equal(result.import_mode, 'initial');
+    assert.equal(result.target_label, '비 오는 골목의 첫 장면');
+    assert.deepEqual({ imported: result.imported, copied: result.copied, ledger: result.ledger_appended }, {
+        imported: false,
+        copied: false,
+        ledger: false,
+    });
+    assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 1);
+});
+
+test('MOCK ffprobe: initial and retry plan envelopes are exact and mutually exclusive', (t) => {
+    const fx = initialFixture(t);
+    writeFlow(fx.flowResultsRoot);
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    const candidate = candidateFor(workspace, 'flow');
+    const target = workspace.initial_targets[0];
+
+    for (const payload of [
+        { candidateToken: candidate.candidate_token },
+        {
+            candidateToken: candidate.candidate_token,
+            retryMediaId: 'old_video',
+            initialTargetToken: target.target_token,
+        },
+        {
+            candidateToken: candidate.candidate_token,
+            initialTargetToken: target.target_token,
+            sourcePath: '/tmp/forged.mp4',
+        },
+    ]) {
+        const blocked = provider.planVideoResultImport(payload, fx.context);
+        assert.equal(blocked.import_mode, '');
+        assert.equal(blocked.target_label, '');
+        assert.deepEqual(blocked.blockers, ['VIDEO_IMPORT_PLAN_REQUEST_INVALID']);
+    }
+    const invalidToken = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        initialTargetToken: 'forged',
+    }, fx.context);
+    assert.deepEqual(invalidToken.blockers, ['VIDEO_IMPORT_INITIAL_TARGET_TOKEN_INVALID']);
+});
+
+test('MOCK ffprobe: initial storyboard, ledger, and conflicting target drift fail closed', (t) => {
+    const storyboardFx = initialFixture(t);
+    writeFlow(storyboardFx.flowResultsRoot);
+    let workspace = provider.getVideoResultImportWorkspace(storyboardFx.context);
+    let candidate = candidateFor(workspace, 'flow');
+    let plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        initialTargetToken: workspace.initial_targets[0].target_token,
+    }, storyboardFx.context);
+    writeStoryboard(storyboardFx.productionRoot, [
+        { clip_id: 'clip_001', title: '계획 뒤 바뀐 제목' },
+    ]);
+    assert.throws(
+        () => provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, storyboardFx.context),
+        { code: 'VIDEO_IMPORT_INITIAL_TARGET_UNKNOWN' },
+    );
+
+    const ledgerFx = initialFixture(t);
+    writeFlow(ledgerFx.flowResultsRoot);
+    workspace = provider.getVideoResultImportWorkspace(ledgerFx.context);
+    candidate = candidateFor(workspace, 'flow');
+    plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        initialTargetToken: workspace.initial_targets[0].target_token,
+    }, ledgerFx.context);
+    fs.writeFileSync(path.join(ledgerFx.productionRoot, 'media_attempts.jsonl'), `${JSON.stringify({
+        media_id: 'unrelated_video', kind: 'video', target_id: 'clip_999', provider: 'flow', attempt: 1,
+    })}\n`);
+    assert.throws(
+        () => provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, ledgerFx.context),
+        { code: 'VIDEO_IMPORT_PLAN_STALE' },
+    );
+
+    const existingFx = initialFixture(t);
+    writeFlow(existingFx.flowResultsRoot);
+    workspace = provider.getVideoResultImportWorkspace(existingFx.context);
+    candidate = candidateFor(workspace, 'flow');
+    const initialTargetTokenValue = workspace.initial_targets[0].target_token;
+    fs.writeFileSync(path.join(existingFx.productionRoot, 'media_attempts.jsonl'), `${JSON.stringify({
+        media_id: 'other_video',
+        kind: 'video',
+        target_id: 'clip_001',
+        target_label: '다른 결과',
+        provider: 'flow',
+        attempt: 1,
+    })}\n`);
+    const blocked = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        initialTargetToken: initialTargetTokenValue,
+    }, existingFx.context);
+    assert.deepEqual(blocked.blockers, ['VIDEO_IMPORT_INITIAL_TARGET_EXISTS']);
+});
+
 test('MOCK ffprobe: Replicate accepts only the three fixed Seedance names, approved hashes, and exact provenance', (t) => {
     const fx = fixture(t, { provider: 'replicate' });
     writeReplicate(fx.replicateResultsRoot, 1);
@@ -242,6 +448,8 @@ test('MOCK ffprobe: Replicate accepts only the three fixed Seedance names, appro
         retryMediaId: fx.source.media_id,
     }, fx.context);
     const result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.equal(result.import_mode, 'retry');
+    assert.equal(result.target_label, 'clip_002');
     assert.equal(result.imported, true);
     const imported = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
         .trim().split('\n').map(JSON.parse).at(-1);
@@ -465,6 +673,11 @@ test('MOCK ffprobe: already imported content is idempotent and appends no duplic
     let plan = provider.planVideoResultImport({ candidateToken: candidate.candidate_token, retryMediaId: fx.source.media_id }, fx.context);
     provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
 
+    const ledgerPath = path.join(fx.productionRoot, 'media_attempts.jsonl');
+    const legacyRecords = fs.readFileSync(ledgerPath, 'utf8').trim().split('\n').map(JSON.parse);
+    delete legacyRecords[1].target_label;
+    fs.writeFileSync(ledgerPath, `${legacyRecords.map(JSON.stringify).join('\n')}\n`);
+
     candidate = candidateFor(provider.getVideoResultImportWorkspace(fx.context), 'flow');
     plan = provider.planVideoResultImport({ candidateToken: candidate.candidate_token, retryMediaId: fx.source.media_id }, fx.context);
     assert.equal(plan.status, 'already_current');
@@ -476,7 +689,7 @@ test('MOCK ffprobe: already imported content is idempotent and appends no duplic
         copied: false,
         ledger: false,
     });
-    assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 2);
+    assert.equal(fs.readFileSync(ledgerPath, 'utf8').trim().split('\n').length, 2);
 });
 
 test('MOCK ffprobe: JPEG spoof, candidate symlink, and unsafe result directory are rejected', (t) => {

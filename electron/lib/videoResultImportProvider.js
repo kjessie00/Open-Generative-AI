@@ -3,6 +3,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const { readProductionFolder } = require('./productionReader');
+
 const WORKSPACE_SCHEMA = 'film_pipeline.video_result_import_workspace.v1';
 const PLAN_SCHEMA = 'film_pipeline.video_result_import_plan.v1';
 const EXTERNAL_RESULT_SCHEMA = 'film_pipeline.external_video_result.v1';
@@ -22,6 +24,8 @@ const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_LEDGER_BYTES = 2 * 1024 * 1024;
 const MAX_PROVENANCE_BYTES = 128 * 1024;
 const MAX_RECEIPT_BYTES = 64 * 1024;
+const MAX_TARGET_LABEL_BYTES = 512;
+const MAX_TARGET_LABEL_CHARACTERS = 160;
 const DEFAULT_PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_TTL_MS = 10 * 60 * 1000;
 const MAX_FFPROBE_OUTPUT_BYTES = 1024 * 1024;
@@ -65,6 +69,18 @@ function safeOptionalText(value, maximum, code) {
         throw failure(code);
     }
     return value;
+}
+
+function boundedTargetLabel(value) {
+    if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) {
+        throw failure('VIDEO_IMPORT_INITIAL_TARGET_LABEL_INVALID');
+    }
+    const label = value.trim().normalize('NFC');
+    if (!label || [...label].length > MAX_TARGET_LABEL_CHARACTERS
+        || Buffer.byteLength(label, 'utf8') > MAX_TARGET_LABEL_BYTES) {
+        throw failure('VIDEO_IMPORT_INITIAL_TARGET_LABEL_INVALID');
+    }
+    return label;
 }
 
 function identity(stats) {
@@ -592,6 +608,7 @@ function blockedWorkspace(code) {
         status: 'blocked',
         ready: false,
         candidates: [],
+        initial_targets: [],
         rejected_count: 0,
         blockers: [code],
         executed: false,
@@ -602,11 +619,23 @@ function blockedWorkspace(code) {
 function getVideoResultImportWorkspace(context = {}) {
     try {
         const inventory = scanInventory(context);
+        let initialTargets = [];
+        try {
+            const authority = initialTargetContext(context);
+            initialTargets = authority.targets
+                .filter((target) => !authority.records.some((record) => (
+                    record.kind === 'video' && record.target_id === target.targetId
+                )))
+                .map(publicInitialTarget);
+        } catch {
+            // Retry imports remain usable when no authoritative storyboard is available.
+        }
         return {
             schema_version: WORKSPACE_SCHEMA,
             status: inventory.candidates.length ? 'ready' : 'empty',
             ready: inventory.candidates.length > 0,
             candidates: inventory.candidates.map(publicCandidate),
+            initial_targets: initialTargets,
             rejected_count: inventory.rejectedCount,
             blockers: inventory.blockers,
             executed: false,
@@ -692,6 +721,89 @@ function parsedLedger(snapshot) {
     return records;
 }
 
+function storyboardClips(value) {
+    for (const key of ['clips', 'storyboard', 'shots', 'scenes']) {
+        if (Array.isArray(value?.[key])) return value[key];
+    }
+    throw failure('VIDEO_IMPORT_INITIAL_STORYBOARD_CONTRACT_INVALID');
+}
+
+function initialTargetToken(rootInfo, storyboard, target, context = {}) {
+    return crypto.createHmac('sha256', tokenSecret(context)).update([
+        rootInfo.fingerprint,
+        storyboard.sha256,
+        target.kind,
+        target.targetId,
+        target.targetLabel,
+        String(target.sequence),
+    ].join('\0')).digest('base64url');
+}
+
+function deriveInitialTargets(rootInfo, storyboard, value, context = {}) {
+    const targets = [];
+    const ids = new Set();
+    for (const clip of storyboardClips(value)) {
+        if (!clip || typeof clip !== 'object' || Array.isArray(clip) || clip.structural_only === true) continue;
+        const targetId = safeId(clip.clip_id, 'VIDEO_IMPORT_INITIAL_TARGET_ID_INVALID');
+        if (ids.has(targetId)) throw failure('VIDEO_IMPORT_INITIAL_TARGET_DUPLICATE');
+        ids.add(targetId);
+        const target = {
+            kind: 'video',
+            targetId,
+            targetLabel: boundedTargetLabel(clip.title || clip.scene_title || clip.scene_id || clip.clip_id),
+            sequence: targets.length + 1,
+        };
+        target.targetToken = initialTargetToken(rootInfo, storyboard, target, context);
+        targets.push(target);
+    }
+    return targets;
+}
+
+function publicInitialTarget(target) {
+    return {
+        target_token: target.targetToken,
+        kind: 'video',
+        target_id: target.targetId,
+        target_label: target.targetLabel,
+        sequence: target.sequence,
+    };
+}
+
+function initialTargetContext(context = {}) {
+    const rootInfo = assertProductionRoot(context);
+    const read = context.readProductionFolderFn || readProductionFolder;
+    const raw = read(rootInfo.path);
+    const record = raw?.parsed?.storyboardJson;
+    if (!record?.exists || record.parsed !== true || typeof record.path !== 'string') {
+        throw failure('VIDEO_IMPORT_INITIAL_STORYBOARD_REQUIRED');
+    }
+    const relative = path.relative(rootInfo.path, record.path);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+        || !['storyboard/storyboard.json', 'storyboard/clips.json', 'storyboard.json']
+            .includes(relative.split(path.sep).join('/'))) {
+        throw failure('VIDEO_IMPORT_INITIAL_STORYBOARD_UNSAFE');
+    }
+    assertAncestors(rootInfo, record.path, 'VIDEO_IMPORT_INITIAL_STORYBOARD_UNSAFE');
+    const storyboard = smallFile(record.path, MAX_JSON_BYTES, 'VIDEO_IMPORT_INITIAL_STORYBOARD_UNSAFE');
+    const value = parseJson(storyboard, 'VIDEO_IMPORT_INITIAL_STORYBOARD_CONTRACT_INVALID');
+    const targets = deriveInitialTargets(rootInfo, storyboard, value, context);
+    const storyboardAfter = smallFile(record.path, MAX_JSON_BYTES, 'VIDEO_IMPORT_INITIAL_STORYBOARD_UNSAFE');
+    if (!sameSnapshot(storyboard, storyboardAfter)) throw failure('VIDEO_IMPORT_INITIAL_STORYBOARD_CHANGED');
+    const ledgerPath = path.join(rootInfo.path, 'media_attempts.jsonl');
+    assertAncestors(rootInfo, ledgerPath, 'VIDEO_IMPORT_LEDGER_UNSAFE');
+    const ledger = smallFile(ledgerPath, MAX_LEDGER_BYTES, 'VIDEO_IMPORT_LEDGER_UNSAFE', { allowEmpty: true });
+    return {
+        rootInfo,
+        ledgerPath,
+        ledger,
+        records: parsedLedger(ledger),
+        review: null,
+        queue: null,
+        storyboard: storyboardAfter,
+        targets,
+    };
+}
+
 function retryContext(context, retryMediaId, provider) {
     const rootInfo = assertProductionRoot(context);
     const ledgerPath = path.join(rootInfo.path, 'media_attempts.jsonl');
@@ -769,6 +881,8 @@ function recordMatches(existing, desired) {
         'source_width', 'source_height', 'source_provenance',
     ];
     return keys.every((key) => existing[key] === desired[key])
+        && (existing.target_label === desired.target_label
+            || (desired.retry_of && !existing.target_label))
         && JSON.stringify(existing.reference_ids || []) === JSON.stringify(desired.reference_ids || []);
 }
 
@@ -798,6 +912,7 @@ function buildInputs(context, candidate, retryMediaId, importedAt) {
         media_id: mediaId,
         kind: 'video',
         target_id: safeId(retry.source.target_id, 'VIDEO_IMPORT_TARGET_ID_INVALID'),
+        target_label: boundedTargetLabel(retry.source.target_label || retry.source.target_id),
         provider: candidate.provider,
         operation_id: `video_import_${deterministic.slice(0, 24)}`,
         attempt,
@@ -831,6 +946,81 @@ function buildInputs(context, candidate, retryMediaId, importedAt) {
         candidate,
         desired,
         target,
+        importMode: 'retry',
+        storyboard: null,
+        initialTarget: null,
+        ledgerAppendNeeded,
+        alreadyCurrent: !ledgerAppendNeeded && targetReady,
+    };
+}
+
+function buildInitialInputs(context, candidate, initialTargetTokenValue, importedAt) {
+    if (typeof initialTargetTokenValue !== 'string' || !TOKEN_PATTERN.test(initialTargetTokenValue)) {
+        throw failure('VIDEO_IMPORT_INITIAL_TARGET_TOKEN_INVALID');
+    }
+    const authority = initialTargetContext(context);
+    const initialTarget = authority.targets.find((target) => target.targetToken === initialTargetTokenValue);
+    if (!initialTarget) throw failure('VIDEO_IMPORT_INITIAL_TARGET_UNKNOWN');
+    const deterministic = sha256([
+        'initial',
+        initialTarget.targetId,
+        candidate.provider,
+        candidate.resultId,
+        candidate.source.sha256,
+    ].join('\0'));
+    const mediaId = `video_${deterministic.slice(0, 32)}`;
+    const targetRelativePath = `${IMPORT_RELATIVE_ROOT}/${candidate.provider}/${candidate.source.sha256}.mp4`;
+    const desired = {
+        media_id: mediaId,
+        kind: 'video',
+        target_id: initialTarget.targetId,
+        target_label: initialTarget.targetLabel,
+        provider: candidate.provider,
+        operation_id: `video_import_${deterministic.slice(0, 24)}`,
+        attempt: 1,
+        reference_ids: [],
+        relative_path: targetRelativePath,
+        generation_status: 'imported',
+        prompt: '',
+        aspect_ratio: '9:16',
+        duration: candidate.probe.durationSeconds,
+        quality: '',
+        review_status: 'unreviewed',
+        retry_of: '',
+        source_provider: candidate.provider,
+        source_result_id: candidate.resultId,
+        source_video_sha256: candidate.source.sha256,
+        source_duration_seconds: candidate.probe.durationSeconds,
+        source_width: candidate.probe.width,
+        source_height: candidate.probe.height,
+        imported_at: importedAt,
+    };
+    if (candidate.provenanceKind) desired.source_provenance = candidate.provenanceKind;
+    const sameTarget = authority.records.filter((record) => (
+        record.kind === 'video' && record.target_id === initialTarget.targetId
+    ));
+    if (sameTarget.length > 1 || (sameTarget.length === 1 && !recordMatches(sameTarget[0], desired))) {
+        throw failure('VIDEO_IMPORT_INITIAL_TARGET_EXISTS');
+    }
+    const existing = authority.records.find((record) => record.media_id === mediaId);
+    if (existing && !recordMatches(existing, desired)) throw failure('VIDEO_IMPORT_MEDIA_ID_CONFLICT');
+    if (sameTarget.length === 1 && sameTarget[0].media_id !== mediaId) {
+        throw failure('VIDEO_IMPORT_INITIAL_TARGET_EXISTS');
+    }
+    const target = targetSnapshot(authority.rootInfo, targetRelativePath, context.maxVideoBytes || MAX_VIDEO_BYTES);
+    if (target.snapshot.exists && target.snapshot.sha256 !== candidate.source.sha256) {
+        throw failure('VIDEO_IMPORT_TARGET_COLLISION');
+    }
+    const ledgerAppendNeeded = !existing;
+    const targetReady = target.snapshot.exists && target.snapshot.sha256 === candidate.source.sha256;
+    return {
+        retry: authority,
+        candidate,
+        desired,
+        target,
+        importMode: 'initial',
+        storyboard: authority.storyboard,
+        initialTarget: publicInitialTarget(initialTarget),
         ledgerAppendNeeded,
         alreadyCurrent: !ledgerAppendNeeded && targetReady,
     };
@@ -841,8 +1031,11 @@ function evidence(inputs) {
         productionRootFingerprint: inputs.retry.rootInfo.fingerprint,
         productionRootIdentity: inputs.retry.rootInfo.identity,
         ledger: inputs.retry.ledger,
-        review: inputs.retry.review,
-        queue: inputs.retry.queue,
+        review: inputs.retry.review || null,
+        queue: inputs.retry.queue || null,
+        storyboard: inputs.storyboard || null,
+        initialTarget: inputs.initialTarget || null,
+        importMode: inputs.importMode,
         candidateToken: inputs.candidate.token,
         candidateRootIdentity: inputs.candidate.rootIdentity,
         candidateSource: inputs.candidate.source,
@@ -855,11 +1048,19 @@ function evidence(inputs) {
     };
 }
 
+function sameOptionalSnapshot(left, right) {
+    if (!left || !right) return left === right;
+    return sameSnapshot(left, right);
+}
+
 function stableEvidence(left, right) {
     return left.productionRootFingerprint === right.productionRootFingerprint
         && sameDirectoryIdentity(left.productionRootIdentity, right.productionRootIdentity)
-        && sameSnapshot(left.ledger, right.ledger) && sameSnapshot(left.review, right.review)
+        && sameSnapshot(left.ledger, right.ledger) && sameOptionalSnapshot(left.review, right.review)
         && JSON.stringify(left.queue) === JSON.stringify(right.queue)
+        && sameOptionalSnapshot(left.storyboard, right.storyboard)
+        && JSON.stringify(left.initialTarget) === JSON.stringify(right.initialTarget)
+        && left.importMode === right.importMode
         && left.candidateToken === right.candidateToken
         && sameDirectoryIdentity(left.candidateRootIdentity, right.candidateRootIdentity)
         && sameSnapshot(left.candidateSource, right.candidateSource)
@@ -895,10 +1096,12 @@ function blockedPlan(code) {
         status: 'blocked',
         ready: false,
         already_current: false,
+        import_mode: '',
         plan_token: '',
         expires_at: '',
         retry_media_id: '',
         target_id: '',
+        target_label: '',
         new_media_id: '',
         source_provider: '',
         source_result_id: '',
@@ -914,15 +1117,31 @@ function blockedPlan(code) {
 
 function planVideoResultImport(payload, context = {}) {
     try {
-        exactKeys(payload, ['candidateToken', 'retryMediaId'], 'VIDEO_IMPORT_PLAN_REQUEST_INVALID');
+        const hasRetryMediaId = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'retryMediaId'));
+        const hasInitialTargetToken = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'initialTargetToken'));
+        if (hasRetryMediaId === hasInitialTargetToken) throw failure('VIDEO_IMPORT_PLAN_REQUEST_INVALID');
+        exactKeys(
+            payload,
+            hasInitialTargetToken
+                ? ['candidateToken', 'initialTargetToken']
+                : ['candidateToken', 'retryMediaId'],
+            'VIDEO_IMPORT_PLAN_REQUEST_INVALID',
+        );
         const candidateTokenValue = safeOptionalText(payload.candidateToken, 256, 'VIDEO_IMPORT_CANDIDATE_TOKEN_INVALID');
         if (!TOKEN_PATTERN.test(candidateTokenValue)) throw failure('VIDEO_IMPORT_CANDIDATE_TOKEN_INVALID');
-        const retryMediaId = safeId(payload.retryMediaId, 'VIDEO_IMPORT_RETRY_ID_INVALID');
+        const retryMediaId = hasRetryMediaId ? safeId(payload.retryMediaId, 'VIDEO_IMPORT_RETRY_ID_INVALID') : '';
+        const initialTargetTokenValue = hasInitialTargetToken
+            ? safeOptionalText(payload.initialTargetToken, 256, 'VIDEO_IMPORT_INITIAL_TARGET_TOKEN_INVALID') : '';
+        if (hasInitialTargetToken && !TOKEN_PATTERN.test(initialTargetTokenValue)) {
+            throw failure('VIDEO_IMPORT_INITIAL_TARGET_TOKEN_INVALID');
+        }
         const inventory = scanInventory(context);
         const candidate = inventory.candidates.find((entry) => entry.token === candidateTokenValue);
         if (!candidate) throw failure('VIDEO_IMPORT_CANDIDATE_TOKEN_INVALID');
         const importedAt = operationIso(context);
-        const inputs = buildInputs(context, candidate, retryMediaId, importedAt);
+        const inputs = hasInitialTargetToken
+            ? buildInitialInputs(context, candidate, initialTargetTokenValue, importedAt)
+            : buildInputs(context, candidate, retryMediaId, importedAt);
         const now = clockMs(context);
         const expiresAtMs = now + planTtl(context);
         const store = planStore(context);
@@ -940,6 +1159,8 @@ function planVideoResultImport(payload, context = {}) {
             expiresAtMs,
             candidateToken: candidate.token,
             retryMediaId,
+            initialTargetToken: initialTargetTokenValue,
+            importMode: inputs.importMode,
             importedAt,
             evidence: evidence(inputs),
         });
@@ -948,10 +1169,12 @@ function planVideoResultImport(payload, context = {}) {
             status: inputs.alreadyCurrent ? 'already_current' : 'ready',
             ready: !inputs.alreadyCurrent,
             already_current: inputs.alreadyCurrent,
+            import_mode: inputs.importMode,
             plan_token: token,
             expires_at: new Date(expiresAtMs).toISOString(),
             retry_media_id: retryMediaId,
             target_id: inputs.desired.target_id,
+            target_label: inputs.desired.target_label,
             new_media_id: inputs.desired.media_id,
             source_provider: candidate.provider,
             source_result_id: candidate.resultId,
@@ -1191,7 +1414,9 @@ function confirmVideoResultImport(payload, context = {}) {
         const inventory = scanInventory(context);
         const candidate = inventory.candidates.find((entry) => entry.token === record.candidateToken);
         if (!candidate) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
-        const inputs = buildInputs(context, candidate, record.retryMediaId, record.importedAt);
+        const inputs = record.importMode === 'initial'
+            ? buildInitialInputs(context, candidate, record.initialTargetToken, record.importedAt)
+            : buildInputs(context, candidate, record.retryMediaId, record.importedAt);
         if (!stableEvidence(record.evidence, evidence(inputs))) throw failure('VIDEO_IMPORT_PLAN_STALE');
         if (inputs.alreadyCurrent) {
             return {
@@ -1202,6 +1427,8 @@ function confirmVideoResultImport(payload, context = {}) {
                 generation_executed: false,
                 media_id: inputs.desired.media_id,
                 target_id: inputs.desired.target_id,
+                target_label: inputs.desired.target_label,
+                import_mode: inputs.importMode,
                 provider: inputs.candidate.provider,
                 copied: false,
                 ledger_appended: false,
@@ -1217,6 +1444,8 @@ function confirmVideoResultImport(payload, context = {}) {
             generation_executed: false,
             media_id: inputs.desired.media_id,
             target_id: inputs.desired.target_id,
+            target_label: inputs.desired.target_label,
+            import_mode: inputs.importMode,
             provider: inputs.candidate.provider,
             copied: copied.created,
             ledger_appended: ledgerAppended,

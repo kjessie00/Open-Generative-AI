@@ -1087,6 +1087,194 @@ test('MOCK DST connection mode choice appears only when first and retry targets 
     assert.ok(byText(band, 'button', '묶음 확인'));
 });
 
+test('MOCK first video import shows every provider and connects a completed video without a retry draft', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaRetryPlanBand } = await import('../src/components/pipeline/MediaRetryPlanBand.js');
+    const band = MediaRetryPlanBand({
+        plan: { status: 'empty', blockers: [], items: [] },
+        dstBundleImportWorkspace: {
+            status: 'ready',
+            candidates: [],
+            initial_targets: [{
+                target_token: 'opaque-image-target',
+                kind: 'character_sheet',
+                target_id: 'character_private_id',
+                target_label: '주인공',
+                sequence: 1,
+            }],
+        },
+        videoResultImportWorkspace: {
+            status: 'ready',
+            ready: true,
+            blockers: [],
+            initial_targets: [{
+                target_token: 'opaque-video-one',
+                kind: 'video',
+                target_id: 'clip_private_001',
+                target_label: '비 오는 교실',
+                sequence: 1,
+            }, {
+                target_token: 'opaque-video-two',
+                kind: 'video',
+                target_id: 'clip_private_002',
+                target_label: '오래된 차 안',
+                sequence: 2,
+            }],
+            candidates: [{
+                candidate_token: 'flow-first-opaque',
+                provider: 'flow',
+                result_id: 'flow-finished-one',
+                size_bytes: 2673934,
+                duration_seconds: 10.006,
+                width: 1280,
+                height: 720,
+                preview_allowed: true,
+            }, {
+                candidate_token: 'grok-first-opaque',
+                provider: 'grok',
+                result_id: 'grok-finished-one',
+                size_bytes: 4417147,
+                duration_seconds: 6.042,
+                width: 464,
+                height: 688,
+                preview_allowed: true,
+            }, {
+                candidate_token: 'replicate-first-opaque',
+                provider: 'replicate',
+                result_id: 'replicate-finished-one',
+                size_bytes: 6349367,
+                duration_seconds: 5.042,
+                width: 1088,
+                height: 1920,
+                preview_allowed: true,
+            }],
+        },
+        async onPlanVideoResultImport(payload) {
+            calls.push(['plan', payload]);
+            return {
+                status: 'ready',
+                ready: true,
+                import_mode: 'initial',
+                plan_token: 'opaque-first-video-plan',
+                target_label: '오래된 차 안',
+                source_result_id: 'grok-finished-one',
+                blockers: [],
+            };
+        },
+        async onConfirmVideoResultImport(payload) {
+            calls.push(['confirm', payload]);
+            return { ok: true, imported: true, already_current: false, media_id: 'video-imported' };
+        },
+    });
+
+    assert.match(band.textContent, /첫 영상 연결/);
+    assert.doesNotMatch(band.textContent, /제공자별 다시 만들기 계획|저장된 실행 계획 없음/);
+    assert.equal(byAttribute(band, 'select', 'id', 'video-import-mode'), null);
+    const target = byAttribute(band, 'select', 'id', 'video-import-initial-target');
+    const candidate = byAttribute(band, 'select', 'id', 'video-import-candidate');
+    assert.equal(byAttribute(band, 'label', 'for', 'video-import-initial-target').textContent, '연결할 장면');
+    assert.equal(byAttribute(band, 'label', 'for', 'video-import-candidate').textContent, '완료된 영상');
+    assert.match(target.className, /min-h-11/);
+    assert.match(candidate.className, /min-h-11/);
+    assert.deepEqual(findAll(target, 'option').map((option) => [option.value, option.textContent]), [
+        ['opaque-video-one', '1. 비 오는 교실'],
+        ['opaque-video-two', '2. 오래된 차 안'],
+    ]);
+    assert.equal(band.textContent.includes('clip_private_001'), false);
+    assert.equal(band.textContent.includes('opaque-video-one'), false);
+    assert.deepEqual(findAll(candidate, 'option').map((option) => option.value), [
+        '', 'flow-first-opaque', 'grok-first-opaque', 'replicate-first-opaque',
+    ]);
+    assert.match(candidate.textContent, /Flow/);
+    assert.match(candidate.textContent, /Grok/);
+    assert.match(candidate.textContent, /Replicate/);
+    assert.ok(descendants(band).some((node) => /grid-cols-1/.test(node.className) && /lg:grid-cols-2/.test(node.className)));
+
+    target.value = 'opaque-video-two';
+    await target.dispatchEvent({ type: 'change' });
+    const rerenderedCandidate = byAttribute(band, 'select', 'id', 'video-import-candidate');
+    rerenderedCandidate.value = 'grok-first-opaque';
+    await rerenderedCandidate.dispatchEvent({ type: 'change' });
+    assert.ok(byText(band, 'button', '영상 미리보기'));
+    await byText(band, 'button', '연결 확인').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[0], ['plan', {
+        candidateToken: 'grok-first-opaque',
+        initialTargetToken: 'opaque-video-two',
+    }]);
+    assert.match(band.textContent, /가져올 영상과 장면을 확인했습니다/);
+    assert.doesNotMatch(band.textContent, /PASS|PREVIEW|BLOCK|VIDEO_IMPORT_/);
+
+    await byText(band, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[1], ['confirm', { planToken: 'opaque-first-video-plan', confirmed: true }]);
+    assert.match(band.textContent, /장면 검토 보드에 연결했습니다/);
+});
+
+test('MOCK video connection mode appears only when first and retry targets both exist', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { VideoResultImportBand } = await import('../src/components/pipeline/VideoResultImportBand.js');
+    const band = VideoResultImportBand({
+        retryItems: [{
+            sequence: 1,
+            media_id: 'flow-video-retry',
+            target_id: 'clip_private_retry',
+            target_label: '다시 만들 장면',
+            provider: 'flow',
+            kind: 'video',
+        }],
+        workspace: {
+            status: 'ready',
+            initial_targets: [{
+                target_token: 'opaque-first-video',
+                kind: 'video',
+                target_id: 'clip_private_first',
+                target_label: '첫 장면',
+                sequence: 1,
+            }],
+            candidates: [{
+                candidate_token: 'flow-both-opaque',
+                provider: 'flow',
+                result_id: 'flow-both',
+                size_bytes: 1024,
+                duration_seconds: 5,
+                preview_allowed: false,
+            }, {
+                candidate_token: 'grok-both-opaque',
+                provider: 'grok',
+                result_id: 'grok-both',
+                size_bytes: 1024,
+                duration_seconds: 5,
+                preview_allowed: false,
+            }],
+        },
+        async onPlan() {
+            return { status: 'blocked', ready: false };
+        },
+    });
+
+    let mode = byAttribute(band, 'select', 'id', 'video-import-mode');
+    assert.equal(byAttribute(band, 'label', 'for', 'video-import-mode').textContent, '연결 방식');
+    assert.deepEqual(findAll(mode, 'option').map((option) => [option.value, option.textContent]), [
+        ['initial', '처음 연결'],
+        ['retry', '다시 연결'],
+    ]);
+    assert.deepEqual(findAll(byAttribute(band, 'select', 'id', 'video-import-candidate'), 'option').map((option) => option.value), [
+        '', 'flow-both-opaque', 'grok-both-opaque',
+    ]);
+
+    mode.value = 'retry';
+    await mode.dispatchEvent({ type: 'change' });
+    mode = byAttribute(band, 'select', 'id', 'video-import-mode');
+    assert.equal(mode.value, 'retry');
+    assert.ok(byAttribute(band, 'select', 'id', 'video-import-retry-target'));
+    assert.equal(byAttribute(band, 'select', 'id', 'video-import-initial-target'), null);
+    assert.deepEqual(findAll(byAttribute(band, 'select', 'id', 'video-import-candidate'), 'option').map((option) => option.value), [
+        '', 'flow-both-opaque',
+    ]);
+});
+
 test('MOCK video result import binds Flow candidates to the exact saved video retry', async (t) => {
     const calls = [];
     const { restore } = installDeterministicDom({});

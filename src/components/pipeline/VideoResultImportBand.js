@@ -29,10 +29,10 @@ function candidateLabel(candidate) {
 
 function labeledSelect(id, labelText, options, value, onChange) {
     const select = el('select', {
-        value,
         className: 'min-h-11 w-full rounded-md border border-white/10 bg-black/40 px-3 text-sm text-white',
         attrs: { id },
     }, options.map((option) => el('option', { value: option.value, text: option.label })));
+    select.value = value;
     select.addEventListener('change', () => onChange(select.value));
     return el('div', { className: 'flex min-w-0 flex-col gap-2' }, [
         el('label', { text: labelText, className: 'text-xs font-semibold text-secondary', attrs: { for: id } }),
@@ -54,8 +54,26 @@ export function VideoResultImportBand({
     onConfirm,
 }) {
     const candidates = Array.isArray(workspace?.candidates) ? workspace.candidates : [];
-    let selectedRetryMediaId = retryItems[0]?.media_id || '';
-    let selectedCandidateToken = '';
+    const initialTargets = Array.isArray(workspace?.initial_targets)
+        ? workspace.initial_targets.filter((item) => (
+            item?.kind === 'video'
+            && typeof item?.target_token === 'string'
+            && item.target_token
+            && Number.isSafeInteger(Number(item.sequence))
+            && Number(item.sequence) > 0
+        ))
+        : [];
+    const hasInitialMode = initialTargets.length > 0;
+    const hasRetryMode = retryItems.length > 0;
+    let selectedMode = ['initial', 'retry'].includes(plan?.import_mode)
+        ? plan.import_mode
+        : hasInitialMode ? 'initial' : 'retry';
+    let selectedInitialTargetToken = initialTargets.find((item) => (
+        item.target_id === plan?.target_id || item.target_label === plan?.target_label
+    ))?.target_token || initialTargets[0]?.target_token || '';
+    let selectedRetryMediaId = retryItems.find((item) => item.media_id === plan?.retry_media_id)?.media_id
+        || retryItems[0]?.media_id || '';
+    let selectedCandidateToken = candidates.find((item) => item.result_id === plan?.source_result_id)?.candidate_token || '';
     let activePlan = plan?.status && !['empty', 'idle'].includes(plan.status) ? plan : null;
     let activePreview = null;
     let busy = false;
@@ -73,15 +91,29 @@ export function VideoResultImportBand({
         activePreview = null;
     };
 
+    const resetPlan = ({ clearCandidate = false } = {}) => {
+        if (clearCandidate) selectedCandidateToken = '';
+        activePlan = null;
+        feedback = '';
+        disposePreview();
+    };
+
+    const initialTargetLabel = (item) => `${item.sequence}. ${item.target_label || `${item.sequence}번 장면`}`;
+
     const render = () => {
         const retryItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
-        const matchingCandidates = candidates.filter((candidate) => candidate.provider === retryItem?.provider);
+        const initialTarget = initialTargets.find((item) => item.target_token === selectedInitialTargetToken);
+        const matchingCandidates = selectedMode === 'initial'
+            ? candidates
+            : candidates.filter((candidate) => candidate.provider === retryItem?.provider);
         if (!matchingCandidates.some((candidate) => candidate.candidate_token === selectedCandidateToken)) {
             selectedCandidateToken = '';
         }
         const candidate = matchingCandidates.find((item) => item.candidate_token === selectedCandidateToken);
         const imported = activePlan?.imported === true || activePlan?.already_current === true;
         const planReady = activePlan?.ready === true && Boolean(activePlan?.plan_token);
+        const hasActiveMode = selectedMode === 'initial' ? hasInitialMode : hasRetryMode;
+        const showModeSelect = hasInitialMode && hasRetryMode;
         const statusText = imported
             ? '영상이 장면 검토 보드에 연결되었습니다.'
             : planReady
@@ -91,8 +123,13 @@ export function VideoResultImportBand({
         root.replaceChildren(...[
             el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
                 el('div', {}, [
-                    el('h4', { text: '완료 영상 가져오기', className: 'text-sm font-bold text-white', attrs: { id: 'video-result-import-title' } }),
-                    el('p', { text: '완료된 영상을 골라 장면별 검토 보드에 연결합니다.', className: 'mt-1 text-xs text-secondary' }),
+                    el('h4', { text: selectedMode === 'initial' ? '첫 영상 연결' : '완료 영상 가져오기', className: 'text-sm font-bold text-white', attrs: { id: 'video-result-import-title' } }),
+                    el('p', {
+                        text: selectedMode === 'initial'
+                            ? '완료된 영상을 장면에 처음 연결합니다.'
+                            : '완료된 영상을 골라 장면별 검토 보드에 연결합니다.',
+                        className: 'mt-1 text-xs text-secondary',
+                    }),
                 ]),
                 actionButton(workspace?.status === 'loading' ? '확인 중…' : '완료 영상 새로고침', {
                     variant: 'muted',
@@ -100,31 +137,45 @@ export function VideoResultImportBand({
                     onClick: () => onRefresh?.(),
                 }),
             ]),
-            retryItems.length
-                ? el('div', { className: 'mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2' }, [
-                    labeledSelect('video-import-retry-target', '다시 만들기 항목', retryItems.map((item) => ({
-                        value: item.media_id,
-                        label: `${item.sequence}. ${item.target_id || item.media_id} · ${PROVIDER_LABELS[item.provider] || item.provider}`,
-                    })), selectedRetryMediaId, (value) => {
-                        selectedRetryMediaId = value;
-                        selectedCandidateToken = '';
-                        activePlan = null;
-                        feedback = '';
-                        disposePreview();
+            hasActiveMode
+                ? el('div', { className: `mt-4 grid grid-cols-1 gap-4 ${showModeSelect ? 'lg:grid-cols-3' : 'lg:grid-cols-2'}` }, [
+                    showModeSelect ? labeledSelect('video-import-mode', '연결 방식', [
+                        { value: 'initial', label: '처음 연결' },
+                        { value: 'retry', label: '다시 연결' },
+                    ], selectedMode, (value) => {
+                        selectedMode = value;
+                        resetPlan({ clearCandidate: true });
                         render();
-                    }),
+                    }) : null,
+                    selectedMode === 'initial'
+                        ? labeledSelect('video-import-initial-target', '연결할 장면', initialTargets.map((item) => ({
+                            value: item.target_token,
+                            label: initialTargetLabel(item),
+                        })), selectedInitialTargetToken, (value) => {
+                            selectedInitialTargetToken = value;
+                            resetPlan();
+                            render();
+                        })
+                        : labeledSelect('video-import-retry-target', '다시 만들기 항목', retryItems.map((item) => ({
+                            value: item.media_id,
+                            label: `${item.sequence}. ${item.target_label || item.target_id || item.media_id} · ${PROVIDER_LABELS[item.provider] || item.provider}`,
+                        })), selectedRetryMediaId, (value) => {
+                            selectedRetryMediaId = value;
+                            resetPlan({ clearCandidate: true });
+                            render();
+                        }),
                     labeledSelect('video-import-candidate', '완료된 영상', [
                         { value: '', label: matchingCandidates.length ? '영상을 선택하세요' : '이 도구의 완료 영상 없음' },
                         ...matchingCandidates.map((item) => ({ value: item.candidate_token, label: candidateLabel(item) })),
                     ], selectedCandidateToken, (value) => {
                         selectedCandidateToken = value;
-                        activePlan = null;
-                        feedback = '';
-                        disposePreview();
+                        resetPlan();
                         render();
                     }),
-                ])
-                : emptyState('영상 다시 만들기 항목을 선택하고 검토 초안을 먼저 저장하세요.'),
+                ].filter(Boolean))
+                : emptyState(hasInitialMode
+                    ? '연결할 장면을 확인하세요.'
+                    : '영상 다시 만들기 항목을 선택하고 검토 초안을 먼저 저장하세요.'),
             candidate ? card([
                 el('p', { text: `${candidateLabel(candidate)} · ${candidate.width}×${candidate.height}`, className: 'text-sm text-secondary' }),
                 el('div', { className: 'mt-3 flex flex-wrap gap-3' }, [
@@ -152,13 +203,16 @@ export function VideoResultImportBand({
                             render();
                         },
                     }),
-                    actionButton(busy ? '확인 중…' : '가져오기 계획', {
-                        disabled: busy || typeof onPlan !== 'function',
+                    actionButton(busy ? '확인 중…' : selectedMode === 'initial' ? '연결 확인' : '가져오기 계획', {
+                        disabled: busy || typeof onPlan !== 'function'
+                            || (selectedMode === 'initial' && !initialTarget),
                         onClick: async () => {
                             busy = true;
                             feedback = '';
                             render();
-                            activePlan = await onPlan({ candidateToken: candidate.candidate_token, retryMediaId: selectedRetryMediaId })
+                            activePlan = await onPlan(selectedMode === 'initial'
+                                ? { candidateToken: candidate.candidate_token, initialTargetToken: selectedInitialTargetToken }
+                                : { candidateToken: candidate.candidate_token, retryMediaId: selectedRetryMediaId })
                                 .catch(() => ({ status: 'blocked', blockers: ['VIDEO_IMPORT_PLAN_FAILED'] }));
                             busy = false;
                             render();

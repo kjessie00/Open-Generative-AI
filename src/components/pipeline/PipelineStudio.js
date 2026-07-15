@@ -110,6 +110,7 @@ function emptyVideoResultImportWorkspace(status = 'empty', blocker = '') {
         ready: false,
         blockers: blocker ? [blocker] : [],
         candidates: [],
+        initial_targets: [],
     };
 }
 
@@ -523,12 +524,14 @@ export function PipelineStudio() {
                         status: result?.imported || result?.already_current ? 'imported' : 'blocked',
                     };
                     if (result?.imported || result?.already_current) {
-                        const [loadedState, loadedRetryPlan] = await Promise.all([
+                        const [loadedState, loadedRetryPlan, loadedVideoWorkspace] = await Promise.all([
                             pipelineClient.readProductionState().catch(() => null),
                             pipelineClient.getMediaRetryPlan().catch(() => null),
+                            pipelineClient.getVideoResultImportWorkspace().catch(() => null),
                         ]);
                         if (loadedState?.state) state = normalizeState(loadedState.state);
                         if (loadedRetryPlan) mediaRetryPlan = loadedRetryPlan;
+                        if (loadedVideoWorkspace) videoResultImportWorkspace = loadedVideoWorkspace;
                         mediaReviewSaveStatus = '';
                         render();
                     }
