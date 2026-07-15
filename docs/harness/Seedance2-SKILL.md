@@ -2,7 +2,7 @@
 
 상태: **합성본 (synthesized) — originals MISSING**
 
-작성일: 2026-07-07 KST. 대상 repo: `/Users/jessiek/StudioProjects/Open-Generative-AI`. 보고 언어: 한국어. 본 문서는 AGENTS.md가 정의한 필수 하네스 문서 중 Seedance2/Dreamina 도메인 작업 명세 파일이며, 외부 하네스 오리지널 원본은 본 repo에 부재한 상태에서 본 repo의 local UI scaffold (`src/lib/pipeline/`, `src/components/pipeline/`, `src/fixtures/pipeline/sampleProductionFolder/prompts/clip_001_seedance.md`, `docs/ui_integration/`)에서 추출·합성한 내용이다. 본 문서의 모든 필드명/블로커/검증자/제출 흐름은 local UI scaffold가 가진 것을 그대로 인용하며, 오리지널 하네스 원본과 reconcile 되지 않은 상태임을 §10에서 명시한다. shorts 도메인의 명세는 `docs/harness/shorts-SKILL.md`를 참조한다.
+작성일: 2026-07-07 KST. 운영 방향 갱신: 2026-07-15 KST. 대상 repo: `/Users/jessiek/StudioProjects/Open-Generative-AI`. 보고 언어: 한국어. 본 문서는 AGENTS.md가 정의한 필수 하네스 문서 중 Seedance2/Dreamina 도메인 작업 명세 파일이며, 외부 하네스 오리지널 원본은 본 repo에 부재한 상태에서 본 repo의 local UI scaffold (`src/lib/pipeline/`, `src/components/pipeline/`, `src/fixtures/pipeline/sampleProductionFolder/prompts/clip_001_seedance.md`, `docs/ui_integration/`)에서 추출·합성한 내용이다. 본 문서의 모든 필드명/블로커/검증자/제출 흐름은 local UI scaffold가 가진 것을 그대로 인용하며, 오리지널 하네스 원본과 reconcile 되지 않은 상태임을 §10에서 명시한다. shorts 도메인의 명세는 `docs/harness/shorts-SKILL.md`를 참조한다.
 
 ## §1. 본 문서의 의의와 적용 범위
 
@@ -106,12 +106,12 @@ background music, no extra characters, no face morphing, no warped hands.
 ## §10. STOP — 본 문서의 한계 인정
 
 본 audit/문서 작성 동안 외부 side effect 실행 0건, npm install 0회, git add/commit/push 0회, 셸 실행 0회이다. 본 문서는 외부 하네스 오리지널 원본이 아닌 local UI scaffold에서 합성한 것이며 외부 오리지널과 reconcile되지 않은 상태임을 본 §10에서 명시한다. 향후 외부 오리지널이 제공되면 본 문서는 즉시 그 오리지널로 교체되어야 한다. 본 명세의 모든 필드명/차단 상수/검증자/제출 흐름은 local UI scaffold가 가진 그대로의 것이며 external claim이 아님을 분명히 한다.
-## §11. 외부 호출 surface lock (owner 결정, 2026-07-07)
+## §11. 외부 호출 surface 방향 (owner 갱신, 2026-07-15)
 
-본 §11 은 본 Seedance2 도메인 명세가 어떤 외부 호출 surface 만을 통해 라이브 image / video / research 호출을 수행할 수 있는지를 owner 결정 으로 고정한다. 본 §11 은 본 §10 의 외부 실행 금지 와 본 §5 의 안전 검사 모델 의 두 가지 운영 원칙을 surface 화이트리스트 영역 으로 확장한 것이다.
+본 §11은 2026-07-07의 3-surface owner 결정을 역사적 기록으로 보존하되, 2026-07-15의 현재 owner 방향이 이를 대체했음을 명시한다. 현재 방향은 provider 후보 지정과 Open-Generative-AI의 실제 실행 가능 상태를 서로 다른 사실로 다룬다.
 
-본 Seedance2 도메인의 외부 호출 surface 는 다음 3 개 skill 로 단일화된다. 첫째, Seedance2 의 reference / scene 이미지 생성은 deepsearch-team skill 의 `dst image` 또는 `dst agent` 모드 (goldpure369) 만 사용한다. 둘째, Seedance2 의 비디오 생성은 dreamina-video-cli skill 의 `dreamina` CLI (seedance2.0mini / fast / 2.0) 또는 google-labs-flow-auto skill 의 `run_v3_gen.py` 둘 중 owner 가 작업별로 지정한 하나만 사용한다. 셋째, 위 두 도메인 외 어떤 surface 도 라이브 호출에 사용되지 않는다. 금지 surface 목록은 MuAPI / 호스팅 SaaS API / OpenAI 직접 호출 / Anthropic 직접 호출 / Gemini API 직접 호출 / Replicate / Runway / Pika / Sora / Veo 직접 호출 / 기타 임의의 image 또는 video 생성 endpoint 다.
+Seedance2의 reference / scene 이미지 생성 surface는 deepsearch-team의 `dst image`, profile `goldpure369`, Thinking으로 한정한다. 비디오 생성 후보는 `google-labs-flow-auto`, `grok-imagine`, Replicate API, ByteDance API다. 현재 Open-Generative-AI 상태는 Flow의 main-owned no-submit preview가 연결됐고, Grok은 runtime dependency와 reference staging 계약 미충족으로 `BLOCK`이며, Replicate와 ByteDance는 외부 후보만 탐지된 `MISSING_PROVIDER_ADAPTER`다. 후보 지정은 라이브 생성 허용이나 성공 증거가 아니다.
 
-본 결정의 운영 의미는 본 §10 의 외부 실행 금지 가 본 §11 의 surface lock 으로 추가로 강화된다는 점이다. electron 측 executor 화이트리스트 가 화이트리스트 외 surface 호출을 명령 미리보기 모드로 강제 다운그레이드한다. 본 Seedance2 도메인의 어떤 패널이 실수로 잘못된 endpoint 를 호출하려 해도 이 화이트리스트가 호출을 차단한다. 특히 deepsearch-team 의 `dst image` 가 reference 이미지 생성 의 유일한 surface 이며 dreamina-video-cli 가 short-form 영상 생성 의 기본 surface 이고 google-labs-flow-auto 가 high-fidelity / Veo 계열 생성 의 보조 surface 이다.
+Renderer는 셸·CLI·API를 직접 실행하지 않고 `window.filmPipeline`만 호출한다. Electron main이 provider allowlist, 불변 실행 계획, 입력과 출력 root를 소유한다. 기본 상태는 `preview_only` 또는 `dry_run`이며 `.env`나 API key는 Jessie의 사전 승인 없이 읽거나 사용하지 않는다. live generation, 파일 다운로드, 출력 품질 QA, Jessie의 최종 승인은 각각 별도 상태로 기록한다.
 
-본 §11 의 근거 문서는 `docs/ui_integration/18_api_decision_lock.md` 다. 본 §11 은 본 §1 부터 §10 까지 의 어떤 사실 진술과도 모순되지 않으며 본 §10 의 실행 금지 를 surface 영역 으로 확장한 단일 섹션이다.
+본 §11의 근거 문서는 `docs/ui_integration/18_api_decision_lock.md`다. adapter가 구현·검증되기 전에는 어떤 후보도 라이브 실행으로 승격하지 않는다.

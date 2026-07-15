@@ -61,6 +61,8 @@ function absolutePath(rootPath, value) {
 const MEDIA_KINDS = new Set(['character_sheet', 'location_sheet', 'scene_image', 'video']);
 const MEDIA_PROVIDERS = new Set(['dst', 'flow', 'grok', 'replicate', 'bytedance', 'seedance']);
 const MEDIA_REVIEW_STATUSES = new Set(['unreviewed', 'accepted', 'needs_changes', 'retry_requested']);
+const MEDIA_ASPECT_RATIOS = new Set(['9:16', '16:9', '3:4', '1:1', '3:2', '2:3']);
+const MEDIA_QUALITIES = new Set(['480p', '720p']);
 
 function safeMediaPath(rootPath, value) {
     if (typeof value !== 'string' || !value || value.includes('\0')) return '';
@@ -74,6 +76,12 @@ function safeMediaString(value, maxLength = 256) {
     const normalized = value.trim();
     if (!normalized || normalized.length > maxLength || normalized.includes('\0')) return '';
     return normalized;
+}
+
+function safeMediaText(value, maxLength = 12000) {
+    if (typeof value !== 'string' || value.includes('\0')) return '';
+    const normalized = value.trim();
+    return normalized && normalized.length <= maxLength ? normalized : '';
 }
 
 function normalizeMediaAttempts(rawReader) {
@@ -103,6 +111,12 @@ function normalizeMediaAttempts(rawReader) {
             path,
             relative_path: path ? normalizeSlashes(path).slice(normalizeSlashes(rawReader.rootPath).replace(/\/$/, '').length + 1) : '',
             generation_status: safeMediaString(record?.generation_status, 80) || 'unknown',
+            prompt: safeMediaText(record?.prompt),
+            aspect_ratio: MEDIA_ASPECT_RATIOS.has(record?.aspect_ratio) ? record.aspect_ratio : '',
+            duration: Number.isSafeInteger(Number(record?.duration)) && Number(record.duration) > 0 && Number(record.duration) <= 30
+                ? Number(record.duration)
+                : 0,
+            quality: MEDIA_QUALITIES.has(record?.quality) ? record.quality : '',
             review_status: draftStatus,
             retry_of: safeMediaString(record?.retry_of, 160),
             review_note: typeof draft?.review_note === 'string'

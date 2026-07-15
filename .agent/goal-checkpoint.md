@@ -1,6 +1,6 @@
 # Goal Checkpoint
 
-Last updated: 2026-07-15T07:35:54.847Z
+Last updated: 2026-07-15T08:15:36.415Z
 Main executor: Codex Goals
 Supervisor: Pi goal guard / external audit
 
@@ -56,6 +56,8 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 
 ## Current Evidence
 
+- 2026-07-15T08:15:36.415Z: Post-review hardening: generic renderer command-copy fail-closed; preview_ready separated from execution_ready/ready=false; Grok reference staging required; unsafe/partial DST and Flow references produce no command. Independent read-only re-review: prior findings resolved, no new P1/P2. Final full 215/215 tests, lint, build, diff-check PASS.
+- 2026-07-15T08:12:02.583Z: Provider retry planning slice: pathless Electron main plan reads media_attempts.jsonl + saved review draft; actual DST/Flow/Grok CLIs audited; real Electron loaded 4 PNG + 1 MP4, preserved 2-item retry order, saved draft status, zero run buttons/external requests/console errors, 320-1440 overflow 0; full 215/215 tests, lint/build/diff-check PASS. Live generation remains not_run; Grok runtime/staging and Replicate/ByteDance adapters remain blockers.
 - 2026-07-15T07:35:54.847Z: 2026-07-15 media review workbench: explicit media_attempts.jsonl + reviews/media_review_draft.json, character/location rails, scene image/video attempts, retry-only sequential draft. Target 26/26, full 211/211, lint/build PASS. Electron CDP real local PNG 4/4 and MP4 1/1 loaded; playback advanced; selection/filter/save passed; 320/768/1024/1440 no horizontal overflow. Live DST/Flow/Grok/Replicate/ByteDance execution remains intentionally not wired.
 - 2026-07-13 initial state: `main` at `70b7d4a6bd73d0f01747ac1387a27baa0989e7ec`, aligned with `origin/main`, and clean before checkpoint creation (`git status --short --branch`, exit 0).
 - 2026-07-13 Goal Guard initialization: `/Users/jessiek/.local/bin/codex-goal-guard init`, exit 0; thread `019f570c-52f8-7e43-be6c-07b209b1b8f2`, goal `production-pipeline-studio`.

@@ -28,9 +28,13 @@ test('reader uses the exact root media attempts and exact review draft, then nor
         {
             media_id: 'scene-safe', kind: 'scene_image', target_id: 'clip_001', provider: 'dst',
             operation_id: 'dst-001', attempt: 2, reference_ids: ['character-1'], relative_path: 'media/frame.png',
-            generation_status: 'downloaded', review_status: 'unreviewed', retry_of: '', review_note: '',
+            generation_status: 'downloaded', prompt: '정확한 재생성 프롬프트', aspect_ratio: '9:16', duration: 10, quality: '720p',
+            review_status: 'unreviewed', retry_of: '', review_note: '',
         },
-        { media_id: 'outside', kind: 'video', target_id: 'clip_001', provider: 'grok', path: '../outside.mp4' },
+        {
+            media_id: 'outside', kind: 'video', target_id: 'clip_001', provider: 'grok', path: '../outside.mp4',
+            prompt: `invalid\0prompt`, aspect_ratio: '4:3', duration: 999, quality: '4k',
+        },
         { media_id: 'url', kind: 'scene_image', target_id: 'clip_001', provider: 'replicate', path: 'https://example.invalid/a.png' },
         { media_id: 'nul', kind: 'scene_image', target_id: 'clip_001', provider: 'bytedance', path: 'media/a\0.png' },
     ];
@@ -57,6 +61,14 @@ test('reader uses the exact root media attempts and exact review draft, then nor
     assert.equal(state.mediaAttempts[0].review_status, 'retry_requested');
     assert.equal(state.mediaAttempts[0].review_note, '인물 표정을 다시 확인');
     assert.equal(state.mediaAttempts[0].selected_for_retry, true);
+    assert.equal(state.mediaAttempts[0].prompt, '정확한 재생성 프롬프트');
+    assert.equal(state.mediaAttempts[0].aspect_ratio, '9:16');
+    assert.equal(state.mediaAttempts[0].duration, 10);
+    assert.equal(state.mediaAttempts[0].quality, '720p');
+    assert.deepEqual(
+        [state.mediaAttempts[1].prompt, state.mediaAttempts[1].aspect_ratio, state.mediaAttempts[1].duration, state.mediaAttempts[1].quality],
+        ['', '', 0, ''],
+    );
     assert.deepEqual(state.mediaAttempts.slice(1).map((record) => record.path), ['', '', '']);
 });
 

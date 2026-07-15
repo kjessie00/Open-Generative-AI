@@ -1,21 +1,7 @@
 import { classifySideEffect, renderShellCommand, allowedStatusLabel } from '../../lib/pipeline/sideEffects.js';
-import { pipelineClient } from '../../lib/pipeline/client.js';
 import { actionButton, card, codeBlock, el, statusBadge } from './ui.js';
 import { SideEffectGate } from './SideEffectGate.js';
 import { p } from './copy.js';
-
-async function copyCommand(commandSpec, button) {
-    if (commandSpec.copy_allowed === false) return;
-    try {
-        const result = await pipelineClient.copyCommandPreview(commandSpec);
-        button.textContent = result?.copied && result?.verified ? p('Copied') : p('Copy failed');
-    } catch {
-        button.textContent = p('Copy failed');
-    }
-    setTimeout(() => {
-        button.textContent = p('Copy command');
-    }, 1200);
-}
 
 function commandLabel(commandSpec) {
     const label = commandSpec.label || commandSpec.id || 'Command preview';
@@ -34,10 +20,9 @@ function commandLabel(commandSpec) {
 export function CommandPreviewCard({ commandSpec }) {
     const command = renderShellCommand(commandSpec);
     const classification = classifySideEffect(commandSpec);
-    const copyButton = actionButton(classification.copyAllowed ? p('Copy command') : p('Copy unavailable'), {
+    const copyButton = actionButton(p('Copy unavailable'), {
         variant: 'muted',
-        disabled: !classification.copyAllowed,
-        onClick: classification.copyAllowed ? () => copyCommand(commandSpec, copyButton) : undefined,
+        disabled: true,
     });
 
     const blocked = classification.mode === 'blocked';

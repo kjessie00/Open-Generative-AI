@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),
     readProductionState: () => ipcRenderer.invoke('film-pipeline:read-production-state'),
+    getMediaRetryPlan: () => ipcRenderer.invoke('film-pipeline:get-media-retry-plan'),
     writePlanningFile: (payload) => ipcRenderer.invoke('film-pipeline:write-planning-file', payload),
     listAssets: () => ipcRenderer.invoke('film-pipeline:list-assets'),
     readJsonl: (payload) => ipcRenderer.invoke('film-pipeline:read-jsonl', payload),

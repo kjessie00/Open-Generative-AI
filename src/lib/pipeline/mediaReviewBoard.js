@@ -152,6 +152,7 @@ export function buildRetryQueue(attempts = []) {
             kind: attempt.kind,
             target_id: attempt.target_id,
             provider: attempt.provider,
+            attempt: attempt.attempt,
             retry_of: attempt.media_id,
             review_note: attempt.review_note || '',
             execution_status: 'draft_not_executed',

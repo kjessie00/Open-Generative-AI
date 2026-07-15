@@ -27,7 +27,7 @@ test('native folder dialog falls back to the current production parent directory
     assert.equal(selected, '/approved/production');
 });
 
-test('command preview copy writes and verifies normalized text without execution', () => {
+test('renderer-owned command preview copy is blocked even when the payload claims it is allowed', () => {
     let clipboardText = '';
     const clipboard = {
         writeText(value) { clipboardText = value; },
@@ -38,17 +38,18 @@ test('command preview copy writes and verifies normalized text without execution
         command: 'dreamina',
         args: ['submit', '--dry-run'],
         side_effect_type: 'credit_consuming_generation',
+        copy_allowed: true,
     }, clipboard);
 
-    assert.equal(result.ok, true);
-    assert.equal(result.copied, true);
-    assert.equal(result.verified, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.copied, false);
+    assert.equal(result.verified, false);
     assert.equal(result.executed, false);
-    assert.equal(result.length, clipboardText.length);
-    assert.equal(result.sha256.length, 64);
+    assert.equal(result.error, 'COMMAND_COPY_REQUIRES_MAIN_OWNED_PLAN');
+    assert.equal(clipboardText, '');
 });
 
-test('command preview copy fails closed when clipboard verification differs', () => {
+test('renderer-owned benign-looking command cannot bypass the main-owned copy boundary', () => {
     const clipboard = {
         writeText() {},
         readText() { return 'different'; },
@@ -57,11 +58,13 @@ test('command preview copy fails closed when clipboard verification differs', ()
         command: 'status',
         args: ['--dry-run'],
         side_effect_type: 'non_consuming_status',
+        preview_only: true,
+        copy_allowed: true,
     }, clipboard);
 
     assert.equal(result.ok, false);
     assert.equal(result.copied, false);
     assert.equal(result.verified, false);
     assert.equal(result.executed, false);
-    assert.equal(result.error, 'CLIPBOARD_VERIFY_FAILED');
+    assert.equal(result.error, 'COMMAND_COPY_REQUIRES_MAIN_OWNED_PLAN');
 });

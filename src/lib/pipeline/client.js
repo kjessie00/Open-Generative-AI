@@ -161,6 +161,22 @@ export async function readProductionState() {
     };
 }
 
+export async function getMediaRetryPlan() {
+    const bridge = getBridge();
+    if (typeof bridge?.getMediaRetryPlan === 'function') return bridge.getMediaRetryPlan();
+    return {
+        ...unavailable('getMediaRetryPlan'),
+        schema: 'film_pipeline.media_retry_plan.v1',
+        execution: 'not_run',
+        status: 'blocked',
+        ready: false,
+        preview_ready: false,
+        execution_ready: false,
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        items: [],
+    };
+}
+
 export async function writePlanningFile(payload) {
     const bridge = getBridge();
     if (bridge) return bridge.writePlanningFile(payload);
@@ -347,6 +363,7 @@ export const pipelineClient = Object.freeze({
     selectProductionRoot,
     listProductionChildren,
     readProductionState,
+    getMediaRetryPlan,
     writePlanningFile,
     listAssets,
     readJsonl,

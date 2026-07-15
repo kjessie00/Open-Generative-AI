@@ -10,6 +10,7 @@ import {
     toggleRetrySelection,
 } from '../../lib/pipeline/mediaReviewBoard.js';
 import { ReferenceRail, SceneReviewRow } from './MediaReviewBoardParts.js';
+import { MediaRetryPlanBand } from './MediaRetryPlanBand.js';
 import { actionButton, el, emptyState, panelShell, statusBadge } from './ui.js';
 import { p } from './copy.js';
 
@@ -19,7 +20,14 @@ const FILTER_LABELS = Object.freeze({
     [MEDIA_REVIEW_FILTERS.RETRY_SELECTED]: '다시 만들기 선택',
 });
 
-export function StoryboardPanel({ state, onSavePlanningFile }) {
+export function StoryboardPanel({
+    state,
+    mediaRetryPlan,
+    mediaReviewSaveStatus = '',
+    onMediaReviewSaveStatusChange,
+    onSavePlanningFile,
+    onRefreshMediaRetryPlan,
+}) {
     let attempts = deriveMediaAttempts(state).map((attempt) => ({
         ...attempt,
         review_status: attempt.review_status || 'unreviewed',
@@ -27,7 +35,7 @@ export function StoryboardPanel({ state, onSavePlanningFile }) {
     }));
     let filter = MEDIA_REVIEW_FILTERS.ALL;
     let queued = [];
-    let saveStatus = '';
+    let saveStatus = mediaReviewSaveStatus;
     const board = el('div', { className: 'media-review-workspace' });
 
     const renderBoard = () => {
@@ -97,6 +105,10 @@ export function StoryboardPanel({ state, onSavePlanningFile }) {
                             content,
                         });
                         saveStatus = result?.ok ? '검토 초안 저장됨' : '검토 초안 저장 차단됨';
+                        onMediaReviewSaveStatusChange?.(saveStatus);
+                        if (result?.ok && typeof onRefreshMediaRetryPlan === 'function') {
+                            await onRefreshMediaRetryPlan();
+                        }
                         renderBoard();
                     },
                 }),
@@ -120,6 +132,7 @@ export function StoryboardPanel({ state, onSavePlanningFile }) {
                 ReferenceRail('장소 시트', '장면 전체에서 유지할 공간·조명·소품 기준입니다.', grouped.locationSheets, actions),
             ]),
             ...sceneGroups.map((group) => SceneReviewRow(group, clipById.get(group.target_id), actions)),
+            MediaRetryPlanBand({ plan: mediaRetryPlan, onRefresh: onRefreshMediaRetryPlan }),
         ];
         if (!attempts.length) children.push(emptyState('media_attempts.jsonl에 기록된 생성 시도가 없습니다.'));
         board.replaceChildren(...children);

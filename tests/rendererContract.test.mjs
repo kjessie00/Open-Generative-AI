@@ -356,7 +356,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.match(queueText, /Canonical 하네스 연결사용 가능읽기 전용 메타데이터/);
     assert.match(queueText, /라이브 제출은 차단/);
     assert.match(queueText, /미리보기 카드만 제공합니다. 실행 버튼은 표시하지 않습니다./);
-    assert.match(queueText, /명령 복사/);
+    assert.match(queueText, /복사 불가/);
     assert.match(queueText, /CREDIT_CONFIRMATION_REQUIRED/);
     assert.ok(byText(studio, 'button', '제출 차단')?.disabled, 'submit control must stay visibly disabled');
 
@@ -418,15 +418,17 @@ test('copy-disabled command card attaches no click handler and performs zero cli
             copy_allowed: true,
         },
     });
-    const usableButton = byText(usable, 'button', '명령 복사');
+    const usableButton = byText(usable, 'button', '복사 불가');
     assert.ok(usableButton);
-    assert.equal(usableButton.disabled, false);
+    assert.equal(usableButton.disabled, true);
     await usableButton.dispatchEvent({ type: 'click' });
-    assert.equal(calls.length, 1, 'usable preview copy must keep the existing copy-only bridge');
+    assert.equal(calls.length, 0, 'renderer-owned preview must not reach clipboard IPC');
 });
 
 test('MOCK media review board updates selection and filter, then saves the exact review draft payload', async (t) => {
     const calls = [];
+    let planRefreshes = 0;
+    let reportedSaveStatus = '';
     const { restore } = installDeterministicDom({});
     t.after(restore);
     const { StoryboardPanel } = await import('../src/components/pipeline/StoryboardPanel.js');
@@ -449,14 +451,56 @@ test('MOCK media review board updates selection and filter, then saves the exact
     };
     const board = StoryboardPanel({
         state,
+        mediaRetryPlan: {
+            schema: 'film_pipeline.media_retry_plan.v1',
+            execution: 'not_run',
+            status: 'preview_ready',
+            ready: true,
+            blockers: [],
+            executed: false,
+            items: [{
+                sequence: 1,
+                media_id: 'scene-image-1',
+                kind: 'scene_image',
+                target_id: 'clip_001',
+                provider: 'dst',
+                readiness: 'preview_ready',
+                blockers: [],
+                executed: false,
+                command_spec: {
+                    id: 'retry_scene-image-1',
+                    label: 'DeepSearchTeam dst image · clip_001',
+                    command: '/Users/jessiek/.pyenv/versions/3.11.7/bin/python',
+                    args: ['-m', 'dst', 'image', 'retry prompt', '-p', 'goldpure369'],
+                    cwd: '/Users/jessiek/StudioProjects/deepSearchTeam',
+                    preview_only: true,
+                    side_effect_type: 'credit_consuming_generation',
+                    requires_confirmation: true,
+                    copy_allowed: true,
+                    disabled_reason: 'CREDIT_CONSUMING_GENERATION_PREVIEW_ONLY',
+                },
+            }],
+        },
         async onSavePlanningFile(payload) {
             calls.push(payload);
             return { ok: true, written: true, executed: false };
+        },
+        async onRefreshMediaRetryPlan() {
+            planRefreshes += 1;
+            return { status: 'preview_ready', items: [] };
+        },
+        onMediaReviewSaveStatusChange(status) {
+            reportedSaveStatus = status;
         },
     });
 
     assert.match(board.textContent, /다시 만들기 0개 선택/);
     assert.match(board.textContent, /실행 안 함/);
+    assert.match(board.textContent, /제공자별 다시 만들기 계획/);
+    assert.match(board.textContent, /1번/);
+    assert.match(board.textContent, /미리보기 준비/);
+    assert.match(board.textContent, /goldpure369/);
+    assert.equal(findAll(board, 'button').some((button) => /^(?:run|execute|명령 실행|생성 실행)$/i.test(button.textContent.trim())), false);
     const note = byAttribute(board, 'textarea', 'aria-label', 'scene-image-1 검토 메모');
     note.value = '손 모양과 조명을 수정';
     await note.dispatchEvent({ type: 'input' });
@@ -480,6 +524,8 @@ test('MOCK media review board updates selection and filter, then saves the exact
     await byText(board, 'button', '검토 초안 저장').dispatchEvent({ type: 'click' });
 
     assert.equal(calls.length, 1);
+    assert.equal(planRefreshes, 1, 'successful draft save must refresh the pathless main-owned plan');
+    assert.equal(reportedSaveStatus, '검토 초안 저장됨');
     assert.equal(calls[0].rootPath, '/tmp/media-review-production');
     assert.equal(calls[0].relativePath, 'reviews/media_review_draft.json');
     const saved = JSON.parse(calls[0].content);
@@ -496,6 +542,17 @@ test('MOCK media review board updates selection and filter, then saves the exact
         media_id: 'scene-image-1',
         execution_status: 'draft_not_executed',
     }]);
+    assert.equal(saved.retry_queue[0].attempt, 1);
+
+    await byText(board, 'button', '실행 계획 확인').dispatchEvent({ type: 'click' });
+    assert.equal(planRefreshes, 2);
+
+    const rerendered = StoryboardPanel({
+        state,
+        mediaRetryPlan: { status: 'empty', blockers: [], items: [] },
+        mediaReviewSaveStatus: reportedSaveStatus,
+    });
+    assert.match(rerendered.textContent, /검토 초안 저장됨/);
 });
 
 test('MOCK media attempt cards keep Korean labels and semantic review colors', async (t) => {

@@ -46,6 +46,20 @@ function normalizeState(state) {
     return { ...samplePipelineState, bridgeState: state || null };
 }
 
+function emptyMediaRetryPlan(status = 'empty', blocker = '') {
+    return {
+        schema: 'film_pipeline.media_retry_plan.v1',
+        execution: 'not_run',
+        status,
+        ready: false,
+        preview_ready: false,
+        execution_ready: false,
+        blockers: blocker ? [blocker] : [],
+        items: [],
+        executed: false,
+    };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
@@ -97,6 +111,8 @@ export function PipelineStudio() {
     let g3PromotionPlan = emptyG3PromotionPlan();
     let finishingWorkspace = emptyFinishingWorkspace();
     let finishingExecution = finishingExecutionState();
+    let mediaRetryPlan = emptyMediaRetryPlan();
+    let mediaReviewSaveStatus = '';
 
     const render = () => {
         container.innerHTML = '';
@@ -134,13 +150,16 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
+                const [loaded, retryPlanLoaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
+                    pipelineClient.getMediaRetryPlan().catch(() => emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED')),
                     pipelineClient.getG3ReviewWorkspace(),
                     pipelineClient.planG3ProductionPromotion(),
                     pipelineClient.getFinishingWorkspace(),
                 ]);
                 state = normalizeState(loaded?.state);
+                mediaRetryPlan = retryPlanLoaded;
+                mediaReviewSaveStatus = '';
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
                 finishingWorkspace = normalizeFinishingWorkspace(finishingLoaded);
@@ -203,13 +222,16 @@ export function PipelineStudio() {
                     dryRunMode: true,
                     allowSafeCommandExecution: false,
                 };
-                const [loaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
+                const [loaded, retryPlanLoaded, g3Loaded, promotionLoaded, finishingLoaded] = await Promise.all([
                     pipelineClient.readProductionState(),
+                    pipelineClient.getMediaRetryPlan().catch(() => emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED')),
                     pipelineClient.getG3ReviewWorkspace(),
                     pipelineClient.planG3ProductionPromotion(),
                     pipelineClient.getFinishingWorkspace(),
                 ]);
                 state = normalizeState(loaded?.state);
+                mediaRetryPlan = retryPlanLoaded;
+                mediaReviewSaveStatus = '';
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
                 finishingWorkspace = normalizeFinishingWorkspace(finishingLoaded);
@@ -308,6 +330,22 @@ export function PipelineStudio() {
                         }));
                         return { ok: false, written: false, executed: false };
                     }
+                },
+                mediaRetryPlan,
+                mediaReviewSaveStatus,
+                onMediaReviewSaveStatusChange: (status) => {
+                    mediaReviewSaveStatus = status;
+                },
+                onRefreshMediaRetryPlan: async () => {
+                    mediaRetryPlan = emptyMediaRetryPlan('loading');
+                    render();
+                    try {
+                        mediaRetryPlan = await pipelineClient.getMediaRetryPlan();
+                    } catch {
+                        mediaRetryPlan = emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED');
+                    }
+                    render();
+                    return mediaRetryPlan;
                 },
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),
                 onPickParent: pickParentFolder,
@@ -518,19 +556,22 @@ export function PipelineStudio() {
         };
 
         if (config.productionRoot) {
-            const [loadedState, loadedG3, loadedPromotion, loadedFinishing] = await Promise.all([
+            const [loadedState, loadedRetryPlan, loadedG3, loadedPromotion, loadedFinishing] = await Promise.all([
                 pipelineClient.readProductionState().catch(() => ({ state: samplePipelineState })),
+                pipelineClient.getMediaRetryPlan().catch(() => emptyMediaRetryPlan('blocked', 'MEDIA_RETRY_PLAN_READ_FAILED')),
                 pipelineClient.getG3ReviewWorkspace().catch(() => emptyG3ReviewState('error')),
                 pipelineClient.planG3ProductionPromotion().catch(() => staleG3PromotionPlan('G3_PROMOTION_PLAN_FAILED')),
                 pipelineClient.getFinishingWorkspace().catch(() => ({ status: 'error', blockers: ['FINISHING_WORKSPACE_LOAD_FAILED'] })),
             ]);
             state = normalizeState(loadedState?.state);
+            mediaRetryPlan = loadedRetryPlan;
             g3Workspace = normalizeG3ReviewState(loadedG3);
             g3PromotionPlan = normalizeG3PromotionPlan(loadedPromotion);
             finishingWorkspace = normalizeFinishingWorkspace(loadedFinishing);
             g3ActiveShotId = g3Workspace.shots[0]?.shot_id || '';
         } else {
             state = samplePipelineState;
+            mediaRetryPlan = emptyMediaRetryPlan('empty', 'MEDIA_RETRY_PRODUCTION_ROOT_NOT_CONFIGURED');
             g3Workspace = normalizeG3ReviewState({
                 ...emptyG3ReviewState('empty'),
                 blockers: ['G3_PRODUCTION_ROOT_NOT_CONFIGURED'],

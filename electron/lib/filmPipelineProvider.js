@@ -7,12 +7,12 @@ const newProjectDraftProvider = require('./newProjectDraftProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
+const { buildMediaRetryPlan } = require('./mediaRetryPlanProvider');
 
 const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_COUNT = 600;
 const MAX_WALK_DEPTH = 8;
-const MAX_COMMAND_PREVIEW_BYTES = 256 * 1024;
 const MAX_PLANNING_FILE_BYTES = 1024 * 1024;
 const MAX_PLANNING_FILE_ID_LENGTH = 128;
 const PLANNING_TEMP_PREFIX = '.film-pipeline-planning-';
@@ -1001,6 +1001,21 @@ function readConfiguredProductionState(options = {}) {
     return readProductionState(productionRoot, options);
 }
 
+function getMediaRetryPlan(options = {}) {
+    const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
+    const result = buildMediaRetryPlan(productionRoot, {
+        readProductionFolderFn: options.readProductionFolderFn,
+    });
+    sendProgress({
+        phase: 'media-retry-plan-read',
+        status: result.status,
+        itemCount: result.items.length,
+        blockerCount: result.blockers.length,
+        executed: false,
+    });
+    return result;
+}
+
 function listConfiguredAssets(options = {}) {
     const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
     return listAssets(productionRoot);
@@ -1092,71 +1107,19 @@ function previewCommand(commandSpec = {}) {
     };
 }
 
-function fingerprintCommandPreview(text) {
-    return {
-        length: text.length,
-        byteLength: Buffer.byteLength(text, 'utf8'),
-        sha256: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
-    };
-}
-
 function copyCommandPreview(commandSpec = {}, clipboardApi = clipboard) {
-    if (commandSpec.copy_allowed === false) {
-        return {
-            ok: false,
-            copied: false,
-            verified: false,
-            executed: false,
-            error: 'COMMAND_COPY_DISALLOWED',
-            length: 0,
-            byteLength: 0,
-            sha256: '',
-        };
-    }
-    const preview = previewCommand(commandSpec);
-    const fingerprint = fingerprintCommandPreview(preview.shellSafeCommand);
-    if (fingerprint.byteLength > MAX_COMMAND_PREVIEW_BYTES) {
-        return {
-            ok: false,
-            copied: false,
-            verified: false,
-            executed: false,
-            error: 'COMMAND_PREVIEW_TOO_LARGE',
-            ...fingerprint,
-        };
-    }
-    if (!clipboardApi || typeof clipboardApi.writeText !== 'function' || typeof clipboardApi.readText !== 'function') {
-        return {
-            ok: false,
-            copied: false,
-            verified: false,
-            executed: false,
-            error: 'CLIPBOARD_UNAVAILABLE',
-            ...fingerprint,
-        };
-    }
-
-    clipboardApi.writeText(preview.shellSafeCommand);
-    const verified = clipboardApi.readText() === preview.shellSafeCommand;
-    const result = {
-        ok: verified,
-        copied: verified,
-        verified,
+    void commandSpec;
+    void clipboardApi;
+    return {
+        ok: false,
+        copied: false,
+        verified: false,
         executed: false,
-        error: verified ? '' : 'CLIPBOARD_VERIFY_FAILED',
-        ...fingerprint,
+        error: 'COMMAND_COPY_REQUIRES_MAIN_OWNED_PLAN',
+        length: 0,
+        byteLength: 0,
+        sha256: '',
     };
-    sendProgress({
-        phase: verified ? 'command-copied' : 'command-copy-failed',
-        sideEffectType: preview.classification.detectedType,
-        copied: result.copied,
-        verified: result.verified,
-        executed: false,
-        length: result.length,
-        byteLength: result.byteLength,
-        sha256: result.sha256,
-    });
-    return result;
 }
 
 function runSafeCommand(commandSpec = {}) {
@@ -1315,6 +1278,10 @@ function register(ipcApi = ipcMain, options = {}) {
         assertNoRendererPathArgument(pathArgument);
         return readConfiguredProductionState(options);
     });
+    ipcApi.handle('film-pipeline:get-media-retry-plan', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getMediaRetryPlan(options);
+    });
     ipcApi.handle('film-pipeline:list-production-children', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return listConfiguredProductionChildren(options);
@@ -1364,6 +1331,7 @@ module.exports = {
     listProductionChildren,
     listConfiguredProductionChildren,
     readConfiguredProductionState,
+    getMediaRetryPlan,
     listConfiguredAssets,
     readConfiguredJsonl,
     resolveProductionDialogDefaultPath,
