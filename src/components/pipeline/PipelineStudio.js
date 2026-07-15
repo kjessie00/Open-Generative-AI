@@ -17,10 +17,9 @@ import {
     finishingExecutionState,
     normalizeFinishingWorkspace,
 } from '../../lib/pipeline/finishingWorkbenchState.js';
+import { deriveWorkflowGuide, stageForTab, WORKFLOW_STAGES } from '../../lib/pipeline/workflowGuide.js';
 import { PipelineSidebar } from './PipelineSidebar.js';
-import { PipelineProjectBar } from './PipelineProjectBar.js';
-import { PipelineSafetySummary } from './PipelineSafetySummary.js';
-import { PipelineStatusStrip } from './PipelineStatusStrip.js';
+import { WorkflowOverview } from './WorkflowOverview.js';
 import { IntakePanel } from './IntakePanel.js';
 import { StoryboardPanel } from './StoryboardPanel.js';
 import { ShotDesignerPanel } from './ShotDesignerPanel.js';
@@ -35,18 +34,9 @@ import { PipelineSettingsPanel } from './PipelineSettingsPanel.js';
 import { el } from './ui.js';
 import { p } from './copy.js';
 
-const TABS = Object.freeze([
-    { id: 'intake', label: p('Project'), panelTitle: p('Project overview'), group: 'planning', groupLabel: p('Planning') },
-    { id: 'storyboard', label: p('Storyboard'), panelTitle: p('Storyboard'), group: 'planning', groupLabel: p('Planning') },
-    { id: 'shot-designer', label: p('Shot design'), panelTitle: p('Shot Design'), group: 'planning', groupLabel: p('Planning') },
-    { id: 'motion', label: p('Motion board'), panelTitle: p('Motion Board'), group: 'prep', groupLabel: p('Production prep') },
-    { id: 'assets', label: p('Reference images'), panelTitle: p('First Frames And References'), group: 'prep', groupLabel: p('Production prep') },
-    { id: 'prompts', label: p('Prompt packs'), panelTitle: p('Prompt Packs'), group: 'prep', groupLabel: p('Production prep') },
-    { id: 'gates', label: p('Review gates'), panelTitle: p('Review Gates'), group: 'review', groupLabel: p('Generation and review') },
-    { id: 'queue', label: p('Generation queue'), panelTitle: p('Generation Queue'), group: 'review', groupLabel: p('Generation and review') },
-    { id: 'qa', label: p('Clip QA'), panelTitle: p('Clip QA And Accepted Ranges'), group: 'review', groupLabel: p('Generation and review') },
-    { id: 'final', label: p('Final edit'), panelTitle: p('Final Edit And Report'), group: 'finish', groupLabel: p('Finishing') },
-    { id: 'settings', label: p('Settings'), panelTitle: p('Pipeline Settings'), group: 'finish', groupLabel: p('Finishing') },
+const PANEL_IDS = new Set([
+    'overview', 'settings',
+    ...WORKFLOW_STAGES.flatMap((stage) => stage.tabs.map((tab) => tab.id)),
 ]);
 
 function normalizeState(state) {
@@ -74,7 +64,7 @@ function renderPanel(tabId, state, config, actions) {
 
 export function PipelineStudio() {
     const container = el('div', { className: 'pipeline-studio' });
-    let activeTab = 'intake';
+    let activeTab = 'overview';
     let state = samplePipelineState;
     let config = {
         productionRoot: samplePipelineState.project.root_path,
@@ -110,6 +100,11 @@ export function PipelineStudio() {
 
     const render = () => {
         container.innerHTML = '';
+        if (typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('pipeline:project-title', {
+                detail: { title: state.project?.title || '' },
+            }));
+        }
 
         const showPathSelectionBlocked = () => window.alert(p('Folder selection blocked by the local path safety policy.'));
 
@@ -227,9 +222,16 @@ export function PipelineStudio() {
         };
 
         const switchTab = (tabId) => {
-            if (!TABS.some((tab) => tab.id === tabId)) return;
+            if (!PANEL_IDS.has(tabId)) return;
             activeTab = tabId;
             render();
+        };
+
+        const guide = deriveWorkflowGuide(state);
+        const activeStageId = stageForTab(activeTab)?.id || guide.activeStageId;
+        const switchStage = (stageId) => {
+            const stage = WORKFLOW_STAGES.find((item) => item.id === stageId);
+            if (stage?.tabs[0]) switchTab(stage.tabs[0].id);
         };
 
         const body = el('div', { className: 'pipeline-layout' });
@@ -238,9 +240,9 @@ export function PipelineStudio() {
         // duplicate region with the same panel title.
         const panelHost = el('div', { className: 'pipeline-panel-host' });
         const panelContent = el('div', { className: 'pipeline-panel-content' }, [
-            PipelineStatusStrip({ state }),
-            PipelineSafetySummary(),
-            renderPanel(activeTab, state, config, {
+            activeTab === 'overview'
+                ? WorkflowOverview({ state, onNavigate: switchTab })
+                : renderPanel(activeTab, state, config, {
                 harnessStatus,
                 newProjectDraftState,
                 newProjectDraftValue,
@@ -449,36 +451,30 @@ export function PipelineStudio() {
                     }
                     render();
                 },
-            }),
+                }),
         ]);
 
         panelHost.appendChild(panelContent);
         body.appendChild(PipelineSidebar({
-            tabs: TABS,
+            stages: guide.stages,
+            activeStageId,
             activeTab,
             productions,
             productionsState,
             onSelect: switchTab,
+            onSelectStage: switchStage,
             onSelectProduction: selectProduction,
-            onOpenSettings: () => switchTab('settings'),
+            onNewProject: () => switchTab('intake'),
+            onOpenProduction: openProductionFolder,
             onRefreshProductions: refreshProductions,
         }));
         body.appendChild(panelHost);
 
-        container.appendChild(PipelineProjectBar({
-            state,
-            onNewProject: () => {
-                activeTab = 'intake';
-                render();
-            },
-            onOpenProduction: openProductionFolder,
-            onRefreshProductions: refreshProductions,
-        }));
         container.appendChild(body);
     };
 
     const onPipelineNavigate = (event) => {
-        if (event?.detail?.tab && TABS.some((tab) => tab.id === event.detail.tab)) {
+        if (event?.detail?.tab && PANEL_IDS.has(event.detail.tab)) {
             activeTab = event.detail.tab;
             render();
         }

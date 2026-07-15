@@ -1,4 +1,4 @@
-import { el, statusBadge } from './ui.js';
+import { el } from './ui.js';
 import { p } from './copy.js';
 
 function formatRelativeMtime(isoString, now = Date.now()) {
@@ -13,12 +13,22 @@ function formatRelativeMtime(isoString, now = Date.now()) {
     return new Date(isoString).toISOString().slice(0, 10);
 }
 
-function productionDetailsContent({ productions, productionsState, onSelectProduction, onOpenSettings, onRefreshProductions }) {
+function projectActions({ onNewProject, onOpenProduction, onRefreshProductions }) {
+    return el('div', { className: 'pipeline-project-actions' }, [
+        el('button', { text: p('New project draft'), onClick: onNewProject, attrs: { type: 'button' } }),
+        el('button', { text: p('Open production folder'), onClick: onOpenProduction, attrs: { type: 'button' } }),
+        el('button', { text: p('Refresh productions'), onClick: onRefreshProductions, attrs: { type: 'button' } }),
+    ]);
+}
+
+function productionDetailsContent(props) {
+    const { productions, productionsState, onSelectProduction, onOpenProduction, onRefreshProductions } = props;
     const state = productionsState || { status: 'idle', reason: '' };
     const body = el('div', {
         className: 'pipeline-production-body',
         attrs: { 'aria-live': 'polite', 'aria-busy': state.status === 'scanning' ? 'true' : 'false' },
     });
+    body.appendChild(projectActions(props));
 
     if (state.status === 'scanning') {
         body.appendChild(el('p', { text: p('Scanning production parent…'), className: 'pipeline-production-message', attrs: { role: 'status' } }));
@@ -32,8 +42,8 @@ function productionDetailsContent({ productions, productionsState, onSelectProdu
             attrs: { role: 'alert' },
         }));
         body.appendChild(el('button', {
-            text: p('Open settings'),
-            onClick: () => onOpenSettings?.(),
+            text: p('Refresh productions'),
+            onClick: () => onRefreshProductions?.(),
             className: 'pipeline-production-recovery',
             attrs: { type: 'button' },
         }));
@@ -42,13 +52,13 @@ function productionDetailsContent({ productions, productionsState, onSelectProdu
 
     if (!Array.isArray(productions) || productions.length === 0) {
         body.appendChild(el('p', {
-            text: p('No productions found. Set a production parent in Settings.'),
+            text: '제작 상위 폴더가 없습니다.',
             className: 'pipeline-production-message',
             attrs: { role: 'status' },
         }));
         body.appendChild(el('button', {
-            text: p('Open settings'),
-            onClick: () => onOpenSettings?.(),
+            text: p('Open production folder'),
+            onClick: () => onOpenProduction?.(),
             className: 'pipeline-production-recovery',
             attrs: { type: 'button' },
         }));
@@ -88,31 +98,17 @@ function productionDetails(props) {
     const details = el('details', { className: 'pipeline-production-details' });
     details.appendChild(el('summary', { className: 'pipeline-production-summary' }, [
         el('span', { text: p('Production list') }),
-        state.status === 'scanning'
-            ? statusBadge(p('Scanning…'), 'PREVIEW')
-            : state.status === 'error'
-                ? statusBadge(p('Error'), 'BLOCK')
-                : statusBadge(String(props.productions?.length || 0), props.productions?.length ? 'PASS' : 'UNREVIEWED'),
+        el('span', {
+            text: state.status === 'scanning' ? p('Scanning…') : state.status === 'error' ? p('Error') : String(props.productions?.length || 0),
+            className: 'pipeline-production-count',
+        }),
     ]));
     details.appendChild(productionDetailsContent(props));
     return details;
 }
 
-function groupedTabs(tabs) {
-    const groups = [];
-    tabs.forEach((tab) => {
-        let group = groups.find((item) => item.id === tab.group);
-        if (!group) {
-            group = { id: tab.group, label: tab.groupLabel, tabs: [] };
-            groups.push(group);
-        }
-        group.tabs.push(tab);
-    });
-    return groups;
-}
-
 export function PipelineSidebar(props) {
-    const { tabs, activeTab, onSelect } = props;
+    const { stages, activeStageId, activeTab, onSelect, onSelectStage } = props;
     const aside = el('aside', { className: 'pipeline-sidebar' });
 
     const mobileLabel = el('label', { className: 'pipeline-mobile-nav' }, [
@@ -122,31 +118,55 @@ export function PipelineSidebar(props) {
         className: 'pipeline-mobile-nav-select',
         attrs: { 'aria-label': p('Pipeline workflow steps') },
     });
-    tabs.forEach((tab) => mobileSelect.appendChild(el('option', { text: tab.label, value: tab.id })));
-    mobileSelect.value = activeTab;
-    mobileSelect.addEventListener('change', () => onSelect(mobileSelect.value));
+    stages.forEach((stage) => mobileSelect.appendChild(el('option', { text: `${stage.number} ${stage.label}`, value: stage.id })));
+    mobileSelect.value = activeStageId;
+    mobileSelect.addEventListener('change', () => onSelectStage(mobileSelect.value));
     mobileLabel.appendChild(mobileSelect);
     aside.appendChild(mobileLabel);
+    const mobileStage = stages.find((stage) => stage.id === activeStageId);
+    if (mobileStage) {
+        aside.appendChild(el('div', { className: 'pipeline-mobile-subnav' }, mobileStage.tabs.map((tab) => (
+            el('button', {
+                text: tab.label,
+                onClick: () => onSelect(tab.id),
+                className: `pipeline-mobile-subnav-item${activeTab === tab.id ? ' is-active' : ''}`,
+                attrs: { type: 'button', 'aria-current': activeTab === tab.id ? 'page' : undefined },
+            })
+        ))));
+    }
 
     const navigation = el('nav', {
         className: 'pipeline-desktop-nav',
         attrs: { 'aria-label': p('Pipeline workflow steps') },
     });
-    groupedTabs(tabs).forEach((group) => {
-        const section = el('section', { className: 'pipeline-nav-group' }, [
-            el('h2', { text: group.label, className: 'pipeline-nav-group-title' }),
-        ]);
-        group.tabs.forEach((tab) => {
-            section.appendChild(el('button', {
+    stages.forEach((stage) => {
+        const isActive = activeStageId === stage.id;
+        const section = el('section', { className: `pipeline-nav-stage${isActive ? ' is-active' : ''}` });
+        section.appendChild(el('button', {
+            onClick: () => onSelectStage(stage.id),
+            className: 'pipeline-stage-button',
+            attrs: {
+                type: 'button',
+                'aria-label': `${stage.number} ${stage.label}`,
+                'aria-current': isActive ? 'step' : undefined,
+            },
+        }, [
+            el('span', { text: stage.number, className: 'pipeline-stage-number', attrs: { 'aria-hidden': 'true' } }),
+            el('span', { text: stage.label, className: 'pipeline-stage-label' }),
+        ]));
+        if (isActive) {
+            const subnav = el('div', { className: 'pipeline-subnav' });
+            stage.tabs.forEach((tab) => subnav.appendChild(el('button', {
                 text: tab.label,
                 onClick: () => onSelect(tab.id),
-                className: `pipeline-nav-item${activeTab === tab.id ? ' is-active' : ''}`,
+                className: `pipeline-subnav-item${activeTab === tab.id ? ' is-active' : ''}`,
                 attrs: {
                     type: 'button',
                     'aria-current': activeTab === tab.id ? 'page' : undefined,
                 },
-            }));
-        });
+            })));
+            section.appendChild(subnav);
+        }
         navigation.appendChild(section);
     });
     aside.appendChild(navigation);

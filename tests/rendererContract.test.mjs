@@ -242,52 +242,64 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     };
     const { restore } = installDeterministicDom(bridge);
     t.after(restore);
+    const projectTitles = [];
+    window.addEventListener('pipeline:project-title', (event) => projectTitles.push(event.detail?.title));
     const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
     const studio = PipelineStudio();
 
     await flushRenderer();
-    assert.match(studio.textContent, /Restored Production State/);
+    assert.equal(projectTitles.at(-1), 'Restored Production State');
     assert.deepEqual(calls.find(([method]) => method === 'getHarnessContractStatus')[1], []);
     assert.deepEqual(
         calls.filter(([method]) => method === 'readProductionState').map(([, args]) => args),
         [[]],
         'saved productionRoot must restore renderer state without a renderer-supplied path',
     );
-    assert.match(studio.textContent, /안전 모드 · 생성 및 업로드 차단/);
-    assert.doesNotMatch(studio.textContent, /Dry-run disabled/);
-    assert.equal(findAll(studio, 'h1').length, 1, 'the current production is the single page h1');
+    assert.ok(byText(studio, 'h1', '지금 할 일'));
+    assert.match(studio.textContent, /클립을 검토하고 사용할 구간을 선택하세요/);
+    assert.ok(byText(studio, 'button', '클립 QA 열기'));
+    assert.match(studio.textContent, /채택한 구간이 0개라 최종 편집을 시작할 수 없습니다/);
+    assert.match(studio.textContent, /바로 할 수 있음/);
+    assert.match(studio.textContent, /준비 후 가능/);
+    assert.match(studio.textContent, /앱에서 실행 안 함/);
+    assert.equal(findAll(studio, 'h1').length, 1, 'the overview must own the single page h1');
     assert.equal(findAll(studio, 'main').length, 0, 'PipelineStudio must not nest a main landmark inside the app main');
 
     const workflowNav = byAttribute(studio, 'nav', 'aria-label', '파이프라인 작업 단계');
     assert.ok(workflowNav, 'workflow navigation must have a Korean accessible name');
-    assert.ok(byAttribute(studio, 'button', 'aria-current', 'page'), 'active workflow step must expose aria-current=page');
-    for (const group of ['기획', '제작 준비', '생성·검토', '마무리']) {
-        assert.ok(byText(studio, 'h2', group), `${group} workflow group must be rendered`);
+    assert.ok(byAttribute(studio, 'button', 'aria-current', 'step'), 'active workflow stage must expose aria-current=step');
+    for (const [number, label] of [['1', '시작'], ['2', '설계'], ['3', '생성 준비'], ['4', '클립 선택'], ['5', '마무리']]) {
+        assert.ok(byAttribute(studio, 'button', 'aria-label', `${number} ${label}`), `${label} stage must be rendered`);
     }
+    assert.deepEqual(
+        findAll(byAttribute(studio, 'dl', 'aria-label', '파이프라인 파일 상태'), 'dt')
+            .map((node) => node.textContent.trim()),
+        ['파일', '파싱', '검토', '채택'],
+        'file evidence must be a compact four-metric strip',
+    );
+    await byText(studio, 'button', '클립 QA 열기').dispatchEvent({ type: 'click' });
+    assert.ok(byText(studio, 'h2', '클립 QA·채택 구간'), 'overview CTA must open the existing clip QA panel');
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'overview' } });
     const mobileWorkflow = byAttribute(studio, 'select', 'aria-label', '파이프라인 작업 단계');
     assert.ok(mobileWorkflow, 'mobile workflow select must have a Korean accessible name');
-    mobileWorkflow.value = 'storyboard';
+    assert.equal(mobileWorkflow.childNodes.length, 5, 'mobile workflow must expose exactly five stages');
+    mobileWorkflow.value = 'design';
     await mobileWorkflow.dispatchEvent({ type: 'change' });
     assert.ok(byText(studio, 'h2', '스토리보드'), 'mobile workflow change must render the storyboard panel');
     assert.equal(
         byAttribute(studio, 'select', 'aria-label', '파이프라인 작업 단계').value,
-        'storyboard',
+        'design',
         'the rerendered mobile workflow select must preserve the selected step',
     );
-    assert.deepEqual(
-        findAll(studio, 'dt').map((node) => node.textContent.trim()),
-        ['파일', '파싱', '검토', '채택'],
-        'file evidence must be a compact four-metric strip',
-    );
     const details = findAll(studio, 'details');
-    assert.ok(details.length >= 2, 'safety and production lists must use progressive disclosure');
+    assert.ok(details.length >= 1, 'production tools must use progressive disclosure');
     assert.ok(details.every((node) => !node.attributes.has('open')), 'progressive details must be collapsed by default');
 
     const openFolder = byText(studio, 'button', '제작 폴더 열기');
     assert.ok(openFolder, 'folder-selection UI must be rendered in Korean');
     await openFolder.dispatchEvent({ type: 'click' });
     await flushRenderer();
-    assert.match(studio.textContent, /Folder Selected Production/);
+    assert.equal(projectTitles.at(-1), 'Folder Selected Production');
     assert.equal(calls.filter(([method]) => method === 'selectProductionRoot').length, 1);
     assert.deepEqual(calls.find(([method]) => method === 'selectProductionRoot')[1], { mode: 'production' });
 
@@ -296,34 +308,31 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     await refresh.dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.match(studio.textContent, /상위 폴더를 읽을 수 없습니다: 로컬 경로 안전 정책에 따라 요청이 차단되었습니다/);
-    assert.ok(byText(studio, 'button', '설정 열기'), 'reader error must expose a Korean recovery action');
+    assert.ok(byText(studio, 'button', '목록 새로고침'), 'reader error must expose a Korean retry action');
 
-    const tabs = [
-        ['프로젝트', '프로젝트 개요'],
-        ['스토리보드', '스토리보드'],
-        ['샷 설계', '샷 설계'],
-        ['모션 보드', '모션 보드'],
-        ['참조 이미지', '첫 프레임·참조 이미지'],
-        ['프롬프트 팩', '프롬프트 팩'],
-        ['검토 게이트', '검토 게이트'],
-        ['생성 대기열', '생성 대기열'],
-        ['클립 QA', '클립 QA·채택 구간'],
-        ['최종 편집', '최종 편집·보고서'],
-        ['설정', '파이프라인 설정'],
+    const stages = [
+        ['1 시작', [['프로젝트', '프로젝트 개요']]],
+        ['2 설계', [['스토리보드', '스토리보드'], ['샷 설계', '샷 설계'], ['모션 보드', '모션 보드']]],
+        ['3 생성 준비', [['참조 이미지', '첫 프레임·참조 이미지'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트'], ['생성 대기열', '생성 대기열']]],
+        ['4 클립 선택', [['클립 QA', '클립 QA·채택 구간']]],
+        ['5 마무리', [['최종 편집', '최종 편집·보고서']]],
     ];
 
     const renderedPanelTexts = [];
-    for (const [tabLabel, panelHeading] of tabs) {
-        const tab = byText(studio, 'button', tabLabel);
-        assert.ok(tab, `${tabLabel} tab must be rendered`);
-        await tab.dispatchEvent({ type: 'click' });
-        assert.ok(
-            findAll(studio, 'h2').some((heading) => heading.textContent.trim() === panelHeading),
-            `${tabLabel} must render the ${panelHeading} panel`,
-        );
-        assert.equal(byText(studio, 'button', tabLabel).attributes.get('aria-current'), 'page');
-        renderedPanelTexts.push(studio.textContent);
+    for (const [stageLabel, tabs] of stages) {
+        await byAttribute(studio, 'button', 'aria-label', stageLabel).dispatchEvent({ type: 'click' });
+        for (const [tabLabel, panelHeading] of tabs) {
+            const tab = byText(studio, 'button', tabLabel);
+            assert.ok(tab, `${tabLabel} subtask must be rendered in its active stage`);
+            await tab.dispatchEvent({ type: 'click' });
+            assert.ok(findAll(studio, 'h2').some((heading) => heading.textContent.trim() === panelHeading));
+            assert.equal(byText(studio, 'button', tabLabel).attributes.get('aria-current'), 'page');
+            renderedPanelTexts.push(studio.textContent);
+        }
     }
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'settings' } });
+    assert.ok(byText(studio, 'h2', '파이프라인 설정'));
+    assert.equal(byText(studio, 'button', '설정'), null, 'settings must not appear in the stage list');
     const allPanelText = renderedPanelTexts.join('\n');
     for (const staleUiLabel of [
         'Cinematic Pipeline Studio',
@@ -338,6 +347,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
         assert.doesNotMatch(allPanelText, new RegExp(staleUiLabel), `${staleUiLabel} must not remain in the default Korean UI`);
     }
 
+    await byAttribute(studio, 'button', 'aria-label', '3 생성 준비').dispatchEvent({ type: 'click' });
     await byText(studio, 'button', '참조 이미지').dispatchEvent({ type: 'click' });
     assert.match(studio.textContent, /하네스 이미지 대시보드를 읽기 전용으로 보여 줍니다/);
 
@@ -348,7 +358,6 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.match(queueText, /미리보기 카드만 제공합니다. 실행 버튼은 표시하지 않습니다./);
     assert.match(queueText, /명령 복사/);
     assert.match(queueText, /CREDIT_CONFIRMATION_REQUIRED/);
-    assert.match(queueText, /이미지 생성차단/);
     assert.ok(byText(studio, 'button', '제출 차단')?.disabled, 'submit control must stay visibly disabled');
 
     const unsafeEnabledButtons = findAll(studio, 'button').filter((button) => (
@@ -480,6 +489,7 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
     const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
     const studio = PipelineStudio();
     await flushRenderer();
+    await byAttribute(studio, 'button', 'aria-label', '1 시작').dispatchEvent({ type: 'click' });
 
     assert.ok(byText(studio, 'h3', '새 프로젝트 시작'));
     const form = byAttribute(studio, 'form', 'aria-label', '새 프로젝트 초안');
@@ -656,7 +666,9 @@ test('PipelineStudio preserves native parent and sidebar child UX without render
     await flushRenderer();
     assert.equal(bridge.setConfig, undefined, 'renderer bridge fixture must have no public config mutation method');
 
-    await byText(studio, 'button', '설정').dispatchEvent({ type: 'click' });
+    const projectTitles = [];
+    window.addEventListener('pipeline:project-title', (event) => projectTitles.push(event.detail?.title));
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'settings' } });
     await byText(studio, 'button', '상위 폴더 선택').dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.deepEqual(calls.find(([, request]) => request?.mode === 'parent')[1], { mode: 'parent' });
@@ -671,7 +683,7 @@ test('PipelineStudio preserves native parent and sidebar child UX without render
     assert.ok(childButton, 'configured immediate child must be reachable in the sidebar');
     await childButton.dispatchEvent({ type: 'click' });
     await flushRenderer();
-    assert.match(studio.textContent, /Main Owned Child Production/);
+    assert.equal(projectTitles.at(-1), 'Main Owned Child Production');
     assert.deepEqual(
         calls.find(([, request]) => request?.mode === 'child')[1],
         { mode: 'child', rootPath: '/tmp/production-parent/child-production' },
@@ -725,6 +737,7 @@ test('PipelineStudio reports planning write rejection in Korean without leaking 
     const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
     const studio = PipelineStudio();
     await flushRenderer();
+    await byAttribute(studio, 'button', 'aria-label', '1 시작').dispatchEvent({ type: 'click' });
     const saveButton = byText(studio, 'button', '계획 파일 저장');
     assert.ok(saveButton, 'intake planning save button must be available');
     await saveButton.dispatchEvent({ type: 'click' });
@@ -735,13 +748,14 @@ test('PipelineStudio reports planning write rejection in Korean without leaking 
     assert.deepEqual(unhandled, []);
 });
 
-test('PipelineSidebar keeps grouped navigation ahead of a collapsed Korean production list', async (t) => {
+test('PipelineSidebar keeps five-stage navigation ahead of a collapsed Korean production list', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);
     const { PipelineSidebar } = await import('../src/components/pipeline/PipelineSidebar.js');
 
     const sidebar = PipelineSidebar({
-        tabs: [{ id: 'intake', label: '프로젝트', group: 'planning', groupLabel: '기획' }],
+        stages: [{ id: 'start', number: 1, label: '시작', status: 'current', tabs: [{ id: 'intake', label: '프로젝트' }] }],
+        activeStageId: 'start',
         activeTab: 'intake',
         productions: [{
             name: 'sanitized-production',
@@ -753,6 +767,7 @@ test('PipelineSidebar keeps grouped navigation ahead of a collapsed Korean produ
         }],
         productionsState: { status: 'ok', reason: '' },
         onSelect() {},
+        onSelectStage() {},
         onSelectProduction() {},
         onOpenSettings() {},
         onRefreshProductions() {},
@@ -761,10 +776,11 @@ test('PipelineSidebar keeps grouped navigation ahead of a collapsed Korean produ
     assert.match(sidebar.textContent, /sanitized-production/);
     assert.match(sidebar.textContent, /파일 3개/);
     assert.ok(
-        sidebar.textContent.indexOf('프로젝트') < sidebar.textContent.indexOf('제작 목록'),
+        sidebar.textContent.indexOf('시작') < sidebar.textContent.indexOf('제작 목록'),
         'primary workflow navigation must remain ahead of the production list',
     );
     assert.ok(byAttribute(sidebar, 'nav', 'aria-label', '파이프라인 작업 단계'));
+    assert.equal(byAttribute(sidebar, 'button', 'aria-label', '1 시작').attributes.get('aria-current'), 'step');
     assert.equal(byText(sidebar, 'button', '프로젝트').attributes.get('aria-current'), 'page');
     assert.ok(byAttribute(sidebar, 'button', 'aria-label', '제작 목록 새로고침'));
     assert.equal(findAll(sidebar, 'details').length, 1);

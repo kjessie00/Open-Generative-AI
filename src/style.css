@@ -1,6 +1,7 @@
 @import './styles/global.css';
 @import './styles/studio.css';
 @import './styles/pipeline.css';
+@import './styles/workflow.css';
 
 /* App-specific layout */
 #app {

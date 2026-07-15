@@ -3,9 +3,9 @@
   --color-primary: #22d3ee;
   /* Electric Cyan */
   --color-primary-hover: #06b6d4;
-  --color-accent: #a855f7;
-  /* Creative Purple */
-  --color-accent-hover: #9333ea;
+  --color-accent: #53d5cf;
+  /* Restrained teal */
+  --color-accent-hover: #3bb8b3;
   --color-danger: #ef4444;
 
   /* Backgrounds - Strict Dark Mode */
@@ -36,8 +36,8 @@
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
-  --shadow-glow: 0 0 20px rgba(176, 251, 93, 0.4);
-  --shadow-glow-accent: 0 0 20px rgba(168, 85, 247, 0.4);
+  --shadow-glow: none;
+  --shadow-glow-accent: none;
   --backdrop-blur: blur(20px);
 
   /* Transitions */

@@ -42,7 +42,7 @@ export function statusBadge(label, status = 'muted') {
         BLOCKED: 'bg-red-400/15 text-red-200 border-red-400/20',
         RETRY: 'bg-orange-400/15 text-orange-200 border-orange-400/20',
         UNREVIEWED: 'bg-zinc-400/15 text-zinc-200 border-zinc-400/20',
-        EXCEPTION: 'bg-purple-400/15 text-purple-200 border-purple-400/20',
+        EXCEPTION: 'bg-zinc-400/15 text-zinc-200 border-zinc-400/20',
         WARN: 'bg-yellow-400/15 text-yellow-100 border-yellow-400/20',
         PREVIEW: 'bg-cyan-400/15 text-cyan-100 border-cyan-400/20',
     };

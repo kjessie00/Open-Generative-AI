@@ -6,11 +6,13 @@ import test from 'node:test';
 const root = path.resolve(import.meta.dirname, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
-test('Korean pipeline information architecture has 11 steps in four groups', () => {
+test('Korean pipeline information architecture has five stages with all ten work panels', () => {
     const studio = read('src/components/pipeline/PipelineStudio.js');
     const sidebar = read('src/components/pipeline/PipelineSidebar.js');
+    const guide = read('src/lib/pipeline/workflowGuide.js');
+    const overview = read('src/components/pipeline/WorkflowOverview.js');
 
-    const tabIds = [...studio.matchAll(/\{ id: '([^']+)', label:/g)].map((match) => match[1]);
+    const tabIds = [...guide.matchAll(/Object\.freeze\(\{ id: '([^']+)', label:/g)].map((match) => match[1]);
     assert.deepEqual(tabIds, [
         'intake',
         'storyboard',
@@ -22,18 +24,21 @@ test('Korean pipeline information architecture has 11 steps in four groups', () 
         'queue',
         'qa',
         'final',
-        'settings',
     ]);
-    for (const label of ['Planning', 'Production prep', 'Generation and review', 'Finishing']) {
-        assert.match(studio, new RegExp(`groupLabel: p\\('${label}'\\)`));
-    }
+    assert.deepEqual([...guide.matchAll(/number: \d, label: '([^']+)'/g)].map((match) => match[1]),
+        ['시작', '설계', '생성 준비', '클립 선택', '마무리']);
+    assert.match(studio, /'overview', 'settings'/);
     assert.match(sidebar, /el\('nav',[\s\S]*'aria-label': p\('Pipeline workflow steps'\)/);
+    assert.match(sidebar, /'aria-current': isActive \? 'step'/);
     assert.match(sidebar, /'aria-current': activeTab === tab\.id \? 'page'/);
     assert.match(sidebar, /el\('details'/);
     assert.doesNotMatch(sidebar, /['"]open['"]\s*:/, 'production details must default to collapsed');
     assert.doesNotMatch(studio, /el\('main'/, 'the renderer must not create a nested main landmark');
     assert.match(studio, /el\('div', \{ className: 'pipeline-panel-host' \}\)/,
         'the panel scroll host must stay neutral because panelShell owns the named region');
+    assert.match(overview, /text: '지금 할 일'/);
+    assert.match(overview, /WorkflowOverview\(\{ state, onNavigate \}\)/);
+    assert.doesNotMatch(sidebar, /Settings|설정/, 'settings must not appear in the five-stage sidebar');
 });
 
 test('responsive and accessibility styles cover the required production breakpoints', () => {
@@ -73,8 +78,8 @@ test('Korean shell keeps unsafe execution and technical data outside translation
     assert.match(studio, /pipelineClient\.previewCommand/);
     assert.match(copy, /getLang\(\) === 'ko-KR'/);
     assert.match(copy, /KO\[source\] \|\| source/);
-    assert.match(header, /\['ko-KR', '한국어'\]/);
-    assert.match(header, /\['en', 'EN'\]/);
-    assert.match(header, /\['zh-CN', '中文'\]/);
+    assert.match(header, /app-project-title/);
+    assert.match(header, /pipeline:project-title/);
+    assert.doesNotMatch(header, /app-language-select|getLang|setLang/);
     assert.doesNotMatch(header, /SettingsModal/);
 });

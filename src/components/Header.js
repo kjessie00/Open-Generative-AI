@@ -1,4 +1,4 @@
-import { t, getLang, setLang } from '../lib/i18n.js';
+import { t } from '../lib/i18n.js';
 
 function iconButton() {
     const button = document.createElement('button');
@@ -32,24 +32,15 @@ export function Header(navigate) {
     left.appendChild(logo);
     left.appendChild(productName);
 
+    const projectTitle = document.createElement('p');
+    projectTitle.className = 'app-project-title';
+    projectTitle.setAttribute('aria-live', 'polite');
+    window.addEventListener('pipeline:project-title', (event) => {
+        projectTitle.textContent = typeof event.detail?.title === 'string' ? event.detail.title : '';
+    });
+
     const controls = document.createElement('div');
     controls.className = 'app-bar-controls';
-
-    const language = document.createElement('select');
-    language.className = 'app-language-select';
-    language.setAttribute('aria-label', t('web.languageLabel'));
-    [
-        ['ko-KR', '한국어'],
-        ['en', 'EN'],
-        ['zh-CN', '中文'],
-    ].forEach(([value, label]) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        language.appendChild(option);
-    });
-    language.value = getLang();
-    language.addEventListener('change', () => setLang(language.value));
 
     const settings = document.createElement('button');
     settings.type = 'button';
@@ -68,9 +59,9 @@ export function Header(navigate) {
         );
     });
 
-    controls.appendChild(language);
     controls.appendChild(settings);
     header.appendChild(left);
+    header.appendChild(projectTitle);
     header.appendChild(controls);
     return header;
 }

@@ -1,40 +1,21 @@
-import { el, statusBadge } from './ui.js';
+import { el } from './ui.js';
 import { p } from './copy.js';
-import { isCanonicalSelectedTakesProvenance } from '../../lib/pipeline/canonicalProvenance.js';
+import { deriveWorkflowMetrics } from '../../lib/pipeline/workflowGuide.js';
 
-function deriveFileStatus(state) {
-    return state.fileStatus || {
-        files_found: state.assets?.length || 0,
-        content_parsed: [
-            state.storyboard?.length,
-            state.motionBoard?.length,
-            state.promptPacks?.length,
-            state.submitRecords?.length,
-            state.heartbeatRecords?.length,
-        ].filter(Boolean).length,
-        review_passed: (state.reviewGates || []).filter((gate) => gate.status === 'PASS').length,
-        quality_accepted: (state.acceptedSeconds || []).filter((record) => (
-            isCanonicalSelectedTakesProvenance(record.canonical_provenance)
-                ? record.accepted === true && record.source_exists === true && Boolean(record.clip_id)
-                : record.accepted === true || (record.source_file && record.out_time > record.in_time)
-        )).length,
-    };
-}
-
-export function PipelineStatusStrip({ state }) {
-    const status = deriveFileStatus(state);
+export function PipelineStatusStrip({ state, metrics }) {
+    const status = metrics || deriveWorkflowMetrics(state);
     const items = [
-        [p('Files'), status.files_found || 0, status.files_found > 0 ? 'PASS' : 'UNREVIEWED'],
-        [p('Parsed'), status.content_parsed || 0, status.content_parsed > 0 ? 'PASS' : 'UNREVIEWED'],
-        [p('Reviewed'), status.review_passed || 0, status.review_passed > 0 ? 'PASS' : 'UNREVIEWED'],
-        [p('Accepted'), status.quality_accepted || 0, status.quality_accepted > 0 ? 'PASS' : 'BLOCK'],
+        [p('Files'), status.files || 0],
+        [p('Parsed'), status.parsed || 0],
+        [p('Reviewed'), status.reviewed || 0],
+        [p('Accepted'), status.accepted || 0],
     ];
 
     return el('dl', {
         className: 'pipeline-status-strip',
         attrs: { 'aria-label': p('Pipeline file status') },
-    }, items.map(([label, value, badgeStatus]) => el('div', { className: 'pipeline-status-item' }, [
+    }, items.map(([label, value]) => el('div', { className: 'pipeline-status-item' }, [
         el('dt', { text: label, className: 'pipeline-status-label' }),
-        el('dd', { className: 'pipeline-status-value' }, statusBadge(value, badgeStatus)),
+        el('dd', { text: value, className: `pipeline-status-value${label === p('Accepted') && value === 0 ? ' is-blocked' : ''}` }),
     ])));
 }
