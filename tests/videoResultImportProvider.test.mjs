@@ -51,6 +51,12 @@ function writeGrok(grokRoot, id = 'grok_result_001', bytes = MP4) {
     return filePath;
 }
 
+function writeReplicate(replicateRoot, number = 1, bytes = MP4) {
+    const filePath = path.join(replicateRoot, `seedance_${number}.mp4`);
+    fs.writeFileSync(filePath, bytes);
+    return filePath;
+}
+
 function writeRetrySources(productionRoot, options = {}) {
     const providerName = options.provider || 'flow';
     const source = {
@@ -100,9 +106,13 @@ function fixture(t, options = {}) {
     const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'open-ga-video-import-')));
     const flowResultsRoot = path.join(base, 'flow-results');
     const grokResultsRoot = path.join(base, 'grok-results');
+    const replicateRunRoot = path.join(base, 'replicate-run');
+    const replicateResultsRoot = path.join(replicateRunRoot, 'replicate_seedance_clips');
     const productionRoot = path.join(base, 'production');
     fs.mkdirSync(flowResultsRoot);
     fs.mkdirSync(grokResultsRoot);
+    fs.mkdirSync(replicateResultsRoot, { recursive: true });
+    fs.writeFileSync(path.join(replicateRunRoot, 'run_status.md'), '# MOCK run\nReplicate Seedance fallback\n');
     fs.mkdirSync(productionRoot);
     fs.writeFileSync(path.join(productionRoot, 'brief.md'), '# video import fixture\n');
     const source = writeRetrySources(productionRoot, options);
@@ -110,6 +120,12 @@ function fixture(t, options = {}) {
     const context = {
         flowResultsRoot,
         grokResultsRoot,
+        replicateResultsRoot,
+        replicateShaAllowlist: {
+            seedance_1: crypto.createHash('sha256').update(MP4).digest('hex'),
+            seedance_2: crypto.createHash('sha256').update(MP4).digest('hex'),
+            seedance_3: crypto.createHash('sha256').update(MP4).digest('hex'),
+        },
         config: { productionRoot },
         tokenSecret: Buffer.alloc(32, 11),
         planStore: new Map(),
@@ -117,7 +133,10 @@ function fixture(t, options = {}) {
         now: () => '2026-07-15T09:00:00.000Z',
     };
     t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-    return { base, flowResultsRoot, grokResultsRoot, productionRoot, source, probe, context };
+    return {
+        base, flowResultsRoot, grokResultsRoot, replicateRunRoot, replicateResultsRoot,
+        productionRoot, source, probe, context,
+    };
 }
 
 function candidateFor(workspace, providerName) {
@@ -170,6 +189,67 @@ test('MOCK ffprobe: workspace discovers only bounded Flow/Grok result shapes and
         assert.deepEqual(call.args.slice(0, 2), ['-v', 'error']);
         assert.equal(path.isAbsolute(call.args.at(-1)), true);
     }
+});
+
+test('MOCK ffprobe: Replicate accepts only the three fixed Seedance names, approved hashes, and exact provenance', (t) => {
+    const fx = fixture(t, { provider: 'replicate' });
+    writeReplicate(fx.replicateResultsRoot, 1);
+    writeReplicate(fx.replicateResultsRoot, 2, Buffer.concat([MP4, Buffer.from('wrong-hash')]));
+    writeReplicate(fx.replicateResultsRoot, 4);
+    fs.writeFileSync(path.join(fx.replicateResultsRoot, 'seedance_1_overlay.mp4'), MP4);
+    fs.writeFileSync(path.join(fx.replicateResultsRoot, 'final.mp4'), MP4);
+
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    assert.deepEqual(workspace.candidates.map((item) => [item.provider, item.result_id]), [
+        ['replicate', 'seedance_1'],
+    ]);
+    assert.ok(workspace.rejected_count >= 4, JSON.stringify(workspace));
+    assert.equal(fx.probe.calls.length, 1, 'wrong hashes and non-allowlisted names stop before MOCK ffprobe');
+    assert.equal(JSON.stringify(workspace).includes(fx.base), false);
+
+    const candidate = candidateFor(workspace, 'replicate');
+    const plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, fx.context);
+    const result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.equal(result.imported, true);
+    const imported = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(imported.source_provenance, 'historical_replicate_seedance_allowlist_v1');
+
+    fs.writeFileSync(path.join(fx.replicateRunRoot, 'run_status.md'), '# MOCK run without required provenance\n');
+    const blocked = provider.getVideoResultImportWorkspace(fx.context);
+    assert.equal(blocked.candidates.some((item) => item.provider === 'replicate'), false);
+    assert.ok(blocked.blockers.includes('VIDEO_IMPORT_REPLICATE_PROVENANCE_INVALID'), JSON.stringify(blocked));
+});
+
+test('MOCK ffprobe: Replicate provenance change or deletion makes an issued plan stale', (t) => {
+    const changedFx = fixture(t, { provider: 'replicate' });
+    writeReplicate(changedFx.replicateResultsRoot, 1);
+    let candidate = candidateFor(provider.getVideoResultImportWorkspace(changedFx.context), 'replicate');
+    let plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: changedFx.source.media_id,
+    }, changedFx.context);
+    fs.appendFileSync(path.join(changedFx.replicateRunRoot, 'run_status.md'), 'changed\n');
+    assert.throws(
+        () => provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, changedFx.context),
+        { code: 'VIDEO_IMPORT_SOURCE_CHANGED' },
+    );
+
+    const deletedFx = fixture(t, { provider: 'replicate' });
+    writeReplicate(deletedFx.replicateResultsRoot, 1);
+    candidate = candidateFor(provider.getVideoResultImportWorkspace(deletedFx.context), 'replicate');
+    plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: deletedFx.source.media_id,
+    }, deletedFx.context);
+    fs.unlinkSync(path.join(deletedFx.replicateRunRoot, 'run_status.md'));
+    assert.throws(
+        () => provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, deletedFx.context),
+        { code: 'VIDEO_IMPORT_SOURCE_CHANGED' },
+    );
 });
 
 test('MOCK ffprobe: opaque preview is G3-compatible, bounded, and rejects path injection', (t) => {
@@ -424,6 +504,8 @@ test('MOCK ffprobe: DST-compatible media-attempts O_EXCL lock prevents concurren
 });
 
 const REAL_H1_VIDEO = '/Users/jessiek/StudioProjects/google_labs_flow_auto/outputs/generated/H1_ancient_campfire/result_1.mp4';
+const REAL_REPLICATE_VIDEO = '/Users/jessiek/StudioProjects/happyVideoFactory/docs/xhs_ad_tests/20260515_smart_doorbell_ai_reversal/replicate_seedance_clips/seedance_1.mp4';
+const REAL_REPLICATE_STATUS = '/Users/jessiek/StudioProjects/happyVideoFactory/docs/xhs_ad_tests/20260515_smart_doorbell_ai_reversal/run_status.md';
 const REAL_FFPROBE = provider.DEFAULT_FFPROBE_PATH;
 
 test('REAL local smoke: H1 bytes pass fixed ffprobe and plan/confirm into a temporary production', {
@@ -457,5 +539,41 @@ test('REAL local smoke: H1 bytes pass fixed ffprobe and plan/confirm into a temp
     assert.deepEqual(
         crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'),
         crypto.createHash('sha256').update(fs.readFileSync(REAL_H1_VIDEO)).digest('hex'),
+    );
+});
+
+test('REAL local smoke: allowlisted Replicate Seedance 1 passes ffprobe and imports into a temporary production', {
+    skip: !fs.existsSync(REAL_REPLICATE_VIDEO) || !fs.existsSync(REAL_REPLICATE_STATUS) || !fs.existsSync(REAL_FFPROBE),
+}, (t) => {
+    const fx = fixture(t, { provider: 'replicate' });
+    fs.copyFileSync(REAL_REPLICATE_VIDEO, path.join(fx.replicateResultsRoot, 'seedance_1.mp4'));
+    fs.copyFileSync(REAL_REPLICATE_STATUS, path.join(fx.replicateRunRoot, 'run_status.md'));
+    const realContext = {
+        ...fx.context,
+        replicateShaAllowlist: provider.DEFAULT_REPLICATE_SHA_ALLOWLIST,
+    };
+    delete realContext.runProcessFn;
+
+    const workspace = provider.getVideoResultImportWorkspace(realContext);
+    const candidate = candidateFor(workspace, 'replicate');
+    assert.equal(candidate.result_id, 'seedance_1');
+    assert.ok(candidate.duration_seconds > 0);
+    assert.ok(candidate.width > 0 && candidate.height > 0);
+    const plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, realContext);
+    assert.equal(plan.ready, true, JSON.stringify(plan));
+    const result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, realContext);
+    assert.equal(result.imported, true);
+    assert.equal(result.provider, 'replicate');
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse);
+    const imported = records.at(-1);
+    assert.equal(imported.source_provenance, 'historical_replicate_seedance_allowlist_v1');
+    const target = path.join(fx.productionRoot, ...imported.relative_path.split('/'));
+    assert.deepEqual(
+        crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'),
+        provider.DEFAULT_REPLICATE_SHA_ALLOWLIST.seedance_1,
     );
 });

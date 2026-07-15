@@ -7,6 +7,7 @@ const WORKSPACE_SCHEMA = 'film_pipeline.video_result_import_workspace.v1';
 const PLAN_SCHEMA = 'film_pipeline.video_result_import_plan.v1';
 const DEFAULT_FLOW_RESULTS_ROOT = '/Users/jessiek/StudioProjects/google_labs_flow_auto/outputs/generated';
 const DEFAULT_GROK_RESULTS_ROOT = '/Users/jessiek/StudioProjects/grok-auto/grok-browser/outputs';
+const DEFAULT_REPLICATE_RESULTS_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory/docs/xhs_ad_tests/20260515_smart_doorbell_ai_reversal/replicate_seedance_clips';
 const DEFAULT_FFPROBE_PATH = '/opt/homebrew/bin/ffprobe';
 const IMPORT_RELATIVE_ROOT = 'media/imports';
 const MAX_CANDIDATES = 24;
@@ -16,6 +17,7 @@ const MAX_INVENTORY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_LEDGER_BYTES = 2 * 1024 * 1024;
+const MAX_PROVENANCE_BYTES = 128 * 1024;
 const DEFAULT_PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_TTL_MS = 10 * 60 * 1000;
 const MAX_FFPROBE_OUTPUT_BYTES = 1024 * 1024;
@@ -24,7 +26,11 @@ const SESSION_PLAN_STORE = new Map();
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const PROVIDERS = Object.freeze(['flow', 'grok']);
+const DEFAULT_REPLICATE_SHA_ALLOWLIST = Object.freeze({
+    seedance_1: 'a685206f1e318fe12611c210ff411b3160b02608cf967c81233ba1e81db451ee',
+    seedance_2: '300693afb1854374e28476afd8254763b28076e779b41487cd60da52f7f97c36',
+    seedance_3: '4324cf0208e44ddfb235ed24c2087efaf0363c04e9527899c21f4b50cbbce9df',
+});
 
 function failure(code, message = code) {
     const error = new Error(message);
@@ -270,14 +276,18 @@ function candidateToken(candidate, context = {}) {
         String(candidate.probe.durationSeconds),
         String(candidate.probe.width),
         String(candidate.probe.height),
+        candidate.provenance?.sha256 || '',
     ].join('\0')).digest('base64url');
 }
 
-function inspectCandidate(provider, resultId, filePath, rootInfo, context = {}) {
+function inspectCandidate(provider, resultId, filePath, rootInfo, context = {}, options = {}) {
     safeId(resultId, 'VIDEO_IMPORT_RESULT_ID_INVALID');
     if (path.extname(filePath).toLowerCase() !== '.mp4') throw failure('VIDEO_IMPORT_EXTENSION_INVALID');
     assertAncestors(rootInfo, filePath, 'VIDEO_IMPORT_SOURCE_UNSAFE');
     const before = hashStableFile(filePath, context.maxVideoBytes || MAX_VIDEO_BYTES);
+    if (options.expectedSha256 && before.sha256 !== options.expectedSha256) {
+        throw failure('VIDEO_IMPORT_SOURCE_HASH_UNAPPROVED');
+    }
     const probe = ffprobe(filePath, context);
     const after = hashStableFile(filePath, context.maxVideoBytes || MAX_VIDEO_BYTES);
     if (!sameSnapshot(before, after)) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
@@ -289,6 +299,8 @@ function inspectCandidate(provider, resultId, filePath, rootInfo, context = {}) 
         rootIdentity: rootInfo.identity,
         source: after,
         probe,
+        provenance: options.provenance || null,
+        provenanceKind: options.provenanceKind || '',
         mtimeMs: after.identity.mtimeMs,
     };
     candidate.token = candidateToken(candidate, context);
@@ -353,11 +365,73 @@ function scanGrok(context = {}) {
     return { candidates, rejected };
 }
 
+function replicateAllowlist(context = {}) {
+    const value = context.replicateShaAllowlist || DEFAULT_REPLICATE_SHA_ALLOWLIST;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw failure('VIDEO_IMPORT_REPLICATE_ALLOWLIST_INVALID');
+    }
+    for (const resultId of ['seedance_1', 'seedance_2', 'seedance_3']) {
+        if (!SHA256_PATTERN.test(value[resultId] || '')) throw failure('VIDEO_IMPORT_REPLICATE_ALLOWLIST_INVALID');
+    }
+    return value;
+}
+
+function scanReplicate(context = {}) {
+    const rootInfo = assertRealDirectory(
+        context.replicateResultsRoot || DEFAULT_REPLICATE_RESULTS_ROOT,
+        'VIDEO_IMPORT_REPLICATE_ROOT_UNSAFE',
+    );
+    if (path.basename(rootInfo.path) !== 'replicate_seedance_clips') {
+        throw failure('VIDEO_IMPORT_REPLICATE_ROOT_UNSAFE');
+    }
+    const runRoot = assertRealDirectory(path.dirname(rootInfo.path), 'VIDEO_IMPORT_REPLICATE_RUN_ROOT_UNSAFE');
+    const statusPath = path.join(runRoot.path, 'run_status.md');
+    assertAncestors(runRoot, statusPath, 'VIDEO_IMPORT_REPLICATE_STATUS_UNSAFE');
+    const provenance = smallFile(statusPath, MAX_PROVENANCE_BYTES, 'VIDEO_IMPORT_REPLICATE_STATUS_UNSAFE');
+    const statusText = provenance.buffer.toString('utf8');
+    if (!provenance.exists || !statusText.includes('Replicate Seedance')
+        || !statusText.includes('Replicate Seedance fallback')) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PROVENANCE_INVALID');
+    }
+    const allowlist = replicateAllowlist(context);
+    const candidates = [];
+    let rejected = 0;
+    const entries = boundedEntries(rootInfo, context)
+        .filter((entry) => !entry.name.startsWith('.'))
+        .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+        const match = /^seedance_([1-3])\.mp4$/.exec(entry.name);
+        if (!match) {
+            if (path.extname(entry.name).toLowerCase() === '.mp4') rejected += 1;
+            continue;
+        }
+        const resultId = `seedance_${match[1]}`;
+        if (!entry.isFile() || entry.isSymbolicLink()) {
+            rejected += 1;
+            continue;
+        }
+        try {
+            candidates.push(inspectCandidate('replicate', resultId, path.join(rootInfo.path, entry.name), rootInfo, context, {
+                expectedSha256: allowlist[resultId],
+                provenance,
+                provenanceKind: 'historical_replicate_seedance_allowlist_v1',
+            }));
+        } catch {
+            rejected += 1;
+        }
+    }
+    const provenanceAfter = smallFile(statusPath, MAX_PROVENANCE_BYTES, 'VIDEO_IMPORT_REPLICATE_STATUS_UNSAFE');
+    if (!sameSnapshot(provenance, provenanceAfter)) throw failure('VIDEO_IMPORT_REPLICATE_STATUS_CHANGED');
+    assertStableDirectory(runRoot, 'VIDEO_IMPORT_REPLICATE_RUN_ROOT_CHANGED');
+    assertStableDirectory(rootInfo, 'VIDEO_IMPORT_REPLICATE_ROOT_CHANGED');
+    return { candidates, rejected };
+}
+
 function scanInventory(context = {}) {
     const candidates = [];
     const blockers = [];
     let rejectedCount = 0;
-    for (const [provider, scan] of [['flow', scanFlow], ['grok', scanGrok]]) {
+    for (const [provider, scan] of [['flow', scanFlow], ['grok', scanGrok], ['replicate', scanReplicate]]) {
         try {
             const result = scan(context);
             candidates.push(...result.candidates);
@@ -576,7 +650,7 @@ function recordMatches(existing, desired) {
         'media_id', 'kind', 'target_id', 'provider', 'operation_id', 'attempt', 'relative_path',
         'generation_status', 'prompt', 'aspect_ratio', 'duration', 'quality', 'review_status', 'retry_of',
         'source_provider', 'source_result_id', 'source_video_sha256', 'source_duration_seconds',
-        'source_width', 'source_height',
+        'source_width', 'source_height', 'source_provenance',
     ];
     return keys.every((key) => existing[key] === desired[key])
         && JSON.stringify(existing.reference_ids || []) === JSON.stringify(desired.reference_ids || []);
@@ -628,6 +702,7 @@ function buildInputs(context, candidate, retryMediaId, importedAt) {
         source_height: candidate.probe.height,
         imported_at: importedAt,
     };
+    if (candidate.provenanceKind) desired.source_provenance = candidate.provenanceKind;
     if (existing && !recordMatches(existing, desired)) throw failure('VIDEO_IMPORT_MEDIA_ID_CONFLICT');
     const target = targetSnapshot(retry.rootInfo, targetRelativePath, context.maxVideoBytes || MAX_VIDEO_BYTES);
     if (target.snapshot.exists && target.snapshot.sha256 !== candidate.source.sha256) {
@@ -656,6 +731,7 @@ function evidence(inputs) {
         candidateRootIdentity: inputs.candidate.rootIdentity,
         candidateSource: inputs.candidate.source,
         candidateProbe: inputs.candidate.probe,
+        candidateProvenance: inputs.candidate.provenance,
         target: inputs.target.snapshot,
         desired: inputs.desired,
         ledgerAppendNeeded: inputs.ledgerAppendNeeded,
@@ -672,6 +748,9 @@ function stableEvidence(left, right) {
         && sameDirectoryIdentity(left.candidateRootIdentity, right.candidateRootIdentity)
         && sameSnapshot(left.candidateSource, right.candidateSource)
         && JSON.stringify(left.candidateProbe) === JSON.stringify(right.candidateProbe)
+        && ((!left.candidateProvenance && !right.candidateProvenance)
+            || (left.candidateProvenance && right.candidateProvenance
+                && sameSnapshot(left.candidateProvenance, right.candidateProvenance)))
         && sameSnapshot(left.target, right.target)
         && JSON.stringify(left.desired) === JSON.stringify(right.desired)
         && left.ledgerAppendNeeded === right.ledgerAppendNeeded
@@ -1036,6 +1115,8 @@ module.exports = {
     PLAN_SCHEMA,
     DEFAULT_FLOW_RESULTS_ROOT,
     DEFAULT_GROK_RESULTS_ROOT,
+    DEFAULT_REPLICATE_RESULTS_ROOT,
+    DEFAULT_REPLICATE_SHA_ALLOWLIST,
     DEFAULT_FFPROBE_PATH,
     MAX_CANDIDATES,
     MAX_SCAN_ENTRIES,

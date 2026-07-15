@@ -63,7 +63,7 @@ export function MediaRetryPlanBand({
         && !/(?:video|clip)/i.test(String(item.kind || ''))
     ));
     const videoItems = items.filter((item) => item.kind === 'video'
-        && ['flow', 'grok'].includes(String(item.provider || '').toLowerCase()));
+        && ['flow', 'grok', 'replicate', 'bytedance'].includes(String(item.provider || '').toLowerCase()));
     const loading = plan?.status === 'loading';
     return el('section', { className: 'media-review-band' }, [
         el('header', { className: 'media-review-band-head' }, [

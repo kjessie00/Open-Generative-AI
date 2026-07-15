@@ -708,6 +708,24 @@ test('MOCK video result import binds Flow candidates to the exact saved video re
                 readiness: 'blocked_runtime_unverified',
                 blockers: ['GROK_RUNTIME_UNVERIFIED'],
                 command_spec: {},
+            }, {
+                sequence: 3,
+                media_id: 'replicate-video-retry',
+                target_id: 'clip_003',
+                provider: 'replicate',
+                kind: 'video',
+                readiness: 'blocked_adapter_missing',
+                blockers: ['MISSING_PROVIDER_ADAPTER'],
+                command_spec: {},
+            }, {
+                sequence: 4,
+                media_id: 'bytedance-video-retry',
+                target_id: 'clip_004',
+                provider: 'bytedance',
+                kind: 'video',
+                readiness: 'blocked_adapter_missing',
+                blockers: ['MISSING_PROVIDER_ADAPTER'],
+                command_spec: {},
             }],
         },
         videoResultImportWorkspace: {
@@ -732,6 +750,15 @@ test('MOCK video result import binds Flow candidates to the exact saved video re
                 width: 464,
                 height: 688,
                 preview_allowed: true,
+            }, {
+                candidate_token: 'replicate-opaque',
+                provider: 'replicate',
+                result_id: 'seedance_1',
+                size_bytes: 6349367,
+                duration_seconds: 5.042,
+                width: 1088,
+                height: 1920,
+                preview_allowed: true,
             }],
         },
         async onPlanVideoResultImport(payload) {
@@ -754,7 +781,9 @@ test('MOCK video result import binds Flow candidates to the exact saved video re
 
     const targetSelect = byAttribute(band, 'select', 'id', 'video-import-retry-target');
     const candidateSelect = byAttribute(band, 'select', 'id', 'video-import-candidate');
-    assert.deepEqual(findAll(targetSelect, 'option').map((option) => option.value), ['flow-video-retry', 'grok-video-retry']);
+    assert.deepEqual(findAll(targetSelect, 'option').map((option) => option.value), [
+        'flow-video-retry', 'grok-video-retry', 'replicate-video-retry', 'bytedance-video-retry',
+    ]);
     assert.deepEqual(findAll(candidateSelect, 'option').map((option) => option.value), ['', 'flow-opaque']);
     candidateSelect.value = 'flow-opaque';
     await candidateSelect.dispatchEvent({ type: 'change' });
@@ -768,6 +797,23 @@ test('MOCK video result import binds Flow candidates to the exact saved video re
     assert.deepEqual(calls[1], ['confirm', { planToken: 'video-plan-opaque', confirmed: true }]);
     assert.match(band.textContent, /장면 검토 보드에 연결했습니다/);
     assert.equal(findAll(band, 'button').some((button) => /생성 실행/.test(button.textContent)), false);
+
+    const replicateTarget = byAttribute(band, 'select', 'id', 'video-import-retry-target');
+    replicateTarget.value = 'replicate-video-retry';
+    await replicateTarget.dispatchEvent({ type: 'change' });
+    assert.deepEqual(
+        findAll(byAttribute(band, 'select', 'id', 'video-import-candidate'), 'option').map((option) => option.value),
+        ['', 'replicate-opaque'],
+    );
+    assert.match(band.textContent, /Replicate/);
+
+    const bytedanceTarget = byAttribute(band, 'select', 'id', 'video-import-retry-target');
+    bytedanceTarget.value = 'bytedance-video-retry';
+    await bytedanceTarget.dispatchEvent({ type: 'change' });
+    const emptyOptions = findAll(byAttribute(band, 'select', 'id', 'video-import-candidate'), 'option');
+    assert.deepEqual(emptyOptions.map((option) => option.value), ['']);
+    assert.equal(emptyOptions[0].textContent, '이 도구의 완료 영상 없음');
+    assert.match(band.textContent, /ByteDance/);
 });
 
 test('MOCK media attempt cards keep Korean labels and semantic review colors', async (t) => {

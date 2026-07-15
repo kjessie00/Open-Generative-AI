@@ -1,7 +1,12 @@
 import { createG3PreviewObjectUrl } from '../../lib/pipeline/g3PreviewObjectUrl.js';
 import { actionButton, card, el, emptyState } from './ui.js';
 
-const PROVIDER_LABELS = Object.freeze({ flow: 'Flow', grok: 'Grok' });
+const PROVIDER_LABELS = Object.freeze({
+    flow: 'Flow',
+    grok: 'Grok',
+    replicate: 'Replicate',
+    bytedance: 'ByteDance',
+});
 const BLOCKER_LABELS = Object.freeze({
     VIDEO_IMPORT_CANDIDATE_EMPTY: '가져올 완료 영상이 없습니다.',
     VIDEO_IMPORT_PROVIDER_MISMATCH: '선택한 영상과 다시 만들기 도구가 다릅니다.',
@@ -87,7 +92,7 @@ export function VideoResultImportBand({
             el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
                 el('div', {}, [
                     el('h4', { text: '완료 영상 가져오기', className: 'text-sm font-bold text-white', attrs: { id: 'video-result-import-title' } }),
-                    el('p', { text: 'Flow·Grok에서 완료된 영상을 골라 장면별 검토 보드에 연결합니다.', className: 'mt-1 text-xs text-secondary' }),
+                    el('p', { text: '완료된 영상을 골라 장면별 검토 보드에 연결합니다.', className: 'mt-1 text-xs text-secondary' }),
                 ]),
                 actionButton(workspace?.status === 'loading' ? '확인 중…' : '완료 영상 새로고침', {
                     variant: 'muted',
