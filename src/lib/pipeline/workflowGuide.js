@@ -10,11 +10,12 @@ export const WORKFLOW_STAGES = Object.freeze([
         Object.freeze({ id: 'motion', label: '모션 보드' }),
     ]) }),
     Object.freeze({ id: 'prepare', number: 3, label: '생성 준비', tabs: Object.freeze([
+        Object.freeze({ id: 'progress', label: '작업 진행' }),
         Object.freeze({ id: 'assets', label: '이미지 작업' }),
         Object.freeze({ id: 'videos', label: '영상 작업' }),
         Object.freeze({ id: 'prompts', label: '프롬프트 팩' }),
         Object.freeze({ id: 'gates', label: '검토 게이트' }),
-        Object.freeze({ id: 'queue', label: '생성 대기열' }),
+        Object.freeze({ id: 'queue', label: '기존 제작 대기열', hidden: true }),
     ]) }),
     Object.freeze({ id: 'select', number: 4, label: '클립 선택', tabs: Object.freeze([
         Object.freeze({ id: 'qa', label: '클립 QA' }),
@@ -85,7 +86,7 @@ function guideForMetrics(metrics) {
 const DETAIL_ROWS = Object.freeze({
     start: Object.freeze(['기획 직접 작성', '대본 직접 작성', '에이전트 요청 저장']),
     design: Object.freeze(['스토리보드 확인', '샷과 움직임 설계']),
-    prepare: Object.freeze(['참조 이미지 확인', '프롬프트와 검토 게이트 확인', '생성 결과 대기']),
+    prepare: Object.freeze(['작업 진행 확인', '참조 이미지와 영상 확인', '필요한 결과만 다시 만들기']),
     select: Object.freeze(['클립 검토', '채택 구간 지정', '채택 결과 저장']),
     finish: Object.freeze(['선택 구간 확인', '로컬 최종 편집', 'fresh probe와 receipt 확인']),
 });

@@ -17,7 +17,10 @@ function resultSlot(task, resultPreview) {
 
 export function VideoTaskCard({ task, resultPreview, resultWorkspace, onPromptChange, onProviderChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult }) {
     let connectorOpen = false;
-    const root = el('article', { className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3' });
+    const root = el('article', {
+        className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3',
+        attrs: { 'data-work-target': 'video', 'data-sequence': task.sequence, tabindex: -1 },
+    });
     const render = () => {
         const provider = el('select', {
             className: 'min-h-11 w-full rounded-md border border-white/10 bg-black/40 px-3 text-sm text-white',

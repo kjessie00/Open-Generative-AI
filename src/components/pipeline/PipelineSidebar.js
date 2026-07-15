@@ -125,7 +125,7 @@ export function PipelineSidebar(props) {
     aside.appendChild(mobileLabel);
     const mobileStage = stages.find((stage) => stage.id === activeStageId);
     if (mobileStage) {
-        aside.appendChild(el('div', { className: 'pipeline-mobile-subnav' }, mobileStage.tabs.map((tab) => (
+        aside.appendChild(el('div', { className: 'pipeline-mobile-subnav' }, mobileStage.tabs.filter((tab) => !tab.hidden).map((tab) => (
             el('button', {
                 text: tab.label,
                 onClick: () => onSelect(tab.id),
@@ -156,7 +156,7 @@ export function PipelineSidebar(props) {
         ]));
         if (isActive) {
             const subnav = el('div', { className: 'pipeline-subnav' });
-            stage.tabs.forEach((tab) => subnav.appendChild(el('button', {
+            stage.tabs.filter((tab) => !tab.hidden).forEach((tab) => subnav.appendChild(el('button', {
                 text: tab.label,
                 onClick: () => onSelect(tab.id),
                 className: `pipeline-subnav-item${activeTab === tab.id ? ' is-active' : ''}`,

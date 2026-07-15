@@ -7,6 +7,7 @@ const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
+const newProjectExecutionProvider = require('./newProjectExecutionProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
@@ -1120,6 +1121,13 @@ function saveNewProjectVideoRetrySelection(payload, options = {}) {
     return newProjectVideoPlanProvider.saveNewProjectVideoRetrySelection(payload, newProjectVideoPlanContext(options));
 }
 
+function getNewProjectExecutionState(options = {}) {
+    return newProjectExecutionProvider.getNewProjectExecutionState({
+        ...options,
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+    });
+}
+
 function saveNewProjectDraft(payload, options = {}) {
     const result = newProjectDraftProvider.saveNewProjectDraft(payload, newProjectContext(options));
     sendProgress({
@@ -1543,6 +1551,10 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:connect-new-project-video-result', (_, payload) => connectNewProjectVideoResult(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-video-result-preview', (_, payload) => getNewProjectVideoResultPreview(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-video-retry-selection', (_, payload) => saveNewProjectVideoRetrySelection(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-execution-state', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectExecutionState(options);
+    });
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1654,6 +1666,7 @@ module.exports = {
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
     saveNewProjectVideoRetrySelection,
+    getNewProjectExecutionState,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

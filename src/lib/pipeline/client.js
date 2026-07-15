@@ -311,6 +311,18 @@ export async function saveNewProjectVideoRetrySelection(payload) {
     return unavailableVideoPlanState('saveNewProjectVideoRetrySelection');
 }
 
+export async function getNewProjectExecutionState() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectExecutionState === 'function') return bridge.getNewProjectExecutionState();
+    return {
+        ...unavailable('getNewProjectExecutionState'),
+        status: 'blocked', status_label: '준비 필요', prepared: false,
+        tasks: [], summary: { queued: 0, running: 0, succeeded: 0, failed: 0 },
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        external_call_performed: false, model_called: false, generation_executed: false,
+    };
+}
+
 export async function copyNewProjectBuildCommand() {
     const bridge = getBridge();
     if (typeof bridge?.copyNewProjectBuildCommand === 'function') return bridge.copyNewProjectBuildCommand();
@@ -665,6 +677,7 @@ export const pipelineClient = Object.freeze({
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
     saveNewProjectVideoRetrySelection,
+    getNewProjectExecutionState,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

@@ -43,6 +43,7 @@ test('five stages retain every existing work panel and exclude settings', () => 
     assert.deepEqual(WORKFLOW_STAGES.map((stage) => stage.label), ['기획·대본', '설계', '생성 준비', '클립 선택', '마무리']);
     assert.deepEqual(WORKFLOW_STAGES[0].tabs.map((tab) => tab.label), ['기획·대본']);
     assert.deepEqual(WORKFLOW_STAGES.flatMap((stage) => stage.tabs.map((tab) => tab.id)), [
-        'intake', 'storyboard', 'shot-designer', 'motion', 'assets', 'videos', 'prompts', 'gates', 'queue', 'qa', 'final',
+        'intake', 'storyboard', 'shot-designer', 'motion', 'progress', 'assets', 'videos', 'prompts', 'gates', 'queue', 'qa', 'final',
     ]);
+    assert.equal(WORKFLOW_STAGES[2].tabs.find((tab) => tab.id === 'queue').hidden, true);
 });

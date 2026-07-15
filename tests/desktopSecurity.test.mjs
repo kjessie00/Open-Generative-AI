@@ -108,6 +108,9 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.match(preload, /exportG3ReviewPacket:[\s\S]*film-pipeline:export-g3-review-packet/);
     assert.match(preload, /planG3ProductionPromotion:[\s\S]*film-pipeline:plan-g3-production-promotion/);
     assert.match(preload, /promoteG3ProductionSelection:[\s\S]*film-pipeline:promote-g3-production-selection/);
+    assert.match(preload, /getNewProjectExecutionState:[\s\S]*film-pipeline:get-new-project-execution-state/);
+    assert.doesNotMatch(preload, /publishExecutionReceipt|inspectExecutionHandoff|prepareNewProjectExecution/,
+        'renderer must only read the execution projection');
     assert.doesNotMatch(preload, /film-pipeline:set-config|\bsetConfig\b/);
     assert.doesNotMatch(preload, /g3[^'"\n]*(?:generation|upload|ledger-write|run-command)/i);
 });
@@ -201,6 +204,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getMediaRetryPlan',
         'getNewProjectDesignState',
         'getNewProjectDraftState',
+        'getNewProjectExecutionState',
         'getNewProjectImagePlan',
         'getNewProjectImageResultPreview',
         'getNewProjectImageResultWorkspace',
@@ -277,6 +281,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.connectNewProjectVideoResult({ task_token: `task_${'a'.repeat(64)}` });
     await bridge.getNewProjectVideoResultPreview({ result_token: `result_${'a'.repeat(64)}` });
     await bridge.saveNewProjectVideoRetrySelection({ task_tokens: [] });
+    await bridge.getNewProjectExecutionState();
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
     await bridge.selectProductionRoot({ mode: 'production' });
@@ -333,6 +338,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:connect-new-project-video-result',
             'film-pipeline:get-new-project-video-result-preview',
             'film-pipeline:save-new-project-video-retry-selection',
+            'film-pipeline:get-new-project-execution-state',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
@@ -369,6 +375,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-new-project-image-result-workspace',
         'film-pipeline:get-new-project-video-plan',
         'film-pipeline:get-new-project-video-result-workspace',
+        'film-pipeline:get-new-project-execution-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',

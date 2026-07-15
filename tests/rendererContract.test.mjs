@@ -153,6 +153,42 @@ function installDeterministicDom(bridge, options = {}) {
     return { restore };
 }
 
+test('new project execution panel shows short Korean progress without private metadata', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectExecutionPanel } = await import('../src/components/pipeline/NewProjectExecutionPanel.js');
+    const opened = [];
+    let refreshed = 0;
+    const panel = NewProjectExecutionPanel({
+        executionState: {
+            status: 'running',
+            summary: { queued: 1, running: 1, succeeded: 1, failed: 1 },
+            tasks: [
+                { task_token: 'private-image-token', lane: 'image', sequence: 1, label: '인물 시트 · 주인공', provider_label: 'DST 이미지', status: 'succeeded', progress: 100, result_received: true },
+                { task_token: 'private-scene-token', lane: 'image', sequence: 2, label: '장면 이미지 · 첫 만남', provider_label: 'DST 이미지', status: 'failed', progress: 45, failure_code: 'PROVIDER_UNAVAILABLE', result_received: false },
+                { task_token: 'private-video-token', lane: 'video', sequence: 3, label: '장면 영상 · 첫 만남', provider_label: '플로우', status: 'running', progress: 35, result_received: false },
+                { task_token: 'private-wait-token', lane: 'video', sequence: 4, label: '장면 영상 · 결심', provider_label: '그록', status: 'queued', progress: 0, result_received: false },
+            ],
+        },
+        onRefreshExecution: () => { refreshed += 1; },
+        onOpenWorkItem: (payload) => opened.push(payload),
+    });
+    document.body.appendChild(panel);
+
+    assert.match(panel.textContent, /대기 1 · 진행 1 · 결과 1 · 문제 1/);
+    assert.match(panel.textContent, /결과 도착|문제 발생|진행 중 35%/);
+    assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|task_|result_|preparation_|[a-f0-9]{64}/);
+    assert.ok(byAttribute(panel, 'section', 'data-work-progress', ''));
+    assert.ok(byAttribute(panel, 'section', 'data-work-lane', 'image'));
+    assert.ok(byAttribute(panel, 'section', 'data-work-lane', 'video'));
+    assert.equal(findAll(panel, 'span').some((span) => span.className.includes('text-[11px]')), false, 'progress UI uses no badges');
+
+    await byAttribute(panel, 'button', 'aria-label', '작업 상태 새로고침').dispatchEvent({ type: 'click' });
+    await byText(panel, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
+    assert.equal(refreshed, 1);
+    assert.deepEqual(opened, [{ kind: 'video', sequence: 3 }]);
+});
+
 async function flushRenderer() {
     for (let index = 0; index < 8; index += 1) {
         await new Promise((resolve) => setImmediate(resolve));
@@ -314,7 +350,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     const stages = [
         ['1 기획·대본', [['기획·대본', '기획·대본']]],
         ['2 설계', [['스토리보드', '스토리보드'], ['샷 설계', '샷 설계'], ['모션 보드', '모션 보드']]],
-        ['3 생성 준비', [['이미지 작업', '이미지 작업'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트'], ['생성 대기열', '생성 대기열']]],
+        ['3 생성 준비', [['작업 진행', '작업 진행'], ['이미지 작업', '이미지 작업'], ['영상 작업', '영상 작업'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트']]],
         ['4 클립 선택', [['클립 QA', '클립 QA·채택 구간']]],
         ['5 마무리', [['최종 편집', '최종 편집·보고서']]],
     ];
@@ -353,6 +389,10 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
         .filter((span) => span.className.includes('text-[11px]'))
         .map((span) => span.textContent.trim());
 
+    assert.ok(byText(studio, 'h2', '작업 진행'));
+    assert.match(studio.textContent, /대기 0 · 진행 0 · 결과 0 · 문제 0/);
+    assert.deepEqual(visibleBadgeLabels(), []);
+
     await byText(studio, 'button', '이미지 작업').dispatchEvent({ type: 'click' });
     assert.match(studio.textContent, /기존 제작 폴더의 검토 수만 보여 줍니다/);
     assert.deepEqual(visibleBadgeLabels(), []);
@@ -364,7 +404,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.deepEqual(visibleBadgeLabels(), [], 'review gate states stay readable without repeated badges');
     assert.match(studio.textContent, /통과|준비 필요|검토 전|확인 필요/);
 
-    await byText(studio, 'button', '생성 대기열').dispatchEvent({ type: 'click' });
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'queue' } });
     const queueText = studio.textContent;
     assert.match(queueText, /Canonical 하네스 연결통과/);
     assert.match(queueText, /라이브 제출은 차단/);

@@ -19,7 +19,10 @@ function resultSlot(task, resultPreview) {
 
 export function ImageTaskCard({ task, resultPreview, resultWorkspace, onPromptChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult }) {
     let connectorOpen = false;
-    const root = el('article', { className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3' });
+    const root = el('article', {
+        className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3',
+        attrs: { 'data-work-target': 'image', 'data-sequence': task.sequence, tabindex: -1 },
+    });
 
     const render = () => {
         const prompt = el('textarea', {

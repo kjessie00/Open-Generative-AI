@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     connectNewProjectVideoResult: (payload) => ipcRenderer.invoke('film-pipeline:connect-new-project-video-result', payload),
     getNewProjectVideoResultPreview: (payload) => ipcRenderer.invoke('film-pipeline:get-new-project-video-result-preview', payload),
     saveNewProjectVideoRetrySelection: (payload) => ipcRenderer.invoke('film-pipeline:save-new-project-video-retry-selection', payload),
+    getNewProjectExecutionState: () => ipcRenderer.invoke('film-pipeline:get-new-project-execution-state'),
     copyNewProjectBuildCommand: () => ipcRenderer.invoke('film-pipeline:copy-new-project-build-command'),
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),

@@ -27,6 +27,7 @@ import { ShotDesignerPanel } from './ShotDesignerPanel.js';
 import { MotionBoardPanel } from './MotionBoardPanel.js';
 import { GenerationPreparationPanel } from './GenerationPreparationPanel.js';
 import { VideoPreparationPanel } from './VideoPreparationPanel.js';
+import { NewProjectExecutionPanel } from './NewProjectExecutionPanel.js';
 import { PromptPackPanel } from './PromptPackPanel.js';
 import { ReviewGatesPanel } from './ReviewGatesPanel.js';
 import { QueuePanel } from './QueuePanel.js';
@@ -171,6 +172,20 @@ function emptyNewProjectVideoResultWorkspace(status = 'empty', blocker = '') {
     return { status, candidates: [], blockers: blocker ? [blocker] : [] };
 }
 
+function emptyNewProjectExecutionState(status = 'empty', blocker = '') {
+    return {
+        ok: false,
+        status,
+        status_label: status === 'loading' ? '확인 중' : '준비 전',
+        tasks: [],
+        summary: { queued: 0, running: 0, succeeded: 0, failed: 0 },
+        blockers: blocker ? [blocker] : [],
+        executed: false,
+        model_called: false,
+        generation_executed: false,
+    };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
@@ -179,6 +194,7 @@ function renderPanel(tabId, state, config, actions) {
     if (tabId === 'motion') return MotionBoardPanel(props);
     if (tabId === 'assets') return GenerationPreparationPanel(props);
     if (tabId === 'videos') return VideoPreparationPanel(props);
+    if (tabId === 'progress') return NewProjectExecutionPanel(props);
     if (tabId === 'prompts') return PromptPackPanel(props);
     if (tabId === 'gates') return ReviewGatesPanel(props);
     if (tabId === 'queue') return QueuePanel(props);
@@ -236,6 +252,9 @@ export function PipelineStudio() {
     let newProjectVideoPlanNotice = '';
     let newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('loading');
     let newProjectVideoResultPreviews = {};
+    let newProjectExecutionState = emptyNewProjectExecutionState('loading');
+    let newProjectExecutionNotice = '';
+    let newProjectExecutionRefreshing = false;
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
     let g3PromotionPlan = emptyG3PromotionPlan();
@@ -390,6 +409,22 @@ export function PipelineStudio() {
             }
             render();
             return newProjectVideoResultWorkspace;
+        };
+
+        const refreshNewProjectExecution = async () => {
+            newProjectExecutionRefreshing = true;
+            newProjectExecutionNotice = '최신 상태를 확인하는 중…';
+            render();
+            try {
+                newProjectExecutionState = await pipelineClient.getNewProjectExecutionState();
+                newProjectExecutionNotice = '최신 상태를 확인했습니다.';
+            } catch {
+                newProjectExecutionState = emptyNewProjectExecutionState('error', 'NEW_PROJECT_EXECUTION_READ_FAILED');
+                newProjectExecutionNotice = '상태를 불러오지 못했습니다. 잠시 후 다시 확인하세요.';
+            }
+            newProjectExecutionRefreshing = false;
+            render();
+            return newProjectExecutionState;
         };
 
         const openProductionFolder = async () => {
@@ -555,6 +590,20 @@ export function PipelineStudio() {
                 videoPlanNotice: newProjectVideoPlanNotice,
                 videoResultWorkspace: newProjectVideoResultWorkspace,
                 videoResultPreviews: newProjectVideoResultPreviews,
+                executionState: newProjectExecutionState,
+                executionNotice: newProjectExecutionNotice,
+                executionRefreshing: newProjectExecutionRefreshing,
+                hasProductionRoot: Boolean(config.productionRoot),
+                onRefreshExecution: refreshNewProjectExecution,
+                onOpenWorkItem: ({ kind, sequence }) => {
+                    switchTab(kind === 'video' ? 'videos' : 'assets');
+                    queueMicrotask(() => {
+                        const target = document.querySelector?.(`[data-work-target="${kind}"][data-sequence="${sequence}"]`);
+                        target?.focus?.();
+                        target?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+                    });
+                },
+                onOpenLegacyQueue: () => switchTab('queue'),
                 onOpenVideoResultReview: () => switchTab('qa'),
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
@@ -1385,7 +1434,7 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, videoImportResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, videoImportResult, executionResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
@@ -1395,6 +1444,7 @@ export function PipelineStudio() {
             pipelineClient.getNewProjectVideoPlan(),
             pipelineClient.getNewProjectVideoResultWorkspace(),
             pipelineClient.getVideoResultImportWorkspace(),
+            pipelineClient.getNewProjectExecutionState(),
         ]);
         if (configResult.status === 'fulfilled') {
             const result = configResult.value;
@@ -1468,6 +1518,11 @@ export function PipelineStudio() {
             videoResultImportWorkspace = videoImportResult.value;
         } else {
             videoResultImportWorkspace = emptyVideoResultImportWorkspace('blocked', 'VIDEO_IMPORT_WORKSPACE_READ_FAILED');
+        }
+        if (executionResult.status === 'fulfilled' && executionResult.value) {
+            newProjectExecutionState = executionResult.value;
+        } else {
+            newProjectExecutionState = emptyNewProjectExecutionState('error', 'NEW_PROJECT_EXECUTION_READ_FAILED');
         }
         config = {
             ...config,
