@@ -1,137 +1,211 @@
-import { actionButton, blockerList, card, codeBlock, el, infoGrid, statusBadge } from './ui.js';
+import { actionButton, card, codeBlock, el } from './ui.js';
 import { p } from './copy.js';
 
-function fieldShell(label, id, control, help) {
+function fieldShell(label, id, control, help = '') {
     return el('div', { className: 'flex min-w-0 flex-col gap-2' }, [
         el('label', { text: label, className: 'text-xs font-semibold text-white', attrs: { for: id } }),
         control,
-        el('p', { text: help, className: 'text-xs leading-5 text-secondary', attrs: { id: `${id}-help` } }),
-    ]);
+        help ? el('p', { text: help, className: 'text-xs leading-5 text-secondary', attrs: { id: `${id}-help` } }) : null,
+    ].filter(Boolean));
+}
+
+function controlAttrs(id, name, help, extra = {}) {
+    return { id, name, required: true, ...(help ? { 'aria-describedby': `${id}-help` } : {}), ...extra };
 }
 
 function textControl({ id, name, value, multiline = false, disabled, maxLength, help, onDraftChange }) {
     const control = el(multiline ? 'textarea' : 'input', {
         value,
         disabled,
-        className: `w-full rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50 ${multiline ? 'min-h-[132px] resize-y leading-6' : ''}`,
-        attrs: {
-            id, name, required: true, maxlength: maxLength, 'aria-describedby': `${id}-help`,
+        className: `min-h-11 w-full rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50 ${multiline ? 'min-h-[180px] resize-y leading-6' : ''}`,
+        attrs: controlAttrs(id, name, help, {
+            maxlength: maxLength,
             ...(multiline ? {} : { type: 'text', autocomplete: 'off', spellcheck: 'false' }),
-        },
+        }),
     });
     control.addEventListener('input', (event) => onDraftChange?.(name, event.target.value));
     return fieldShell(p(name), id, control, help);
 }
 
-function selectControl({ id, name, value, options, disabled, help, onDraftChange }) {
+function selectControl({ id, name, value, options, disabled, onDraftChange }) {
     const control = el('select', {
         value,
         disabled,
-        className: 'w-full rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50',
-        attrs: { id, name, required: true, 'aria-describedby': `${id}-help` },
+        className: 'min-h-11 w-full rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50',
+        attrs: controlAttrs(id, name, ''),
     }, options.map((option) => el('option', { text: option.label, value: option.value, attrs: { value: option.value } })));
     control.addEventListener('change', (event) => onDraftChange?.(name, event.target.value));
-    return fieldShell(p(name), id, control, help);
+    return fieldShell(p(name), id, control);
 }
 
-function numberControl({ id, name, value, min, max, disabled, help, onDraftChange }) {
+function numberControl({ id, name, value, min, max, disabled, onDraftChange }) {
     const control = el('input', {
         value,
         disabled,
-        className: 'w-full rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50',
-        attrs: { id, name, type: 'number', min, max, step: 1, required: true, 'aria-describedby': `${id}-help` },
+        className: 'min-h-11 w-full rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50',
+        attrs: controlAttrs(id, name, '', { type: 'number', min, max, step: 1 }),
     });
     control.addEventListener('input', (event) => onDraftChange?.(name, Number(event.target.value)));
-    return fieldShell(p(name), id, control, help);
+    return fieldShell(p(name), id, control);
 }
 
 function statusText(status) {
-    if (status === 'restored' || status === 'saved') return p('Draft restored from this device.');
-    if (status === 'saving') return p('Saving draft…');
-    if (status === 'copying') return p('Checking and copying command…');
-    if (status === 'error') return p('Draft could not be loaded safely.');
-    return p('No saved new-project draft yet.');
+    if (status === 'restored') return '저장한 내용을 불러왔습니다.';
+    if (status === 'saved') return '직접 저장됨';
+    if (status === 'saving') return '저장 중…';
+    if (status === 'requesting') return '요청 저장 중…';
+    if (status === 'copying') return '명령 복사 중…';
+    if (status === 'error') return '저장하지 못했습니다.';
+    return '아직 저장된 내용이 없습니다.';
+}
+
+function latestRequest(collaboration, stage) {
+    return (collaboration?.recent_requests || []).filter((request) => request.stage === stage).at(-1) || null;
+}
+
+function collaborationSection({
+    number, title, stage, draftControl, draftValue, disabled, collaboration, onSave, onEnqueue,
+}) {
+    const requestId = `planning-${stage}-agent-request`;
+    const requestStatus = el('p', {
+        text: latestRequest(collaboration, stage)?.status === 'queued_local_handoff'
+            ? '요청 저장됨 · 아직 실행 전'
+            : '요청 대기',
+        className: 'text-xs leading-5 text-secondary',
+        attrs: { role: 'status', 'aria-live': 'polite' },
+    });
+    const requestInput = el('textarea', {
+        disabled,
+        className: 'min-h-[112px] w-full resize-y rounded-md border border-white/10 bg-black/25 px-3 py-3 text-sm leading-6 text-white outline-none focus:border-cyan-300/50',
+        attrs: {
+            id: requestId,
+            maxlength: 4000,
+            placeholder: stage === 'brief' ? '예: 핵심 갈등이 더 선명하도록 다듬어줘' : '예: 첫 3초의 몰입감을 높여줘',
+        },
+    });
+    const requestButton = actionButton('에이전트에게 요청', {
+        disabled,
+        onClick: async () => {
+            const instruction = requestInput.value.trim();
+            if (!instruction) {
+                requestStatus.textContent = '요청 내용을 입력하세요.';
+                requestInput.focus();
+                return;
+            }
+            await onEnqueue?.({ stage, instruction });
+        },
+    });
+
+    return el('section', {
+        className: 'grid min-w-0 grid-cols-1 gap-4 border-t border-white/10 pt-5 lg:grid-cols-[minmax(0,3fr)_minmax(16rem,2fr)]',
+        attrs: { 'aria-labelledby': `planning-${stage}-title` },
+    }, [
+        el('div', { className: 'flex min-w-0 flex-col gap-3' }, [
+            el('h4', { text: `${number}. ${title}`, className: 'text-base font-bold text-white', attrs: { id: `planning-${stage}-title` } }),
+            draftControl,
+            el('div', { className: 'flex flex-wrap gap-2' }, [
+                actionButton('직접 저장', { disabled, onClick: () => onSave?.({ ...draftValue }) }),
+            ]),
+        ]),
+        el('div', { className: 'flex min-w-0 flex-col gap-3 rounded-md border border-white/10 bg-black/20 p-3' }, [
+            el('div', {}, [
+                el('h5', { text: '에이전트에게 요청', className: 'text-sm font-semibold text-white' }),
+                el('p', { text: '요청은 로컬에 저장되며 아직 실행되지 않습니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
+            ]),
+            fieldShell('무엇을 바꿀까요?', requestId, requestInput),
+            requestButton,
+            requestStatus,
+        ]),
+    ]);
 }
 
 export function NewProjectDraftForm({
-    draftState, draftValue, onDraftChange, onSaveNewProjectDraft, onCopyNewProjectBuildCommand,
+    draftState, draftValue, notice = '', onDraftChange, onSaveNewProjectDraft,
+    onEnqueuePlanningAgentRequest, onCopyNewProjectBuildCommand,
 }) {
-    const loading = ['loading', 'saving', 'copying'].includes(draftState?.status);
-    const blockers = Array.isArray(draftState?.blockers) ? draftState.blockers.map((code) => p(code)) : [];
+    const loading = ['loading', 'saving', 'requesting', 'copying'].includes(draftState?.status);
     const readyToCopy = draftState?.preview?.copyAllowed === true;
+    const errorMessages = [...new Set([
+        ...(draftState?.blockers || []),
+        ...(draftState?.collaboration?.blockers || []),
+    ].map((code) => p(code)).filter((message) => message && !/^[A-Z0-9_]+$/.test(message)))];
+    const briefControl = textControl({
+        id: 'new-project-brief', name: 'brief', value: draftValue.brief, multiline: true,
+        disabled: loading, maxLength: 65536, help: '콘셉트, 대상 시청자, 톤, 반드시 지킬 내용을 적으세요.', onDraftChange,
+    });
+    const scriptControl = textControl({
+        id: 'new-project-script', name: 'script', value: draftValue.script, multiline: true,
+        disabled: loading, maxLength: 262144, help: '내레이션이나 대사를 직접 작성하고 계속 고칠 수 있습니다.', onDraftChange,
+    });
+
     return card([
-        el('div', { className: 'flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between' }, [
-            el('div', {}, [
-                el('h3', { text: p('Start a new project'), className: 'text-base font-bold text-white' }),
-                el('p', {
-                    text: p('Save the Korean brief and script as a local draft, then copy the fixed canonical builder command.'),
-                    className: 'mt-1 max-w-3xl text-sm leading-6 text-secondary',
-                }),
-            ]),
-            statusBadge(readyToCopy ? p('Command ready') : p('Draft only'), readyToCopy ? 'PASS' : 'PREVIEW'),
+        el('div', {}, [
+            el('h3', { text: '기획·대본 작업', className: 'text-base font-bold text-white' }),
+            el('p', { text: '직접 고치거나, 같은 화면에서 에이전트에게 다음 작업을 남길 수 있습니다.', className: 'mt-1 text-sm leading-6 text-secondary' }),
         ]),
         el('p', {
-            text: statusText(draftState?.status),
-            className: `rounded-md border px-3 py-2 text-xs ${draftState?.status === 'error' ? 'border-red-400/20 text-red-100' : 'border-white/10 text-secondary'}`,
+            text: notice || statusText(draftState?.status),
+            className: `rounded-md border px-3 py-2 text-xs leading-5 ${draftState?.status === 'error' ? 'border-red-400/20 text-red-100' : 'border-white/10 text-secondary'}`,
             attrs: { role: draftState?.status === 'error' ? 'alert' : 'status', 'aria-live': 'polite' },
         }),
-        el('form', { className: 'grid grid-cols-1 gap-4 md:grid-cols-2', attrs: { 'aria-label': p('New project draft') } }, [
-            textControl({
-                id: 'new-project-production-id', name: 'production_id', value: draftValue.production_id,
-                disabled: loading, maxLength: 64, help: p('Use 3–64 lowercase letters, numbers, hyphens, or underscores.'), onDraftChange,
-            }),
-            selectControl({
-                id: 'new-project-route', name: 'route', value: draftValue.route, disabled: loading,
-                options: [
-                    { value: 'seedance', label: p('Seedance') },
-                    { value: 'flow_omni', label: p('Flow/Omni') },
-                    { value: 'both', label: p('Both routes') },
-                ],
-                help: p('Choose which prompt package the canonical builder should prepare.'), onDraftChange,
-            }),
-            textControl({
-                id: 'new-project-brief', name: 'brief', value: draftValue.brief, multiline: true,
-                disabled: loading, maxLength: 65536, help: p('Describe the concept, audience, tone, and non-negotiable requirements in Korean.'), onDraftChange,
-            }),
-            textControl({
-                id: 'new-project-script', name: 'script', value: draftValue.script, multiline: true,
-                disabled: loading, maxLength: 262144, help: p('Paste the final narration or dialogue script. It remains only in the private local draft.'), onDraftChange,
-            }),
-            selectControl({
-                id: 'new-project-aspect', name: 'aspect_ratio', value: draftValue.aspect_ratio, disabled: loading,
-                options: [{ value: '9:16', label: '9:16' }, { value: '16:9', label: '16:9' }],
-                help: p('Choose the final video frame.'), onDraftChange,
-            }),
-            el('div', { className: 'grid grid-cols-1 gap-4 sm:grid-cols-2' }, [
-                numberControl({
-                    id: 'new-project-duration', name: 'scene_duration', value: draftValue.scene_duration,
-                    min: 4, max: 15, disabled: loading, help: p('4–15 seconds per scene.'), onDraftChange,
-                }),
-                numberControl({
-                    id: 'new-project-scenes', name: 'max_scenes', value: draftValue.max_scenes,
-                    min: 1, max: 10, disabled: loading, help: p('Prepare 1–10 scenes.'), onDraftChange,
-                }),
+        draftState?.status === 'error' && errorMessages.length ? el('ul', {
+            className: 'flex list-disc flex-col gap-1 pl-5 text-xs leading-5 text-red-100',
+            attrs: { 'aria-label': '확인할 내용' },
+        }, errorMessages.map((message) => el('li', { text: message }))) : null,
+        el('form', { className: 'flex min-w-0 flex-col gap-5', attrs: { 'aria-label': p('New project draft') } }, [
+            el('fieldset', { className: 'min-w-0' }, [
+                el('legend', { text: '제작 설정', className: 'mb-3 text-sm font-semibold text-white' }),
+                el('div', { className: 'grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5' }, [
+                    textControl({
+                        id: 'new-project-production-id', name: 'production_id', value: draftValue.production_id,
+                        disabled: loading, maxLength: 64, help: '', onDraftChange,
+                    }),
+                    selectControl({
+                        id: 'new-project-route', name: 'route', value: draftValue.route, disabled: loading,
+                        options: [
+                            { value: 'seedance', label: 'Seedance' },
+                            { value: 'flow_omni', label: 'Flow/Omni' },
+                            { value: 'both', label: '두 경로 모두' },
+                        ],
+                        onDraftChange,
+                    }),
+                    selectControl({
+                        id: 'new-project-aspect', name: 'aspect_ratio', value: draftValue.aspect_ratio, disabled: loading,
+                        options: [{ value: '9:16', label: '9:16' }, { value: '16:9', label: '16:9' }], onDraftChange,
+                    }),
+                    numberControl({
+                        id: 'new-project-duration', name: 'scene_duration', value: draftValue.scene_duration,
+                        min: 4, max: 15, disabled: loading, onDraftChange,
+                    }),
+                    numberControl({
+                        id: 'new-project-scenes', name: 'max_scenes', value: draftValue.max_scenes,
+                        min: 1, max: 10, disabled: loading, onDraftChange,
+                    }),
+                ]),
             ]),
-        ]),
-        el('div', { className: 'flex flex-wrap gap-2' }, [
-            actionButton(draftState?.status === 'saving' ? p('Saving…') : p('Save local draft'), {
-                disabled: loading, onClick: () => onSaveNewProjectDraft?.({ ...draftValue }),
+            collaborationSection({
+                number: 1, title: '기획', stage: 'brief', draftControl: briefControl, draftValue,
+                disabled: loading, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
+                onEnqueue: onEnqueuePlanningAgentRequest,
             }),
-            actionButton(p('Copy canonical build command'), {
+            collaborationSection({
+                number: 2, title: '스크립트', stage: 'script', draftControl: scriptControl, draftValue,
+                disabled: loading, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
+                onEnqueue: onEnqueuePlanningAgentRequest,
+            }),
+        ]),
+        el('div', { className: 'border-t border-white/10 pt-4' }, [
+            actionButton('빌드 명령 복사', {
                 disabled: loading || !readyToCopy, variant: 'muted', onClick: () => onCopyNewProjectBuildCommand?.(),
             }),
+            el('p', {
+                text: '저장하거나 요청을 남겨도 제작이나 생성은 시작되지 않습니다.',
+                className: 'mt-2 text-xs leading-5 text-secondary',
+            }),
         ]),
-        el('p', {
-            text: p('Saving does not create a production or run a command. Run the copied command yourself outside this app, then refresh the production list.'),
-            className: 'text-xs leading-5 text-secondary',
-        }),
-        draftState?.targetPath ? infoGrid([
-            { label: p('Configured production parent'), value: draftState.parentRoot },
-            { label: p('Planned production folder'), value: draftState.targetPath },
-        ], 'lg:grid-cols-2') : null,
-        readyToCopy ? el('div', {}, [
-            el('h4', { text: p('Canonical command preview'), className: 'mb-2 text-xs font-semibold text-white' }),
-            codeBlock(draftState.preview.shellSafeCommand),
-        ]) : blockerList(blockers),
-    ].filter(Boolean), 'flex flex-col gap-4 border-cyan-400/20');
+        readyToCopy ? el('details', { className: 'border-t border-white/10 pt-4' }, [
+            el('summary', { text: '빌드 명령 미리보기', className: 'min-h-11 cursor-pointer py-3 text-xs font-semibold text-white' }),
+            el('div', { className: 'mt-2' }, [codeBlock(draftState.preview.shellSafeCommand)]),
+        ]) : null,
+    ].filter(Boolean), 'flex min-w-0 flex-col gap-5 border-cyan-400/20');
 }

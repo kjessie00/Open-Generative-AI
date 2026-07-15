@@ -56,17 +56,20 @@ function existingProductionAudit({ state, onSavePlanningFile }) {
 
 export function IntakePanel({
     state, newProjectDraftState, newProjectDraftValue, onNewProjectDraftChange,
-    onSaveNewProjectDraft, onCopyNewProjectBuildCommand, onSavePlanningFile,
+    newProjectNotice, onSaveNewProjectDraft, onEnqueuePlanningAgentRequest,
+    onCopyNewProjectBuildCommand, onSavePlanningFile,
 }) {
     return panelShell(
-        p('Project overview'),
-        p('Start with a private Korean draft, or expand the selected production audit when needed.'),
+        '기획·대본',
+        '직접 수정하거나 에이전트에게 다음 작업을 남기고, 저장된 내용을 이어서 작업합니다.',
         [
             NewProjectDraftForm({
                 draftState: newProjectDraftState,
                 draftValue: newProjectDraftValue,
+                notice: newProjectNotice,
                 onDraftChange: onNewProjectDraftChange,
                 onSaveNewProjectDraft,
+                onEnqueuePlanningAgentRequest,
                 onCopyNewProjectBuildCommand,
             }),
             existingProductionAudit({ state, onSavePlanningFile }),

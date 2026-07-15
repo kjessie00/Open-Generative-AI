@@ -268,7 +268,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     const workflowNav = byAttribute(studio, 'nav', 'aria-label', '파이프라인 작업 단계');
     assert.ok(workflowNav, 'workflow navigation must have a Korean accessible name');
     assert.ok(byAttribute(studio, 'button', 'aria-current', 'step'), 'active workflow stage must expose aria-current=step');
-    for (const [number, label] of [['1', '시작'], ['2', '설계'], ['3', '생성 준비'], ['4', '클립 선택'], ['5', '마무리']]) {
+    for (const [number, label] of [['1', '기획·대본'], ['2', '설계'], ['3', '생성 준비'], ['4', '클립 선택'], ['5', '마무리']]) {
         assert.ok(byAttribute(studio, 'button', 'aria-label', `${number} ${label}`), `${label} stage must be rendered`);
     }
     assert.deepEqual(
@@ -311,7 +311,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     assert.ok(byText(studio, 'button', '목록 새로고침'), 'reader error must expose a Korean retry action');
 
     const stages = [
-        ['1 시작', [['프로젝트', '프로젝트 개요']]],
+        ['1 기획·대본', [['기획·대본', '기획·대본']]],
         ['2 설계', [['스토리보드', '스토리보드'], ['샷 설계', '샷 설계'], ['모션 보드', '모션 보드']]],
         ['3 생성 준비', [['참조 이미지', '첫 프레임·참조 이미지'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트'], ['생성 대기열', '생성 대기열']]],
         ['4 클립 선택', [['클립 QA', '클립 QA·채택 구간']]],
@@ -1442,7 +1442,7 @@ test('MOCK media attempt cards keep Korean labels and semantic review colors', a
     }
 });
 
-test('new-project intake uses labeled Korean controls and dedicated save/copy IPC without leaking errors', async (t) => {
+test('new-project intake keeps direct edits and local agent handoffs distinct without leaking errors', async (t) => {
     const calls = [];
     const alerts = [];
     let rejectSave = false;
@@ -1466,6 +1466,10 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
         targetPath: `/tmp/main-owned-parent/${value.production_id}`,
         harnessReady: true,
         executed: false,
+        revision_sha256: 'a'.repeat(64),
+        collaboration: {
+            status: 'empty', total_request_count: 0, recent_requests: [], truncated: false, blockers: [],
+        },
         preview: {
             ready: true,
             copyAllowed: true,
@@ -1491,6 +1495,36 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
             calls.push(['copyNewProjectBuildCommand', args]);
             return { ok: true, copied: true, verified: true, executed: false, state: readyState() };
         },
+        async enqueuePlanningAgentRequest(payload) {
+            calls.push(['enqueuePlanningAgentRequest', structuredClone(payload)]);
+            return {
+                ok: true,
+                queued: true,
+                already_queued: false,
+                request_id: 'hidden-request-id',
+                status: 'queued_local_handoff',
+                executed: false,
+                model_called: false,
+                state: {
+                    ...readyState(),
+                    collaboration: {
+                        status: 'queued',
+                        total_request_count: 1,
+                        truncated: false,
+                        blockers: [],
+                        recent_requests: [{
+                            request_id: 'hidden-request-id',
+                            stage: payload.stage,
+                            instruction: payload.instruction,
+                            status: 'queued_local_handoff',
+                            requested_at: '2026-07-16T00:00:00.000Z',
+                            executed: false,
+                            model_called: false,
+                        }],
+                    },
+                },
+            };
+        },
         async previewCommand(command) {
             calls.push(['previewCommand', command]);
         },
@@ -1506,13 +1540,16 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
     const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
     const studio = PipelineStudio();
     await flushRenderer();
-    await byAttribute(studio, 'button', 'aria-label', '1 시작').dispatchEvent({ type: 'click' });
+    await byAttribute(studio, 'button', 'aria-label', '1 기획·대본').dispatchEvent({ type: 'click' });
 
-    assert.ok(byText(studio, 'h3', '새 프로젝트 시작'));
+    assert.ok(byText(studio, 'h2', '기획·대본'));
+    assert.ok(byText(studio, 'h3', '기획·대본 작업'));
+    assert.ok(byText(studio, 'h4', '1. 기획'));
+    assert.ok(byText(studio, 'h4', '2. 스크립트'));
     const form = byAttribute(studio, 'form', 'aria-label', '새 프로젝트 초안');
     assert.ok(form, 'new-project fields must be grouped in a native form');
-    assert.match(form.className, /grid-cols-1/);
-    assert.match(form.className, /md:grid-cols-2/);
+    assert.match(form.className, /flex/);
+    assert.match(form.className, /min-w-0/);
     for (const [id, label] of [
         ['new-project-production-id', '제작 ID'],
         ['new-project-brief', '브리프'],
@@ -1528,9 +1565,19 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
             || byAttribute(studio, 'select', 'id', id);
         assert.ok(control, `${id} must have a native control`);
         assert.equal(control.attributes.get('required'), 'true');
+        assert.match(control.className, /min-h-11|min-h-\[/, `${id} must keep a 44px-class touch target`);
     }
-    assert.match(studio.textContent, /저장만으로 제작 폴더가 생기거나 명령이 실행되지 않습니다/);
-    assert.match(studio.textContent, /canonical 명령 미리보기/);
+    for (const [id, label] of [
+        ['planning-brief-agent-request', '무엇을 바꿀까요?'],
+        ['planning-script-agent-request', '무엇을 바꿀까요?'],
+    ]) {
+        assert.equal(byAttribute(studio, 'label', 'for', id)?.textContent.trim(), label);
+        assert.ok(byAttribute(studio, 'textarea', 'id', id));
+    }
+    assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '직접 저장').length, 2);
+    assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트에게 요청').length, 2);
+    assert.match(studio.textContent, /저장하거나 요청을 남겨도 제작이나 생성은 시작되지 않습니다/);
+    assert.match(studio.textContent, /빌드 명령 미리보기/);
     assert.ok(byText(studio, 'button', '새 프로젝트 초안'), 'project bar must expose direct intake navigation');
 
     const productionId = byAttribute(studio, 'input', 'id', 'new-project-production-id');
@@ -1542,7 +1589,7 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
     const duration = byAttribute(studio, 'input', 'id', 'new-project-duration');
     duration.value = '8';
     await duration.dispatchEvent({ type: 'input' });
-    await byText(studio, 'button', '로컬 초안 저장').dispatchEvent({ type: 'click' });
+    await findAll(studio, 'button').find((button) => button.textContent.trim() === '직접 저장').dispatchEvent({ type: 'click' });
     await flushRenderer();
     const saveCall = calls.find(([method]) => method === 'saveNewProjectDraft');
     assert.equal(saveCall[1].production_id, 'edited-project');
@@ -1552,23 +1599,39 @@ test('new-project intake uses labeled Korean controls and dedicated save/copy IP
     assert.equal(Object.hasOwn(saveCall[1], 'cwd'), false);
     assert.equal(Object.hasOwn(saveCall[1], 'command'), false);
 
-    await byText(studio, 'button', 'canonical 빌드 명령 복사').dispatchEvent({ type: 'click' });
+    const requestInput = byAttribute(studio, 'textarea', 'id', 'planning-brief-agent-request');
+    requestInput.value = '핵심 갈등을 더 선명하게 다듬어줘';
+    const requestButtons = findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트에게 요청');
+    await requestButtons[0].dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const enqueueCall = calls.find(([method]) => method === 'enqueuePlanningAgentRequest');
+    assert.deepEqual(enqueueCall[1], {
+        stage: 'brief',
+        instruction: '핵심 갈등을 더 선명하게 다듬어줘',
+        expected_revision_sha256: 'a'.repeat(64),
+    });
+    assert.equal(calls.at(calls.indexOf(enqueueCall) - 1)[0], 'saveNewProjectDraft', 'request must save the full draft first');
+    assert.match(studio.textContent, /요청 저장됨 · 아직 실행 전/);
+    assert.doesNotMatch(studio.textContent, /hidden-request-id|queued_local_handoff|실행 완료|작업 완료/);
+
+    await byText(studio, 'button', '빌드 명령 복사').dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.deepEqual(calls.find(([method]) => method === 'copyNewProjectBuildCommand')[1], []);
     assert.equal(calls.filter(([method]) => method === 'previewCommand').length, 0);
     assert.equal(calls.filter(([method]) => method === 'copyCommandPreview').length, 0);
     assert.equal(calls.filter(([method]) => method === 'runSafeCommand').length, 0);
-    assert.ok(alerts.includes('canonical 빌드 명령을 복사했습니다.'));
+    assert.match(studio.textContent, /빌드 명령을 복사했습니다/);
 
     rejectSave = true;
-    await byText(studio, 'button', '로컬 초안 저장').dispatchEvent({ type: 'click' });
+    await findAll(studio, 'button').find((button) => button.textContent.trim() === '직접 저장').dispatchEvent({ type: 'click' });
     await flushRenderer();
-    assert.equal(alerts.at(-1), '새 프로젝트 초안 저장이 차단되었습니다.');
+    assert.match(studio.textContent, /저장하지 못했습니다/);
+    assert.deepEqual(alerts, []);
     assert.doesNotMatch(`${studio.textContent}\n${alerts.join('\n')}`, /SECRET_DRAFT_CONTENT_AND_PATH/);
     assert.deepEqual(calls.find(([method]) => method === 'getNewProjectDraftState')[1], []);
 });
 
-test('every provider new-project blocker renders as Korean copy instead of a raw identifier', async (t) => {
+test('new-project collaboration hides raw provider blockers behind one short Korean state', async (t) => {
     const providerSource = await readFile(new URL('../electron/lib/newProjectDraftProvider.js', import.meta.url), 'utf8');
     const providerCodes = [...new Set(providerSource.match(/NEW_PROJECT_[A-Z0-9_]+/g) || [])].sort();
     assert.ok(providerCodes.length > 0, 'provider must expose a non-empty blocker-code contract');
@@ -1588,9 +1651,11 @@ test('every provider new-project blocker renders as Korean copy instead of a raw
     });
 
     assert.doesNotMatch(form.textContent, /NEW_PROJECT_[A-Z0-9_]+/);
+    assert.match(form.textContent, /저장하지 못했습니다/);
     assert.match(form.textContent, /초안 폴더가 안전한 비공개 폴더가 아닙니다/);
     assert.match(form.textContent, /저장된 초안의 무결성 정보를 확인하지 못했습니다/);
     assert.match(form.textContent, /시스템 클립보드를 사용할 수 없습니다/);
+    assert.doesNotMatch(form.textContent, /블로커|차단 항목|request_id|revision_sha256/);
 });
 
 test('settings renders partial and blocked fixed-root harness readiness in Korean', async (t) => {
@@ -1754,7 +1819,7 @@ test('PipelineStudio reports planning write rejection in Korean without leaking 
     const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
     const studio = PipelineStudio();
     await flushRenderer();
-    await byAttribute(studio, 'button', 'aria-label', '1 시작').dispatchEvent({ type: 'click' });
+    await byAttribute(studio, 'button', 'aria-label', '1 기획·대본').dispatchEvent({ type: 'click' });
     const saveButton = byText(studio, 'button', '계획 파일 저장');
     assert.ok(saveButton, 'intake planning save button must be available');
     await saveButton.dispatchEvent({ type: 'click' });
@@ -1771,7 +1836,7 @@ test('PipelineSidebar keeps five-stage navigation ahead of a collapsed Korean pr
     const { PipelineSidebar } = await import('../src/components/pipeline/PipelineSidebar.js');
 
     const sidebar = PipelineSidebar({
-        stages: [{ id: 'start', number: 1, label: '시작', status: 'current', tabs: [{ id: 'intake', label: '프로젝트' }] }],
+        stages: [{ id: 'start', number: 1, label: '기획·대본', status: 'current', tabs: [{ id: 'intake', label: '기획·대본' }] }],
         activeStageId: 'start',
         activeTab: 'intake',
         productions: [{
@@ -1793,12 +1858,12 @@ test('PipelineSidebar keeps five-stage navigation ahead of a collapsed Korean pr
     assert.match(sidebar.textContent, /sanitized-production/);
     assert.match(sidebar.textContent, /파일 3개/);
     assert.ok(
-        sidebar.textContent.indexOf('시작') < sidebar.textContent.indexOf('제작 목록'),
+        sidebar.textContent.indexOf('기획·대본') < sidebar.textContent.indexOf('제작 목록'),
         'primary workflow navigation must remain ahead of the production list',
     );
     assert.ok(byAttribute(sidebar, 'nav', 'aria-label', '파이프라인 작업 단계'));
-    assert.equal(byAttribute(sidebar, 'button', 'aria-label', '1 시작').attributes.get('aria-current'), 'step');
-    assert.equal(byText(sidebar, 'button', '프로젝트').attributes.get('aria-current'), 'page');
+    assert.equal(byAttribute(sidebar, 'button', 'aria-label', '1 기획·대본').attributes.get('aria-current'), 'step');
+    assert.equal(byText(sidebar, 'button', '기획·대본').attributes.get('aria-current'), 'page');
     assert.ok(byAttribute(sidebar, 'button', 'aria-label', '제작 목록 새로고침'));
     assert.equal(findAll(sidebar, 'details').length, 1);
     assert.equal(findAll(sidebar, 'details')[0].attributes.has('open'), false);

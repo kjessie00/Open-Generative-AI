@@ -978,6 +978,18 @@ function saveNewProjectDraft(payload, options = {}) {
     return result;
 }
 
+function enqueuePlanningAgentRequest(payload, options = {}) {
+    const result = newProjectDraftProvider.enqueuePlanningAgentRequest(payload, newProjectContext(options));
+    sendProgress({
+        phase: 'planning-agent-request-queued',
+        status: result.status,
+        alreadyQueued: result.already_queued,
+        executed: false,
+        modelCalled: false,
+    });
+    return result;
+}
+
 function copyNewProjectBuildCommand(options = {}) {
     const result = newProjectDraftProvider.copyNewProjectBuildCommand(newProjectContext(options));
     sendProgress({
@@ -1319,6 +1331,7 @@ function register(ipcApi = ipcMain, options = {}) {
         return getNewProjectDraftState(options);
     });
     ipcApi.handle('film-pipeline:save-new-project-draft', (_, payload) => saveNewProjectDraft(payload, options));
+    ipcApi.handle('film-pipeline:enqueue-planning-agent-request', (_, payload) => enqueuePlanningAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1410,6 +1423,7 @@ module.exports = {
     getHarnessContractStatus,
     getNewProjectDraftState,
     saveNewProjectDraft,
+    enqueuePlanningAgentRequest,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

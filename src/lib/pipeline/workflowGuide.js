@@ -1,8 +1,8 @@
 import { isCanonicalSelectedTakesProvenance } from './canonicalProvenance.js';
 
 export const WORKFLOW_STAGES = Object.freeze([
-    Object.freeze({ id: 'start', number: 1, label: '시작', tabs: Object.freeze([
-        Object.freeze({ id: 'intake', label: '프로젝트' }),
+    Object.freeze({ id: 'start', number: 1, label: '기획·대본', tabs: Object.freeze([
+        Object.freeze({ id: 'intake', label: '기획·대본' }),
     ]) }),
     Object.freeze({ id: 'design', number: 2, label: '설계', tabs: Object.freeze([
         Object.freeze({ id: 'storyboard', label: '스토리보드' }),
@@ -61,7 +61,7 @@ function stageStatus(activeStageId, stageId) {
 
 function guideForMetrics(metrics) {
     if (metrics.files === 0) return {
-        activeStageId: 'start', message: '프로젝트를 열고 작업을 시작하세요', actionLabel: '프로젝트 열기', actionTab: 'intake',
+        activeStageId: 'start', message: '기획과 대본을 작성하세요', actionLabel: '기획·대본 열기', actionTab: 'intake',
     };
     if (metrics.parsed === 0) return {
         activeStageId: 'design', message: '스토리보드와 모션 설계를 확인하세요', actionLabel: '설계 열기', actionTab: 'storyboard',
@@ -82,7 +82,7 @@ function guideForMetrics(metrics) {
 }
 
 const DETAIL_ROWS = Object.freeze({
-    start: Object.freeze(['프로젝트 초안 저장', '제작 폴더 읽기']),
+    start: Object.freeze(['기획 직접 작성', '대본 직접 작성', '에이전트 요청 저장']),
     design: Object.freeze(['스토리보드 확인', '샷과 움직임 설계']),
     prepare: Object.freeze(['참조 이미지 확인', '프롬프트와 검토 게이트 확인', '생성 결과 대기']),
     select: Object.freeze(['클립 검토', '채택 구간 지정', '채택 결과 저장']),

@@ -26,7 +26,7 @@ test('Korean pipeline information architecture has five stages with all ten work
         'final',
     ]);
     assert.deepEqual([...guide.matchAll(/number: \d, label: '([^']+)'/g)].map((match) => match[1]),
-        ['시작', '설계', '생성 준비', '클립 선택', '마무리']);
+        ['기획·대본', '설계', '생성 준비', '클립 선택', '마무리']);
     assert.match(studio, /'overview', 'settings'/);
     assert.match(sidebar, /el\('nav',[\s\S]*'aria-label': p\('Pipeline workflow steps'\)/);
     assert.match(sidebar, /'aria-current': isActive \? 'step'/);

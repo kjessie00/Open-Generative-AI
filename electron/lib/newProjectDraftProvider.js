@@ -8,6 +8,14 @@ const DRAFT_METADATA_FILE = 'draft.json';
 const DRAFT_BRIEF_FILE = 'brief.md';
 const DRAFT_SCRIPT_FILE = 'script.txt';
 const DRAFT_TEMP_PREFIX = '.new-project-draft-';
+const PLANNING_AGENT_REQUEST_SCHEMA = 'film_pipeline.planning_agent_request.v1';
+const PLANNING_AGENT_COLLABORATION_DIRECTORY = 'collaboration';
+const PLANNING_AGENT_QUEUE_DIRECTORY = 'queue';
+const PLANNING_AGENT_REQUEST_PREFIX = 'request_';
+const MAX_PLANNING_AGENT_INSTRUCTION_BYTES = 16 * 1024;
+const MAX_PLANNING_AGENT_REQUEST_BYTES = 32 * 1024;
+const MAX_PLANNING_AGENT_REQUEST_FILES = 200;
+const MAX_RECENT_PLANNING_AGENT_REQUESTS = 20;
 const MAX_DRAFT_JSON_BYTES = 8 * 1024;
 const MAX_BRIEF_BYTES = 64 * 1024;
 const MAX_SCRIPT_BYTES = 256 * 1024;
@@ -118,12 +126,16 @@ function exactDraftPaths(userDataPath) {
         throw bootstrapError('NEW_PROJECT_USER_DATA_INVALID', 'Electron userData path is invalid');
     }
     const draftRoot = path.join(userDataPath, 'film-pipeline', 'drafts', DRAFT_DIRECTORY);
+    const collaborationRoot = path.join(draftRoot, PLANNING_AGENT_COLLABORATION_DIRECTORY);
+    const planningAgentQueueRoot = path.join(collaborationRoot, PLANNING_AGENT_QUEUE_DIRECTORY);
     return {
         userDataPath,
         draftRoot,
         metadataPath: path.join(draftRoot, DRAFT_METADATA_FILE),
         briefPath: path.join(draftRoot, DRAFT_BRIEF_FILE),
         scriptPath: path.join(draftRoot, DRAFT_SCRIPT_FILE),
+        collaborationRoot,
+        planningAgentQueueRoot,
     };
 }
 
@@ -170,6 +182,36 @@ function ensurePrivateDraftDirectory(paths) {
         }
         if (index === 0 && stats.dev !== userDataStats.dev) {
             throw bootstrapError('NEW_PROJECT_DRAFT_DIRECTORY_UNSAFE', 'Draft directory changed filesystem');
+        }
+    }
+}
+
+function ensurePrivatePlanningAgentQueue(paths) {
+    ensurePrivateDraftDirectory(paths);
+    const draftStats = assertDirectory(
+        paths.draftRoot,
+        'PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE',
+        { privateMode: true },
+    );
+    let current = paths.draftRoot;
+    for (const [index, component] of [
+        PLANNING_AGENT_COLLABORATION_DIRECTORY,
+        PLANNING_AGENT_QUEUE_DIRECTORY,
+    ].entries()) {
+        current = path.join(current, component);
+        try {
+            fs.mkdirSync(current, { mode: 0o700 });
+        } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+        }
+        const stats = assertDirectory(
+            current,
+            'PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE',
+            { privateMode: true },
+        );
+        const expected = index === 0 ? paths.collaborationRoot : paths.planningAgentQueueRoot;
+        if (fs.realpathSync.native(current) !== expected || stats.dev !== draftStats.dev) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE', 'Planning agent queue escapes the draft root');
         }
     }
 }
@@ -283,6 +325,186 @@ function metadataForDraft(draft, briefBuffer, scriptBuffer) {
         script_sha256: sha256(scriptBuffer),
         saved_at: new Date().toISOString(),
     };
+}
+
+function draftRevisionEvidence(draft) {
+    const briefSha256 = sha256(Buffer.from(`${draft.brief}\n`, 'utf8'));
+    const scriptSha256 = sha256(Buffer.from(`${draft.script}\n`, 'utf8'));
+    const canonical = JSON.stringify({
+        production_id: draft.production_id,
+        route: draft.route,
+        aspect_ratio: draft.aspect_ratio,
+        scene_duration: draft.scene_duration,
+        max_scenes: draft.max_scenes,
+        brief_sha256: briefSha256,
+        script_sha256: scriptSha256,
+    });
+    return {
+        revisionSha256: sha256(canonical),
+        briefSha256,
+        scriptSha256,
+    };
+}
+
+function planningAgentRequestId({
+    stage, instruction, productionId, revisionSha256, briefSha256, scriptSha256,
+}) {
+    return `${PLANNING_AGENT_REQUEST_PREFIX}${sha256(JSON.stringify({
+        schema_version: PLANNING_AGENT_REQUEST_SCHEMA,
+        production_id: productionId,
+        draft_revision_sha256: revisionSha256,
+        brief_sha256: briefSha256,
+        script_sha256: scriptSha256,
+        stage,
+        instruction,
+    }))}`;
+}
+
+function validatePlanningAgentRequestPayload(payload) {
+    assertExactKeys(
+        payload,
+        ['stage', 'instruction', 'expected_revision_sha256'],
+        'PLANNING_AGENT_REQUEST_SHAPE_INVALID',
+    );
+    if (!['brief', 'script'].includes(payload.stage)) {
+        throw bootstrapError('PLANNING_AGENT_REQUEST_STAGE_INVALID', 'Planning agent request stage is invalid');
+    }
+    const instruction = safeString(
+        payload.instruction,
+        'PLANNING_AGENT_REQUEST_INSTRUCTION_INVALID',
+        MAX_PLANNING_AGENT_INSTRUCTION_BYTES,
+    );
+    if (typeof payload.expected_revision_sha256 !== 'string'
+        || !/^[a-f0-9]{64}$/.test(payload.expected_revision_sha256)) {
+        throw bootstrapError('PLANNING_AGENT_REQUEST_REVISION_INVALID', 'Planning agent request revision is invalid');
+    }
+    return {
+        stage: payload.stage,
+        instruction,
+        expectedRevisionSha256: payload.expected_revision_sha256,
+    };
+}
+
+function validatePlanningAgentRequestRecord(record, currentDraft = null) {
+    assertExactKeys(record, [
+        'schema_version', 'request_id', 'stage', 'instruction', 'production_id',
+        'draft_revision_sha256', 'brief_sha256', 'script_sha256', 'status',
+        'requested_at', 'executed', 'model_called',
+    ], 'PLANNING_AGENT_QUEUE_RECORD_INVALID');
+    if (record.schema_version !== PLANNING_AGENT_REQUEST_SCHEMA
+        || !['brief', 'script'].includes(record.stage)
+        || typeof record.instruction !== 'string'
+        || !record.instruction
+        || record.instruction.includes('\0')
+        || !isWellFormedUnicode(record.instruction)
+        || Buffer.byteLength(record.instruction, 'utf8') > MAX_PLANNING_AGENT_INSTRUCTION_BYTES
+        || !/^[a-z0-9](?:[a-z0-9_-]{1,62}[a-z0-9])$/.test(record.production_id)
+        || record.production_id.includes('..')
+        || !/^[a-f0-9]{64}$/.test(record.draft_revision_sha256)
+        || !/^[a-f0-9]{64}$/.test(record.brief_sha256)
+        || !/^[a-f0-9]{64}$/.test(record.script_sha256)
+        || record.status !== 'queued_local_handoff'
+        || !Number.isFinite(Date.parse(record.requested_at))
+        || record.executed !== false
+        || record.model_called !== false) {
+        throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue record is invalid');
+    }
+    const expectedId = planningAgentRequestId({
+        stage: record.stage,
+        instruction: record.instruction,
+        productionId: record.production_id,
+        revisionSha256: record.draft_revision_sha256,
+        briefSha256: record.brief_sha256,
+        scriptSha256: record.script_sha256,
+    });
+    if (record.request_id !== expectedId) {
+        throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue record identity is invalid');
+    }
+    if (currentDraft && record.production_id === currentDraft.production_id) {
+        const evidence = draftRevisionEvidence(currentDraft);
+        if (record.draft_revision_sha256 === evidence.revisionSha256
+            && (record.brief_sha256 !== evidence.briefSha256
+                || record.script_sha256 !== evidence.scriptSha256)) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue revision evidence is invalid');
+        }
+    }
+    return record;
+}
+
+function emptyPlanningCollaboration() {
+    return {
+        status: 'empty',
+        total_request_count: 0,
+        recent_requests: [],
+        truncated: false,
+        blockers: [],
+    };
+}
+
+function readPlanningCollaboration(paths, draft) {
+    let collaborationStats;
+    try {
+        collaborationStats = fs.lstatSync(paths.collaborationRoot);
+    } catch (error) {
+        if (error.code === 'ENOENT') return emptyPlanningCollaboration();
+        return { ...emptyPlanningCollaboration(), status: 'blocked', blockers: ['PLANNING_AGENT_QUEUE_READ_FAILED'] };
+    }
+    try {
+        if (collaborationStats.isSymbolicLink() || !collaborationStats.isDirectory()
+            || (collaborationStats.mode & 0o077) !== 0
+            || fs.realpathSync.native(paths.collaborationRoot) !== paths.collaborationRoot) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE', 'Planning collaboration directory is unsafe');
+        }
+        let queueStats;
+        try {
+            queueStats = fs.lstatSync(paths.planningAgentQueueRoot);
+        } catch (error) {
+            if (error.code === 'ENOENT') return emptyPlanningCollaboration();
+            throw error;
+        }
+        if (queueStats.isSymbolicLink() || !queueStats.isDirectory()
+            || (queueStats.mode & 0o077) !== 0
+            || queueStats.dev !== collaborationStats.dev
+            || fs.realpathSync.native(paths.planningAgentQueueRoot) !== paths.planningAgentQueueRoot) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE', 'Planning agent queue directory is unsafe');
+        }
+        const entries = fs.readdirSync(paths.planningAgentQueueRoot, { withFileTypes: true });
+        if (entries.length > MAX_PLANNING_AGENT_REQUEST_FILES) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_LIMIT_REACHED', 'Planning agent queue file limit was reached');
+        }
+        const records = entries.map((entry) => {
+            if (!entry.isFile() || entry.isSymbolicLink()
+                || !/^request_[a-f0-9]{64}\.json$/.test(entry.name)) {
+                throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_UNSAFE', 'Planning agent queue entry is unsafe');
+            }
+            const filePath = path.join(paths.planningAgentQueueRoot, entry.name);
+            const buffer = readPrivateFile(filePath, MAX_PLANNING_AGENT_REQUEST_BYTES);
+            let record;
+            try {
+                record = JSON.parse(buffer.toString('utf8'));
+            } catch {
+                throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue record is malformed');
+            }
+            validatePlanningAgentRequestRecord(record, draft);
+            if (`${record.request_id}.json` !== entry.name) {
+                throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue filename is invalid');
+            }
+            return record;
+        }).sort((left, right) => Date.parse(right.requested_at) - Date.parse(left.requested_at));
+        return {
+            status: records.length ? 'queued' : 'empty',
+            total_request_count: records.length,
+            recent_requests: records.slice(0, MAX_RECENT_PLANNING_AGENT_REQUESTS),
+            truncated: records.length > MAX_RECENT_PLANNING_AGENT_REQUESTS,
+            blockers: [],
+        };
+    } catch (error) {
+        return {
+            ...emptyPlanningCollaboration(),
+            status: 'blocked',
+            blockers: [error.code || 'PLANNING_AGENT_QUEUE_READ_FAILED'],
+        };
+    }
 }
 
 function readSavedDraft(paths) {
@@ -475,11 +697,19 @@ function getNewProjectDraftState(context = {}) {
     const preview = uniqueBlockers.length === 0
         ? buildPreview(loaded.draft, loaded.paths, target, harness)
         : unavailablePreview(uniqueBlockers[0], target.targetPath);
+    const revision = loaded.status === 'restored'
+        ? draftRevisionEvidence(loaded.draft)
+        : { revisionSha256: '', briefSha256: '', scriptSha256: '' };
+    const collaboration = loaded.status === 'restored'
+        ? readPlanningCollaboration(loaded.paths, loaded.draft)
+        : emptyPlanningCollaboration();
     return {
         ok: loaded.status !== 'error',
         status: loaded.status,
         draft: loaded.draft,
         savedAt: loaded.savedAt,
+        revision_sha256: revision.revisionSha256,
+        collaboration,
         readiness: uniqueBlockers.length === 0 ? 'ready_to_copy' : 'blocked',
         blockers: uniqueBlockers,
         parentRoot: target.parentRoot,
@@ -505,6 +735,87 @@ function saveNewProjectDraft(payload, context = {}) {
     atomicWritePrivateFile(paths.scriptPath, scriptBuffer, context);
     atomicWritePrivateFile(paths.metadataPath, metadataBuffer, context);
     return { ...getNewProjectDraftState(context), status: 'saved' };
+}
+
+function enqueuePlanningAgentRequest(payload, context = {}) {
+    const request = validatePlanningAgentRequestPayload(payload);
+    const loaded = loadDraft(context);
+    if (loaded.status !== 'restored' || !loaded.paths) {
+        throw bootstrapError('PLANNING_AGENT_DRAFT_NOT_SAVED', 'A saved draft is required before creating an agent handoff');
+    }
+    const revision = draftRevisionEvidence(loaded.draft);
+    if (request.expectedRevisionSha256 !== revision.revisionSha256) {
+        throw bootstrapError('PLANNING_AGENT_REQUEST_STALE', 'The saved draft changed before the agent handoff');
+    }
+    ensurePrivatePlanningAgentQueue(loaded.paths);
+
+    const requestId = planningAgentRequestId({
+        stage: request.stage,
+        instruction: request.instruction,
+        productionId: loaded.draft.production_id,
+        revisionSha256: revision.revisionSha256,
+        briefSha256: revision.briefSha256,
+        scriptSha256: revision.scriptSha256,
+    });
+    const requestPath = path.join(loaded.paths.planningAgentQueueRoot, `${requestId}.json`);
+    let alreadyQueued = false;
+    try {
+        const existing = JSON.parse(readPrivateFile(requestPath, MAX_PLANNING_AGENT_REQUEST_BYTES).toString('utf8'));
+        validatePlanningAgentRequestRecord(existing, loaded.draft);
+        if (existing.request_id !== requestId
+            || existing.stage !== request.stage
+            || existing.instruction !== request.instruction
+            || existing.draft_revision_sha256 !== revision.revisionSha256
+            || existing.brief_sha256 !== revision.briefSha256
+            || existing.script_sha256 !== revision.scriptSha256
+            || existing.production_id !== loaded.draft.production_id) {
+            throw bootstrapError('PLANNING_AGENT_REQUEST_IDEMPOTENCY_CONFLICT', 'Existing planning agent request does not match');
+        }
+        alreadyQueued = true;
+    } catch (error) {
+        if (error.code !== 'NEW_PROJECT_DRAFT_INCOMPLETE') throw error;
+    }
+
+    if (!alreadyQueued) {
+        const queueState = readPlanningCollaboration(loaded.paths, loaded.draft);
+        if (queueState.status === 'blocked') {
+            throw bootstrapError(queueState.blockers[0], 'Planning agent queue is blocked');
+        }
+        if (queueState.total_request_count >= MAX_PLANNING_AGENT_REQUEST_FILES) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_LIMIT_REACHED', 'Planning agent queue file limit was reached');
+        }
+        const record = {
+            schema_version: PLANNING_AGENT_REQUEST_SCHEMA,
+            request_id: requestId,
+            stage: request.stage,
+            instruction: request.instruction,
+            production_id: loaded.draft.production_id,
+            draft_revision_sha256: revision.revisionSha256,
+            brief_sha256: revision.briefSha256,
+            script_sha256: revision.scriptSha256,
+            status: 'queued_local_handoff',
+            requested_at: new Date().toISOString(),
+            executed: false,
+            model_called: false,
+        };
+        validatePlanningAgentRequestRecord(record, loaded.draft);
+        const buffer = Buffer.from(`${JSON.stringify(record, null, 2)}\n`, 'utf8');
+        if (buffer.byteLength > MAX_PLANNING_AGENT_REQUEST_BYTES) {
+            throw bootstrapError('PLANNING_AGENT_REQUEST_TOO_LARGE', 'Planning agent request is too large');
+        }
+        atomicWritePrivateFile(requestPath, buffer, context);
+    }
+
+    return {
+        ok: true,
+        queued: true,
+        already_queued: alreadyQueued,
+        request_id: requestId,
+        status: 'queued_local_handoff',
+        executed: false,
+        model_called: false,
+        state: getNewProjectDraftState(context),
+    };
 }
 
 function copyNewProjectBuildCommand(context = {}) {
@@ -547,10 +858,13 @@ module.exports = {
     BUILDER_RELATIVE_PATH,
     MAX_BRIEF_BYTES,
     MAX_SCRIPT_BYTES,
+    MAX_PLANNING_AGENT_INSTRUCTION_BYTES,
+    PLANNING_AGENT_REQUEST_SCHEMA,
     defaultDraft,
     validateNewProjectDraft,
     exactDraftPaths,
     getNewProjectDraftState,
     saveNewProjectDraft,
+    enqueuePlanningAgentRequest,
     copyNewProjectBuildCommand,
 };

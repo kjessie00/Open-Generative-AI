@@ -27,7 +27,7 @@ test('plain fixture derives the current 1/5/4/0 clip-selection guidance', () => 
     assert.equal(guide.actionTab, 'qa');
     assert.match(guide.explanation, /채택한 구간이 0개/);
     assert.deepEqual(guide.stages.map(({ label, status }) => [label, status]), [
-        ['시작', 'complete'], ['설계', 'complete'], ['생성 준비', 'complete'], ['클립 선택', 'current'], ['마무리', 'pending'],
+        ['기획·대본', 'complete'], ['설계', 'complete'], ['생성 준비', 'complete'], ['클립 선택', 'current'], ['마무리', 'pending'],
     ]);
 });
 
@@ -40,7 +40,8 @@ test('workflow metrics prefer normalized fileStatus and keep accepted evidence s
 });
 
 test('five stages retain every existing work panel and exclude settings', () => {
-    assert.deepEqual(WORKFLOW_STAGES.map((stage) => stage.label), ['시작', '설계', '생성 준비', '클립 선택', '마무리']);
+    assert.deepEqual(WORKFLOW_STAGES.map((stage) => stage.label), ['기획·대본', '설계', '생성 준비', '클립 선택', '마무리']);
+    assert.deepEqual(WORKFLOW_STAGES[0].tabs.map((tab) => tab.label), ['기획·대본']);
     assert.deepEqual(WORKFLOW_STAGES.flatMap((stage) => stage.tabs.map((tab) => tab.id)), [
         'intake', 'storyboard', 'shot-designer', 'motion', 'assets', 'prompts', 'gates', 'queue', 'qa', 'final',
     ]);

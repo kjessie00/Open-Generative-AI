@@ -106,6 +106,10 @@ export async function getNewProjectDraftState() {
         status: 'empty',
         draft: { ...emptyNewProjectDraft },
         savedAt: '',
+        revision_sha256: '',
+        collaboration: {
+            status: 'empty', total_request_count: 0, recent_requests: [], truncated: false, blockers: [],
+        },
         readiness: 'blocked',
         blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
         parentRoot: '',
@@ -125,6 +129,20 @@ export async function saveNewProjectDraft(draft) {
     const bridge = getBridge();
     if (typeof bridge?.saveNewProjectDraft === 'function') return bridge.saveNewProjectDraft(draft);
     return { ...await getNewProjectDraftState(), ...unavailable('saveNewProjectDraft') };
+}
+
+export async function enqueuePlanningAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.enqueuePlanningAgentRequest === 'function') return bridge.enqueuePlanningAgentRequest(payload);
+    return {
+        ...unavailable('enqueuePlanningAgentRequest'),
+        queued: false,
+        already_queued: false,
+        request_id: '',
+        status: 'blocked',
+        model_called: false,
+        state: await getNewProjectDraftState(),
+    };
 }
 
 export async function copyNewProjectBuildCommand() {
@@ -461,6 +479,7 @@ export const pipelineClient = Object.freeze({
     getHarnessContractStatus,
     getNewProjectDraftState,
     saveNewProjectDraft,
+    enqueuePlanningAgentRequest,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

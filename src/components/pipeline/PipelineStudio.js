@@ -174,6 +174,7 @@ export function PipelineStudio() {
         preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
     };
     let newProjectDraftValue = { ...newProjectDraftState.draft };
+    let newProjectNotice = '';
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
     let g3PromotionPlan = emptyG3PromotionPlan();
@@ -202,6 +203,7 @@ export function PipelineStudio() {
                 const result = await pipelineClient.getNewProjectDraftState();
                 newProjectDraftState = result;
                 if (result?.draft) newProjectDraftValue = { ...result.draft };
+                newProjectNotice = '';
             } catch {
                 newProjectDraftState = {
                     ...newProjectDraftState,
@@ -357,19 +359,21 @@ export function PipelineStudio() {
                 harnessStatus,
                 newProjectDraftState,
                 newProjectDraftValue,
+                newProjectNotice,
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
                 },
                 onSaveNewProjectDraft: async (draft) => {
+                    newProjectNotice = '저장 중…';
                     newProjectDraftState = { ...newProjectDraftState, status: 'saving' };
                     render();
                     try {
                         const result = await pipelineClient.saveNewProjectDraft(draft);
                         newProjectDraftState = result;
                         if (result?.draft) newProjectDraftValue = { ...result.draft };
-                        window.alert(result?.ok
-                            ? p('New project draft saved.')
-                            : p('New project draft save was blocked.'));
+                        newProjectNotice = result?.ok ? '직접 저장됨' : '저장하지 못했습니다.';
+                        render();
+                        return result;
                     } catch {
                         newProjectDraftState = {
                             ...newProjectDraftState,
@@ -378,11 +382,40 @@ export function PipelineStudio() {
                             blockers: ['NEW_PROJECT_DRAFT_SAVE_FAILED'],
                             preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
                         };
-                        window.alert(p('New project draft save was blocked.'));
+                        newProjectNotice = '저장하지 못했습니다.';
+                        render();
+                        return { ok: false, status: 'error' };
                     }
+                },
+                onEnqueuePlanningAgentRequest: async ({ stage, instruction }) => {
+                    newProjectNotice = '요청 저장 중…';
+                    newProjectDraftState = { ...newProjectDraftState, status: 'requesting' };
                     render();
+                    try {
+                        const saved = await pipelineClient.saveNewProjectDraft({ ...newProjectDraftValue });
+                        if (!saved?.ok || !saved.revision_sha256) throw new Error('DRAFT_SAVE_FAILED');
+                        newProjectDraftState = saved;
+                        if (saved.draft) newProjectDraftValue = { ...saved.draft };
+                        const result = await pipelineClient.enqueuePlanningAgentRequest({
+                            stage,
+                            instruction,
+                            expected_revision_sha256: saved.revision_sha256,
+                        });
+                        if (!result?.queued || !result?.state) throw new Error('REQUEST_QUEUE_FAILED');
+                        newProjectDraftState = result.state;
+                        if (result.state.draft) newProjectDraftValue = { ...result.state.draft };
+                        newProjectNotice = '요청 저장됨 · 아직 실행 전';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectDraftState = { ...newProjectDraftState, status: 'error' };
+                        newProjectNotice = '요청을 저장하지 못했습니다.';
+                        render();
+                        return { ok: false, queued: false, executed: false, model_called: false };
+                    }
                 },
                 onCopyNewProjectBuildCommand: async () => {
+                    newProjectNotice = '명령 복사 중…';
                     newProjectDraftState = { ...newProjectDraftState, status: 'copying' };
                     render();
                     try {
@@ -391,9 +424,9 @@ export function PipelineStudio() {
                             newProjectDraftState = result.state;
                             if (result.state.draft) newProjectDraftValue = { ...result.state.draft };
                         }
-                        window.alert(result?.copied && result?.verified
-                            ? p('Canonical build command copied.')
-                            : p('Canonical build command copy was blocked.'));
+                        newProjectNotice = result?.copied && result?.verified
+                            ? '빌드 명령을 복사했습니다.'
+                            : '빌드 명령을 복사하지 못했습니다.';
                     } catch {
                         newProjectDraftState = {
                             ...newProjectDraftState,
@@ -402,7 +435,7 @@ export function PipelineStudio() {
                             blockers: ['NEW_PROJECT_COMMAND_COPY_FAILED'],
                             preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
                         };
-                        window.alert(p('Canonical build command copy was blocked.'));
+                        newProjectNotice = '빌드 명령을 복사하지 못했습니다.';
                     }
                     render();
                 },
