@@ -252,3 +252,82 @@ test('MOCK DST public preview connects a private result, previews it, selects re
     }, context);
     assert.equal(preparedWithoutLinked.tasks.some((task) => task.task_token === cleared.tasks[0].task_token), false);
 });
+
+test('MOCK main-only execution references bind current plan tasks to validated typed image bytes', (t) => {
+    const parts = setup(t);
+    let state = savePlan(parts);
+    const images = [
+        { mime: 'image/png', extension: '.png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]) },
+        { mime: 'image/jpeg', extension: '.jpg', buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1]) },
+        { mime: 'image/webp', extension: '.webp', buffer: Buffer.from('RIFF0000WEBPdata') },
+    ];
+    const context = {
+        ...parts,
+        getDstBundleImportPreview: ({ imageIndex }) => {
+            const image = images[imageIndex - 1];
+            return {
+                ready: Boolean(image),
+                preview: image ? {
+                    mime_type: image.mime,
+                    byte_length: image.buffer.byteLength,
+                    base64: image.buffer.toString('base64'),
+                } : null,
+                blockers: image ? [] : ['MISSING'],
+            };
+        },
+    };
+    const linked = [];
+    for (let index = 0; index < images.length; index += 1) {
+        const connected = imagePlanProvider.connectNewProjectImageResult({
+            task_token: state.tasks[index].task_token,
+            candidate_token: `typed-${index + 1}`,
+            image_index: index + 1,
+            expected_design_revision_sha256: state.design_revision_sha256,
+            expected_image_plan_revision_sha256: state.revision_sha256,
+        }, context);
+        state = connected.state;
+        linked.push({ task: state.tasks[index], image: images[index] });
+    }
+    for (const { task, image } of linked) {
+        const reference = imagePlanProvider.readNewProjectImageExecutionReference({
+            result_token: task.result_token,
+            expected_task_token: task.task_token,
+            expected_design_revision_sha256: state.design_revision_sha256,
+            expected_image_plan_revision_sha256: state.revision_sha256,
+        }, context);
+        assert.equal(reference.extension, image.extension);
+        assert.equal(reference.mime_type, image.mime);
+        assert.equal(reference.buffer.equals(image.buffer), true);
+        assert.match(reference.sha256, /^[a-f0-9]{64}$/);
+    }
+    assert.throws(() => imagePlanProvider.readNewProjectImageExecutionReference({
+        result_token: linked[0].task.result_token,
+        expected_task_token: linked[0].task.task_token,
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: 'f'.repeat(64),
+    }, context), { code: 'IMAGE_PLAN_EXECUTION_REFERENCE_STALE' });
+
+    const paths = imagePlanProvider.exactPaths(parts.userDataPath);
+    const webpManifestPath = path.join(paths.resultsRoot, `${linked[2].task.result_token}.json`);
+    const webpManifest = JSON.parse(fs.readFileSync(webpManifestPath, 'utf8'));
+    fs.writeFileSync(webpManifestPath, `${JSON.stringify({ ...webpManifest, mime_type: 'image/png' })}\n`, { mode: 0o600 });
+    assert.throws(() => imagePlanProvider.readNewProjectImageExecutionReference({
+        result_token: linked[2].task.result_token,
+        expected_task_token: linked[2].task.task_token,
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context), { code: 'IMAGE_PLAN_RESULT_INVALID' });
+    fs.writeFileSync(webpManifestPath, `${JSON.stringify(webpManifest)}\n`, { mode: 0o600 });
+
+    state = imagePlanProvider.saveNewProjectImageRetrySelection({
+        task_tokens: [linked[0].task.task_token],
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    assert.throws(() => imagePlanProvider.readNewProjectImageExecutionReference({
+        result_token: linked[0].task.result_token,
+        expected_task_token: linked[0].task.task_token,
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context), { code: 'IMAGE_PLAN_EXECUTION_REFERENCE_STALE' });
+});

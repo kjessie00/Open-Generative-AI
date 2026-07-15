@@ -110,8 +110,8 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.match(preload, /promoteG3ProductionSelection:[\s\S]*film-pipeline:promote-g3-production-selection/);
     assert.match(preload, /getNewProjectExecutionState:[\s\S]*film-pipeline:get-new-project-execution-state/);
     assert.match(preload, /stageNewProjectExecutionHandoff:[\s\S]*film-pipeline:stage-new-project-execution-handoff/);
-    assert.doesNotMatch(preload, /publishExecutionReceipt|inspectExecutionHandoff|prepareNewProjectExecution/,
-        'renderer may read or stage the pathless handoff but must not inspect, publish, or request retries');
+    assert.doesNotMatch(preload, /publishExecutionReceipt|inspectExecutionHandoff|prepareNewProjectExecution|readNewProjectImageExecutionReference|reference_files|referencesManifest/,
+        'renderer may read or stage the pathless handoff but must not inspect, publish, resolve, or receive reference files');
     assert.doesNotMatch(preload, /film-pipeline:set-config|\bsetConfig\b/);
     assert.doesNotMatch(preload, /g3[^'"\n]*(?:generation|upload|ledger-write|run-command)/i);
 });

@@ -115,7 +115,7 @@ test('MOCK: current image and video preparations become lane-private revision-bo
     }, context);
     assert.equal(repeated.already_prepared, true);
     const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
-    assert.equal(handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v3');
+    assert.equal(handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v4');
     assert.deepEqual(handoff.tasks.map((task) => task.aspect_ratio), ['9:16', '9:16']);
     assert.deepEqual(handoff.tasks.map((task) => task.source_id), ['scene_01', 'scene_01']);
     assert.deepEqual(handoff.tasks.map((task) => task.duration_seconds), [null, 5]);
@@ -478,6 +478,22 @@ test('provider execution previews build only an exact DST sheet command and fail
         ], duration_seconds: 5,
     }, context);
     assert.deepEqual(flowTwoReferences.blockers, ['FLOW_REFERENCE_STAGING_REQUIRED']);
+    const stagedPaths = [1, 2].map((index) => {
+        const filePath = path.join(parts.base, `reference-${index}.png`);
+        fs.writeFileSync(filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, index]), { mode: 0o600 });
+        return filePath;
+    });
+    const stagedReferences = stagedPaths.map((filePath, index) => ({
+        result_token: `result_${String(index + 4).repeat(64)}`,
+        task_token: `task_${String(index + 4).repeat(64)}`,
+        mime_type: 'image/png', byte_length: 5, sha256: String(index + 4).repeat(64), path: filePath,
+    }));
+    const flowStaged = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'flow', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: stagedReferences.map((item) => item.result_token),
+        reference_files: stagedReferences, duration_seconds: 5,
+    }, context);
+    assert.deepEqual(flowStaged.blockers, ['FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED']);
 
     const grok = providerExecutionPreview.buildProviderExecutionPreview({
         lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
@@ -490,6 +506,12 @@ test('provider execution previews build only an exact DST sheet command and fail
         aspect_ratio: '9:16', reference_result_tokens: [`result_${'3'.repeat(64)}`], duration_seconds: 6,
     }, context);
     assert.deepEqual(grokReference.blockers, ['GROK_REFERENCE_STAGING_REQUIRED']);
+    const grokStaged = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [stagedReferences[0].result_token],
+        reference_files: [stagedReferences[0]], duration_seconds: 6,
+    }, context);
+    assert.deepEqual(grokStaged.blockers, ['GROK_NO_NONSUBMIT_MODE']);
 
     for (const provider of ['replicate', 'bytedance']) {
         const missing = providerExecutionPreview.buildProviderExecutionPreview({
@@ -519,6 +541,152 @@ test('provider execution previews build only an exact DST sheet command and fail
     assert.notEqual(sheet.contract_revision_sha256, changedPrompt.contract_revision_sha256);
     assert.notEqual(sheet.contract_revision_sha256, changedAspect.contract_revision_sha256);
     assert.notEqual(fourSeconds.contract_revision_sha256, fiveSeconds.contract_revision_sha256);
+});
+
+test('MOCK: DST scene references stage as immutable typed run inputs and recover before becoming prepared', (t) => {
+    const parts = fixture(t, 'open-ga-scene-references-');
+    const empty = designProvider.getNewProjectDesignState(parts);
+    designProvider.saveNewProjectDesignBoard({
+        board: board(),
+        expected_planning_revision_sha256: empty.planning_revision_sha256,
+        expected_design_revision_sha256: empty.revision_sha256,
+    }, parts);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 8, 9]);
+    const runtimeRoot = path.join(parts.base, 'runtime');
+    const dstModule = path.join(runtimeRoot, 'dst');
+    const dstPython = path.join(runtimeRoot, 'python');
+    fs.mkdirSync(dstModule, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(dstPython, '#!/bin/sh\n', { mode: 0o700 });
+    const context = {
+        ...parts,
+        runtimePaths: { dstPython, dstModule },
+        getDstBundleImportPreview: () => ({
+            ready: true,
+            preview: { mime_type: 'image/png', byte_length: png.byteLength, base64: png.toString('base64') },
+            blockers: [],
+        }),
+    };
+    let image = imagePlanProvider.getNewProjectImagePlan(context);
+    image = imagePlanProvider.saveNewProjectImagePlan({
+        tasks: image.tasks,
+        expected_design_revision_sha256: image.design_revision_sha256,
+        expected_image_plan_revision_sha256: image.revision_sha256,
+    }, context);
+    const referenceTasks = image.tasks.filter((task) => task.kind.endsWith('_sheet'));
+    for (let index = 0; index < referenceTasks.length; index += 1) {
+        image = imagePlanProvider.connectNewProjectImageResult({
+            task_token: referenceTasks[index].task_token,
+            candidate_token: `scene-reference-${index + 1}`,
+            image_index: index + 1,
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, context).state;
+    }
+    imagePlanProvider.prepareNewProjectImagePlan({
+        expected_design_revision_sha256: image.design_revision_sha256,
+        expected_image_plan_revision_sha256: image.revision_sha256,
+    }, context);
+    const initial = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(initial.prepared, false);
+    assert.equal(initial.task_count, 1);
+    assert.equal(initial.tasks[0].kind, 'scene_image');
+    assert.deepEqual(initial.tasks[0].execution_preview, {
+        mode: 'setup_required', status_label: '준비 필요', reason: 'reference_staging_required',
+        user_status: '참조 이미지를 다시 연결해야 합니다.',
+        next_action: '이미지 작업에서 인물·장소 결과를 확인하세요.',
+        output_kind: 'image', output_count: 1, preview_only: true,
+    });
+
+    const prepared = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: initial.revision_sha256,
+        new_attempt: false,
+    }, context);
+    assert.equal(prepared.prepared, true);
+    assert.equal(prepared.tasks[0].execution_preview.mode, 'preview_ready');
+    assert.equal(prepared.tasks[0].execution_preview.user_status, '참조 이미지와 작업 내용이 준비되었습니다.');
+    assert.equal(prepared.tasks[0].execution_preview.next_action, '이미지 작업에서 장면 프롬프트를 확인하세요.');
+    assert.doesNotMatch(JSON.stringify(prepared.tasks), /reference_files|relative_path|references\//);
+
+    let handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    assert.equal(handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v4');
+    const scene = handoff.tasks[0];
+    assert.equal(scene.reference_files.length, 2);
+    assert.equal(scene.provider_execution_preview.readiness, 'preview_ready');
+    assert.deepEqual(scene.provider_execution_preview.blockers, []);
+    assert.deepEqual(scene.provider_execution_preview.command_spec.args.filter((item) => item === '--attach'), ['--attach', '--attach']);
+    const attached = scene.provider_execution_preview.command_spec.args.flatMap((item, index, values) =>
+        item === '--attach' ? [values[index + 1]] : []);
+    assert.deepEqual(attached, scene.reference_files.map((reference) => reference.path));
+    const paths = executionProvider.exactPaths(parts.userDataPath, `run_${scene.run_revision_sha256}`);
+    assert.equal(fs.lstatSync(paths.referencesRoot).mode & 0o777, 0o700);
+    assert.equal(fs.lstatSync(paths.referencesManifestPath).mode & 0o777, 0o600);
+    const manifestText = fs.readFileSync(paths.referencesManifestPath, 'utf8');
+    const referenceManifest = JSON.parse(manifestText);
+    assert.equal(referenceManifest.schema_version, executionProvider.REFERENCES_SCHEMA);
+    assert.match(referenceManifest.reference_revision_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(Object.hasOwn(referenceManifest, 'staged_at'), false);
+    for (const reference of scene.reference_files) {
+        assert.equal(fs.lstatSync(reference.path).mode & 0o777, 0o600);
+        assert.equal(fs.readFileSync(reference.path).equals(png), true);
+    }
+
+    const firstPath = scene.reference_files[0].path;
+    const firstInode = fs.lstatSync(firstPath).ino;
+    fs.unlinkSync(paths.referencesManifestPath);
+    const incomplete = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(incomplete.prepared, false);
+    assert.equal(incomplete.tasks[0].execution_preview.mode, 'setup_required');
+    const recovered = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: incomplete.revision_sha256,
+        new_attempt: false,
+    }, context);
+    assert.equal(recovered.prepared, true);
+    assert.equal(fs.lstatSync(firstPath).ino, firstInode, 'partial recovery reuses the verified immutable input');
+    assert.equal(fs.readFileSync(paths.referencesManifestPath, 'utf8'), manifestText,
+        'deterministic commit marker is restored byte-for-byte');
+    handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    assert.equal(handoff.tasks[0].reference_files[0].path, firstPath);
+
+    const tamperedBytes = Buffer.concat([png.subarray(0, 8), Buffer.from([90, 91, 92])]);
+    const tamperedManifest = structuredClone(referenceManifest);
+    tamperedManifest.references[0].byte_length = tamperedBytes.byteLength;
+    tamperedManifest.references[0].sha256 = crypto.createHash('sha256').update(tamperedBytes).digest('hex');
+    const { reference_revision_sha256: ignoredRevision, ...tamperedBase } = tamperedManifest;
+    tamperedManifest.reference_revision_sha256 = crypto.createHash('sha256')
+        .update(JSON.stringify(tamperedBase)).digest('hex');
+    fs.writeFileSync(firstPath, tamperedBytes, { mode: 0o600 });
+    fs.writeFileSync(paths.referencesManifestPath, `${JSON.stringify(tamperedManifest, null, 2)}\n`, { mode: 0o600 });
+    assert.equal(executionProvider.getNewProjectExecutionState(context).prepared, false,
+        'a self-consistent staged rewrite cannot replace the result-token-bound source bytes');
+    assert.throws(() => executionProvider.inspectExecutionHandoff(context, { new_attempt: false }), {
+        code: 'EXECUTION_REFERENCE_CONFLICT',
+    });
+    fs.writeFileSync(firstPath, png, { mode: 0o600 });
+    fs.writeFileSync(paths.referencesManifestPath, manifestText, { mode: 0o600 });
+
+    const rendererState = filmProvider.getNewProjectExecutionState(context);
+    assert.doesNotMatch(JSON.stringify(rendererState), /reference_files|relative_path|references\/|\.png/);
+    const outside = path.join(parts.base, 'outside.png');
+    fs.writeFileSync(outside, png, { mode: 0o600 });
+    fs.unlinkSync(firstPath);
+    fs.symlinkSync(outside, firstPath);
+    assert.throws(() => executionProvider.inspectExecutionHandoff(context, { new_attempt: false }), {
+        code: 'EXECUTION_FILE_UNSAFE',
+    });
+    assert.equal(fs.readFileSync(outside).equals(png), true);
+    fs.unlinkSync(firstPath);
+    fs.writeFileSync(firstPath, png, { mode: 0o600 });
+    image = imagePlanProvider.saveNewProjectImageRetrySelection({
+        task_tokens: [referenceTasks[0].task_token],
+        expected_design_revision_sha256: image.design_revision_sha256,
+        expected_image_plan_revision_sha256: image.revision_sha256,
+    }, context);
+    const stale = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(stale.prepared, false);
+    assert.equal(stale.tasks[0].execution_preview.mode, 'setup_required');
+    assert.throws(() => executionProvider.inspectExecutionHandoff(context, { new_attempt: false }), {
+        code: 'IMAGE_PLAN_EXECUTION_REFERENCE_STALE',
+    });
 });
 
 function setupActualPlans(t) {
@@ -582,7 +750,7 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
     assert.equal(inspected.status, 0, inspected.stderr);
     const handoff = JSON.parse(inspected.stdout);
     assert.equal(handoff.ok, true);
-    assert.equal(handoff.handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v3');
+    assert.equal(handoff.handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v4');
     assert.equal(handoff.handoff.tasks.length, 3);
     const sheetPreviews = handoff.handoff.tasks
         .filter((task) => task.lane === 'image')

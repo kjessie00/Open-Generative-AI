@@ -17,8 +17,13 @@ const ROOT_DIRECTORY = 'execution';
 const RUNS_DIRECTORY = 'runs';
 const MANIFEST_FILE = 'manifest.json';
 const RECEIPTS_DIRECTORY = 'receipts';
+const REFERENCES_DIRECTORY = 'references';
+const REFERENCES_MANIFEST_FILE = 'manifest.json';
+const REFERENCES_SCHEMA = 'film_pipeline.new_project_execution_references.v1';
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 64 * 1024;
+const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+const MAX_REFERENCES_MANIFEST_BYTES = 1024 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TASK_TOKEN = /^task_[a-f0-9]{64}$/;
 const PREPARATION_TOKEN = /^preparation_[a-f0-9]{64}$/;
@@ -78,6 +83,8 @@ function exactPaths(userDataPath, runToken = '') {
         draftRoot: design.draftRoot, root, runsRoot, runRoot,
         manifestPath: path.join(runRoot, MANIFEST_FILE),
         receiptsRoot: path.join(runRoot, RECEIPTS_DIRECTORY),
+        referencesRoot: path.join(runRoot, REFERENCES_DIRECTORY),
+        referencesManifestPath: path.join(runRoot, REFERENCES_DIRECTORY, REFERENCES_MANIFEST_FILE),
     };
 }
 
@@ -106,6 +113,11 @@ function ensureRunDirectories(paths) {
     ensureDirectory(paths.runsRoot, paths.root);
     ensureDirectory(paths.runRoot, paths.runsRoot);
     ensureDirectory(paths.receiptsRoot, paths.runRoot);
+}
+
+function ensureReferencesDirectory(paths) {
+    ensureRunDirectories(paths);
+    ensureDirectory(paths.referencesRoot, paths.runRoot);
 }
 
 function sameFile(left, right) {
@@ -165,6 +177,218 @@ function privateWrite(filePath, buffer, { exclusive = false } = {}) {
         fs.renameSync(temporary, filePath);
         fsyncDirectory(parent);
     } finally { try { fs.unlinkSync(temporary); } catch { /* renamed or removed */ } }
+}
+
+function publishImmutableReference(filePath, buffer) {
+    const parent = path.dirname(filePath);
+    const stagingParent = path.dirname(parent);
+    assertPrivateDirectory(parent, 'EXECUTION_REFERENCE_DIRECTORY_UNSAFE');
+    assertPrivateDirectory(stagingParent, 'EXECUTION_REFERENCE_DIRECTORY_UNSAFE');
+    if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_REFERENCE_BYTES) {
+        throw failure('EXECUTION_REFERENCE_INVALID');
+    }
+    try {
+        const existing = readPrivate(filePath, MAX_REFERENCE_BYTES, 'EXECUTION_REFERENCE_MISSING');
+        if (!existing.equals(buffer)) throw failure('EXECUTION_REFERENCE_CONFLICT');
+        return false;
+    } catch (error) {
+        if (error.code !== 'EXECUTION_REFERENCE_MISSING') throw error;
+    }
+    const temporary = path.join(stagingParent, `.execution-reference-${crypto.randomBytes(12).toString('hex')}.tmp`);
+    const descriptor = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT
+        | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try { fs.writeFileSync(descriptor, buffer); fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+    let published = false;
+    try {
+        try {
+            fs.linkSync(temporary, filePath);
+            published = true;
+            fsyncDirectory(parent);
+        } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            const existing = readPrivate(filePath, MAX_REFERENCE_BYTES, 'EXECUTION_REFERENCE_MISSING');
+            if (!existing.equals(buffer)) throw failure('EXECUTION_REFERENCE_CONFLICT');
+        }
+    } finally {
+        try { fs.unlinkSync(temporary); fsyncDirectory(stagingParent); } catch { /* task-owned temporary already absent */ }
+    }
+    return published;
+}
+
+function referencePairs(manifest) {
+    const pairs = [];
+    for (const task of manifest.tasks) {
+        if (task.reference_task_tokens.length !== task.reference_result_tokens.length) {
+            throw failure('EXECUTION_REFERENCE_COUNT_MISMATCH');
+        }
+        task.reference_result_tokens.forEach((resultToken, index) => {
+            pairs.push({
+                result_token: resultToken,
+                task_token: task.reference_task_tokens[index],
+            });
+        });
+    }
+    return pairs;
+}
+
+function validateReferenceDirectory(paths, expectedNames) {
+    assertPrivateDirectory(paths.referencesRoot, 'EXECUTION_REFERENCE_DIRECTORY_UNSAFE');
+    const entries = fs.readdirSync(paths.referencesRoot, { withFileTypes: true });
+    if (entries.length > 45 || entries.some((entry) => !entry.isFile() || entry.isSymbolicLink()
+        || !expectedNames.has(entry.name))) throw failure('EXECUTION_REFERENCE_DIRECTORY_UNSAFE');
+}
+
+function referenceManifestBase(manifest, references) {
+    return {
+        schema_version: REFERENCES_SCHEMA,
+        run_revision_sha256: manifest.run_revision_sha256,
+        image_plan_revision_sha256: manifest.image_plan_revision_sha256,
+        references,
+    };
+}
+
+function matchesReferenceSignature(buffer, mimeType) {
+    if (mimeType === 'image/png') {
+        return buffer.length >= 8 && buffer.subarray(0, 8)
+            .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    }
+    if (mimeType === 'image/jpeg') {
+        return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    }
+    if (mimeType === 'image/webp') {
+        return buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+            && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+    }
+    return false;
+}
+
+function loadReferenceCommit(paths, manifest) {
+    const pairs = referencePairs(manifest);
+    if (!pairs.length) return [];
+    assertPrivateDirectory(paths.referencesRoot, 'EXECUTION_REFERENCE_DIRECTORY_UNSAFE');
+    let value;
+    try {
+        value = JSON.parse(readPrivate(
+            paths.referencesManifestPath,
+            MAX_REFERENCES_MANIFEST_BYTES,
+            'EXECUTION_REFERENCES_MANIFEST_MISSING',
+        ).toString('utf8'));
+    } catch (error) {
+        if (error.code) throw error;
+        throw failure('EXECUTION_REFERENCES_MANIFEST_INVALID');
+    }
+    exactKeys(value, [
+        'schema_version', 'run_revision_sha256', 'image_plan_revision_sha256',
+        'reference_revision_sha256', 'references',
+    ], 'EXECUTION_REFERENCES_MANIFEST_INVALID');
+    if (value.schema_version !== REFERENCES_SCHEMA
+        || value.run_revision_sha256 !== manifest.run_revision_sha256
+        || value.image_plan_revision_sha256 !== manifest.image_plan_revision_sha256
+        || !Array.isArray(value.references) || !value.references.length || value.references.length > 44) {
+        throw failure('EXECUTION_REFERENCES_MANIFEST_INVALID');
+    }
+    const allowedPairs = new Set(pairs.map((item) => `${item.task_token}\0${item.result_token}`));
+    const expectedResultCount = new Set(pairs.map((item) => item.result_token)).size;
+    const seen = new Set();
+    for (const reference of value.references) {
+        exactKeys(reference, [
+            'result_token', 'task_token', 'mime_type', 'byte_length', 'sha256', 'relative_path',
+        ], 'EXECUTION_REFERENCES_MANIFEST_INVALID');
+        const extension = reference.mime_type === 'image/png' ? '.png'
+            : reference.mime_type === 'image/jpeg' ? '.jpg'
+                : reference.mime_type === 'image/webp' ? '.webp' : '';
+        const key = `${reference.task_token}\0${reference.result_token}`;
+        if (!TASK_TOKEN.test(reference.task_token || '') || !/^result_[a-f0-9]{64}$/.test(reference.result_token || '')
+            || !allowedPairs.has(key) || seen.has(reference.result_token) || !extension
+            || !Number.isSafeInteger(reference.byte_length) || reference.byte_length <= 0
+            || reference.byte_length > MAX_REFERENCE_BYTES || !SHA256.test(reference.sha256 || '')
+            || reference.relative_path !== `${reference.result_token}${extension}`) {
+            throw failure('EXECUTION_REFERENCES_MANIFEST_INVALID');
+        }
+        seen.add(reference.result_token);
+    }
+    const sorted = [...value.references].sort((left, right) => left.result_token.localeCompare(right.result_token));
+    if (seen.size !== expectedResultCount || JSON.stringify(sorted) !== JSON.stringify(value.references)
+        || value.reference_revision_sha256 !== sha256(JSON.stringify(referenceManifestBase(manifest, value.references)))) {
+        throw failure('EXECUTION_REFERENCES_MANIFEST_INVALID');
+    }
+    const expectedNames = new Set([REFERENCES_MANIFEST_FILE]);
+    for (const reference of value.references) {
+        expectedNames.add(reference.relative_path);
+        const buffer = readPrivate(path.join(paths.referencesRoot, reference.relative_path), MAX_REFERENCE_BYTES,
+            'EXECUTION_REFERENCE_MISSING');
+        if (buffer.byteLength !== reference.byte_length || sha256(buffer) !== reference.sha256
+            || reference.result_token !== `result_${sha256(`${reference.task_token}\0${reference.sha256}`)}`
+            || !matchesReferenceSignature(buffer, reference.mime_type)) {
+            throw failure('EXECUTION_REFERENCE_CONFLICT');
+        }
+    }
+    validateReferenceDirectory(paths, expectedNames);
+    return value.references.map((reference) => ({
+        ...reference,
+        path: path.join(paths.referencesRoot, reference.relative_path),
+    }));
+}
+
+function referenceFilesByTask(manifest, references) {
+    const byToken = new Map(references.map((reference) => [reference.result_token, reference]));
+    return new Map(manifest.tasks.map((task) => [
+        task.task_token,
+        task.reference_result_tokens.map((token) => byToken.get(token)).filter(Boolean),
+    ]));
+}
+
+function stageExecutionReferences(selection, context) {
+    const pairs = referencePairs(selection.manifest);
+    if (!pairs.length) return [];
+    ensureReferencesDirectory(selection.paths);
+    const unique = new Map();
+    for (const pair of pairs) {
+        const prior = unique.get(pair.result_token);
+        if (prior && prior.task_token !== pair.task_token) throw failure('EXECUTION_REFERENCE_TASK_MISMATCH');
+        if (prior) continue;
+        const source = newProjectImagePlanProvider.readNewProjectImageExecutionReference({
+            result_token: pair.result_token,
+            expected_task_token: pair.task_token,
+            expected_design_revision_sha256: selection.manifest.design_revision_sha256,
+            expected_image_plan_revision_sha256: selection.manifest.image_plan_revision_sha256,
+        }, context);
+        const relativePath = `${source.result_token}${source.extension}`;
+        publishImmutableReference(path.join(selection.paths.referencesRoot, relativePath), source.buffer);
+        unique.set(pair.result_token, {
+            result_token: source.result_token,
+            task_token: source.task_token,
+            mime_type: source.mime_type,
+            byte_length: source.byte_length,
+            sha256: source.sha256,
+            relative_path: relativePath,
+        });
+    }
+    const references = [...unique.values()].sort((left, right) => left.result_token.localeCompare(right.result_token));
+    const base = referenceManifestBase(selection.manifest, references);
+    const record = { ...base, reference_revision_sha256: sha256(JSON.stringify(base)) };
+    const expectedNames = new Set([REFERENCES_MANIFEST_FILE, ...references.map((item) => item.relative_path)]);
+    const presentNames = new Set(fs.readdirSync(selection.paths.referencesRoot));
+    for (const name of presentNames) {
+        if (!expectedNames.has(name)) throw failure('EXECUTION_REFERENCE_DIRECTORY_UNSAFE');
+    }
+    publishImmutableReference(
+        selection.paths.referencesManifestPath,
+        Buffer.from(`${JSON.stringify(record, null, 2)}\n`),
+    );
+    return loadReferenceCommit(selection.paths, selection.manifest);
+}
+
+function selectionPrepared(selection, context = {}) {
+    if (!referencePairs(selection.manifest).length) return true;
+    try {
+        const image = (context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan)(context);
+        if (!image?.ok || image.status !== 'restored' || image.blockers?.length
+            || image.design_revision_sha256 !== selection.manifest.design_revision_sha256
+            || image.revision_sha256 !== selection.manifest.image_plan_revision_sha256) return false;
+        loadReferenceCommit(selection.paths, selection.manifest);
+        return true;
+    } catch { return false; }
 }
 
 function availablePreparation(state) {
@@ -296,7 +520,8 @@ function validateTask(task, lane, index, schema) {
     if (schema === MANIFEST_SCHEMA) {
         const duration = task.duration_seconds;
         if ((lane === 'image' && duration !== null)
-            || (lane === 'video' && (!Number.isFinite(duration) || duration <= 0 || duration > 60))) {
+            || (lane === 'video' && (!Number.isFinite(duration) || duration <= 0 || duration > 60))
+            || task.reference_task_tokens.length !== task.reference_result_tokens.length) {
             throw failure('EXECUTION_MANIFEST_INVALID');
         }
     }
@@ -409,7 +634,10 @@ function selectLanes(context = {}) {
             && (!base || manifest.preparation_revision_sha256 === base.preparation_revision_sha256));
         candidates.sort((left, right) => right.manifest.attempt - left.manifest.attempt
             || String(right.manifest.created_at).localeCompare(String(left.manifest.created_at)));
-        if (candidates.length) return [{ ...candidates[0], prepared: true }];
+        if (candidates.length) {
+            const selected = candidates[0];
+            return [{ ...selected, prepared: selectionPrepared(selected, context) }];
+        }
         if (base) {
             const manifest = manifestFor(base, 1);
             return [{ paths: exactPaths(context.userDataPath, manifest.run_token), manifest, prepared: false }];
@@ -417,7 +645,9 @@ function selectLanes(context = {}) {
         const historical = manifests.filter(({ manifest }) => manifest.schema_version === MANIFEST_SCHEMA
             && manifest.lane === lane)
             .sort((left, right) => String(right.manifest.created_at).localeCompare(String(left.manifest.created_at)));
-        return historical.length ? [{ ...historical[0], prepared: true }] : [];
+        if (!historical.length) return [];
+        const selected = historical[0];
+        return [{ ...selected, prepared: selectionPrepared(selected, context) }];
     });
 }
 
@@ -557,11 +787,21 @@ function publicSelections(selections, context = {}) {
     const tasks = [];
     for (const selection of selections) {
         const receipts = laneReceipts(selection);
+        let referencesByTask = new Map();
+        if (selection.prepared && referencePairs(selection.manifest).length) {
+            try {
+                referencesByTask = referenceFilesByTask(
+                    selection.manifest,
+                    loadReferenceCommit(selection.paths, selection.manifest),
+                );
+            } catch { /* incomplete staging stays a simple setup state */ }
+        }
         selection.manifest.tasks.forEach((task, index) => {
             const receipt = receipts[index];
             const status = receipt?.status || 'queued';
+            const referenceFiles = referencesByTask.get(task.task_token) || [];
             const providerPreview = providerExecutionPreview.buildProviderExecutionPreview({
-                ...task, aspect_ratio: selection.manifest.aspect_ratio,
+                ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
             }, context);
             tasks.push({
                 task_token: task.task_token, lane: task.lane, kind: task.kind, sequence: task.sequence,
@@ -573,6 +813,7 @@ function publicSelections(selections, context = {}) {
                 generation_executed: receipt?.generation_executed || false,
                 result_locator: receipt?.result_locator || '',
                 provider_preview_readiness: providerPreview.readiness,
+                reference_setup_missing: task.reference_result_tokens.length > referenceFiles.length,
                 ...providerReadiness(task, context),
             });
         });
@@ -599,6 +840,7 @@ function publicSelections(selections, context = {}) {
             ? match.image_index : 0;
         task.execution_preview = executionPreview(task);
         delete task.provider_preview_readiness;
+        delete task.reference_setup_missing;
         delete task.result_locator;
     }
     const counts = Object.fromEntries(Object.keys(STATUS_LABELS)
@@ -636,6 +878,32 @@ function getNewProjectExecutionState(context = {}) {
 
 function executionPreview(task) {
     const resultAvailable = task.result_match_status === 'ready';
+    if (!resultAvailable && task.lane === 'image' && task.kind === 'scene_image'
+        && task.provider_preview_readiness === 'preview_ready') {
+        return {
+            mode: 'preview_ready',
+            status_label: '내용 확인 가능',
+            reason: 'private_preview_ready',
+            user_status: '참조 이미지와 작업 내용이 준비되었습니다.',
+            next_action: '이미지 작업에서 장면 프롬프트를 확인하세요.',
+            output_kind: 'image',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
+    if (!resultAvailable && task.lane === 'image' && task.kind === 'scene_image'
+        && task.reference_setup_missing) {
+        return {
+            mode: 'setup_required',
+            status_label: '준비 필요',
+            reason: 'reference_staging_required',
+            user_status: '참조 이미지를 다시 연결해야 합니다.',
+            next_action: '이미지 작업에서 인물·장소 결과를 확인하세요.',
+            output_kind: 'image',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
     if (!resultAvailable && task.provider_preview_readiness === 'preview_ready') {
         return {
             mode: 'preview_ready',
@@ -664,7 +932,7 @@ function executionPreview(task) {
     };
 }
 
-function materialize(selection) {
+function materialize(selection, context) {
     if (selection.prepared) return { ...selection, alreadyPrepared: true };
     ensureRunDirectories(selection.paths);
     const record = selection.manifest;
@@ -675,7 +943,10 @@ function materialize(selection) {
     }
     const loaded = loadManifest(selection.paths);
     if (loaded.run_revision_sha256 !== record.run_revision_sha256) throw failure('EXECUTION_MANIFEST_CONFLICT');
-    return { paths: selection.paths, manifest: loaded, prepared: true, alreadyPrepared: false };
+    const staged = { paths: selection.paths, manifest: loaded, prepared: false };
+    stageExecutionReferences(staged, context);
+    if (!selectionPrepared(staged, context)) throw failure('EXECUTION_REFERENCE_PREPARATION_INCOMPLETE');
+    return { ...staged, prepared: true, alreadyPrepared: false };
 }
 
 function prepareNewProjectExecution(payload, context = {}) {
@@ -711,7 +982,7 @@ function prepareNewProjectExecution(payload, context = {}) {
             return { paths: exactPaths(context.userDataPath, manifest.run_token), manifest, prepared: false };
         });
     }
-    const materialized = selections.map(materialize);
+    const materialized = selections.map((selection) => materialize(selection, context));
     return {
         ...publicSelections(materialized, context),
         already_prepared: materialized.every((selection) => selection.alreadyPrepared),
@@ -815,15 +1086,26 @@ function inspectExecutionHandoff(context = {}, options = {}) {
         }, context);
         selections = selectLanes(context);
     }
+    const tasks = selections.flatMap((selection) => {
+        const referencesByTask = referenceFilesByTask(
+            selection.manifest,
+            stageExecutionReferences(selection, context),
+        );
+        return selection.manifest.tasks.map((task) => {
+            const referenceFiles = referencesByTask.get(task.task_token) || [];
+            return {
+                ...task, run_revision_sha256: selection.manifest.run_revision_sha256,
+                attempt: selection.manifest.attempt, aspect_ratio: selection.manifest.aspect_ratio,
+                reference_files: referenceFiles,
+                provider_execution_preview: providerExecutionPreview.buildProviderExecutionPreview({
+                    ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
+                }, context),
+            };
+        });
+    });
     return {
-        schema_version: 'film_pipeline.new_project_execution_handoff.v3',
-        tasks: selections.flatMap((selection) => selection.manifest.tasks.map((task) => ({
-            ...task, run_revision_sha256: selection.manifest.run_revision_sha256,
-            attempt: selection.manifest.attempt, aspect_ratio: selection.manifest.aspect_ratio,
-            provider_execution_preview: providerExecutionPreview.buildProviderExecutionPreview({
-                ...task, aspect_ratio: selection.manifest.aspect_ratio,
-            }, context),
-        }))),
+        schema_version: 'film_pipeline.new_project_execution_handoff.v4',
+        tasks,
         receipts: selections.flatMap((selection) => laneReceipts(selection).filter(Boolean)),
         external_call_performed: false, model_called: false, generation_executed: false,
     };
@@ -848,6 +1130,7 @@ module.exports = {
     LEGACY_MANIFEST_SCHEMA,
     MANIFEST_SCHEMA,
     RECEIPT_SCHEMA,
+    REFERENCES_SCHEMA,
     STATUS_LABELS,
     FAILURE_CODES,
     FAILURE_LABELS,

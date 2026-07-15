@@ -23,6 +23,11 @@ const RESULT_TOKEN = /^result_[a-f0-9]{64}$/;
 const PREPARATION_TOKEN = /^preparation_[a-f0-9]{64}$/;
 const TASK_KINDS = new Set(['character_sheet', 'location_sheet', 'scene_image']);
 const TASK_STATUSES = new Set(['준비', '결과연결', '재제작']);
+const RESULT_EXTENSIONS = Object.freeze({
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp',
+});
 
 function failure(code, message = code) {
     const error = new Error(message);
@@ -479,13 +484,27 @@ function getNewProjectImageResultWorkspace(context = {}) {
 }
 
 function decodePreview(preview) {
-    if (!preview?.ready || !preview.preview || !['image/png', 'image/jpeg', 'image/webp'].includes(preview.preview.mime_type)) {
+    if (!preview?.ready || !preview.preview || !RESULT_EXTENSIONS[preview.preview.mime_type]) {
         throw failure(preview?.blockers?.[0] || 'IMAGE_PLAN_RESULT_PREVIEW_BLOCKED');
     }
     const buffer = Buffer.from(preview.preview.base64, 'base64');
     if (!buffer.length || buffer.byteLength !== preview.preview.byte_length || buffer.byteLength > MAX_RESULT_BYTES
         || buffer.toString('base64') !== preview.preview.base64) throw failure('IMAGE_PLAN_RESULT_PREVIEW_INVALID');
     return { buffer, mimeType: preview.preview.mime_type };
+}
+
+function matchesImageSignature(buffer, mimeType) {
+    if (mimeType === 'image/png') {
+        return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    }
+    if (mimeType === 'image/jpeg') {
+        return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    }
+    if (mimeType === 'image/webp') {
+        return buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+            && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+    }
+    return false;
 }
 
 function connectNewProjectImageResult(payload, context = {}) {
@@ -544,11 +563,57 @@ function readResult(paths, token) {
         'candidate_token', 'image_index', 'linked_at', 'generation_executed',
     ], 'IMAGE_PLAN_RESULT_INVALID');
     if (manifest.schema_version !== RESULT_SCHEMA || manifest.result_token !== token
-        || !TASK_TOKEN.test(manifest.task_token) || !SHA256.test(manifest.sha256)
-        || manifest.generation_executed !== false) throw failure('IMAGE_PLAN_RESULT_INVALID');
+        || !TASK_TOKEN.test(manifest.task_token) || !RESULT_EXTENSIONS[manifest.mime_type]
+        || !Number.isSafeInteger(manifest.byte_length) || manifest.byte_length <= 0
+        || manifest.byte_length > MAX_RESULT_BYTES || !SHA256.test(manifest.sha256)
+        || typeof manifest.candidate_token !== 'string' || !manifest.candidate_token
+        || manifest.candidate_token.includes('\0') || Buffer.byteLength(manifest.candidate_token, 'utf8') > 1024
+        || !Number.isSafeInteger(manifest.image_index) || manifest.image_index < 1
+        || !Number.isFinite(Date.parse(manifest.linked_at))
+        || manifest.generation_executed !== false
+        || `result_${sha256(`${manifest.task_token}\0${manifest.sha256}`)}` !== token) {
+        throw failure('IMAGE_PLAN_RESULT_INVALID');
+    }
     const buffer = readPrivate(path.join(paths.resultsRoot, `${token}.bin`), MAX_RESULT_BYTES);
-    if (buffer.byteLength !== manifest.byte_length || sha256(buffer) !== manifest.sha256) throw failure('IMAGE_PLAN_RESULT_INVALID');
+    if (buffer.byteLength !== manifest.byte_length || sha256(buffer) !== manifest.sha256
+        || !matchesImageSignature(buffer, manifest.mime_type)) throw failure('IMAGE_PLAN_RESULT_INVALID');
     return { manifest, buffer };
+}
+
+function readNewProjectImageExecutionReference(payload, context = {}) {
+    exactKeys(payload, [
+        'result_token', 'expected_task_token',
+        'expected_design_revision_sha256', 'expected_image_plan_revision_sha256',
+    ], 'IMAGE_PLAN_EXECUTION_REFERENCE_SHAPE_INVALID');
+    if (!RESULT_TOKEN.test(payload.result_token || '') || !TASK_TOKEN.test(payload.expected_task_token || '')
+        || !SHA256.test(payload.expected_design_revision_sha256 || '')
+        || !SHA256.test(payload.expected_image_plan_revision_sha256 || '')) {
+        throw failure('IMAGE_PLAN_EXECUTION_REFERENCE_INVALID');
+    }
+    const state = getNewProjectImagePlan(context);
+    if (!state.ok || state.status !== 'restored' || state.blockers.length
+        || !fs.existsSync(exactPaths(context.userDataPath).planPath)
+        || state.design_revision_sha256 !== payload.expected_design_revision_sha256
+        || state.revision_sha256 !== payload.expected_image_plan_revision_sha256) {
+        throw failure('IMAGE_PLAN_EXECUTION_REFERENCE_STALE');
+    }
+    const task = state.tasks.find((item) => item.task_token === payload.expected_task_token);
+    if (!task || task.status !== '결과연결' || task.result_token !== payload.result_token) {
+        throw failure('IMAGE_PLAN_EXECUTION_REFERENCE_STALE');
+    }
+    const result = readResult(exactPaths(context.userDataPath), payload.result_token);
+    if (result.manifest.task_token !== payload.expected_task_token) {
+        throw failure('IMAGE_PLAN_EXECUTION_REFERENCE_TASK_MISMATCH');
+    }
+    return {
+        result_token: result.manifest.result_token,
+        task_token: result.manifest.task_token,
+        mime_type: result.manifest.mime_type,
+        extension: RESULT_EXTENSIONS[result.manifest.mime_type],
+        byte_length: result.manifest.byte_length,
+        sha256: result.manifest.sha256,
+        buffer: result.buffer,
+    };
 }
 
 function getNewProjectImageResultPreview(payload, context = {}) {
@@ -599,5 +664,6 @@ module.exports = {
     getNewProjectImageResultWorkspace,
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
+    readNewProjectImageExecutionReference,
     saveNewProjectImageRetrySelection,
 };
