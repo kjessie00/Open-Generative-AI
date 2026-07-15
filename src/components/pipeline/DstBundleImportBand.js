@@ -1,6 +1,13 @@
 import { actionButton, el, emptyState } from './ui.js';
 
 const SAFE_PREVIEW_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const REFERENCE_KINDS = new Set(['character_sheet', 'location_sheet']);
+
+const KIND_LABELS = Object.freeze({
+    character_sheet: '캐릭터',
+    location_sheet: '장소',
+    scene_image: '장면',
+});
 
 function formatBytes(value) {
     if (!Number.isFinite(value) || value < 0) return '크기 미상';
@@ -16,10 +23,20 @@ function formatCreatedAt(value) {
 }
 
 function previewSource(candidate) {
-    const mimeType = candidate?.preview?.mime_type || candidate?.mime_type || '';
-    const base64 = candidate?.preview?.base64 || '';
+    const value = candidate?.preview || candidate || {};
+    const mimeType = value.mime_type || '';
+    const base64 = value.base64 || '';
     if (!SAFE_PREVIEW_MIME.has(mimeType) || !/^[A-Za-z0-9+/=]+$/.test(base64)) return '';
     return `data:${mimeType};base64,${base64}`;
+}
+
+function itemSequence(item) {
+    const value = Number(item?.sequence);
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function itemLabel(item) {
+    return `${itemSequence(item)}. ${item.target_id || item.media_id} · ${KIND_LABELS[item.kind] || '이미지'}`;
 }
 
 function labeledSelect(id, labelText, options, value, onChange) {
@@ -29,13 +46,13 @@ function labeledSelect(id, labelText, options, value, onChange) {
         attrs: { for: id },
     });
     const select = el('select', {
-        value,
         className: 'min-h-11 w-full rounded-md border border-white/10 bg-black/40 px-3 text-sm text-white',
         attrs: { id },
     }, options.map((option) => el('option', {
         value: option.value,
         text: option.label,
     })));
+    select.value = value;
     select.addEventListener('change', () => onChange(select.value));
     return el('div', { className: 'flex min-w-0 flex-col gap-2' }, [label, select]);
 }
@@ -51,14 +68,21 @@ export function DstBundleImportBand({
     onConfirm,
 }) {
     const candidates = Array.isArray(workspace?.candidates) ? workspace.candidates : [];
-    let selectedRetryMediaId = retryItems.some((item) => item.media_id === plan?.retry_media_id)
-        ? plan.retry_media_id
-        : retryItems[0]?.media_id || '';
+    const plannedRetry = retryItems.find((item) => item.media_id === plan?.retry_media_id);
+    let selectedRetryMediaId = plannedRetry?.media_id || retryItems[0]?.media_id || '';
     let selectedCandidateToken = candidates.find((candidate) => candidate.bundle_id === plan?.source_bundle_id)?.candidate_token
         || candidates[0]?.candidate_token
         || '';
     let activePlan = plan?.status && !['empty', 'idle'].includes(plan.status) ? plan : null;
     let activePreview = preview?.candidate_token === selectedCandidateToken ? preview : null;
+    const previewCache = new Map();
+    if (activePreview?.ready === true && activePreview.preview) {
+        const initialIndex = Number.isSafeInteger(Number(activePreview.image_index)) && Number(activePreview.image_index) > 0
+            ? Number(activePreview.image_index) : 1;
+        previewCache.set(`${selectedCandidateToken}:${initialIndex}`, { status: 'ready', value: activePreview });
+    }
+    let referenceMappingKey = '';
+    let referenceMappings = [];
     let busy = false;
     let feedback = activePlan?.imported || activePlan?.already_current
         ? '이미지 묶음을 작업대에 연결했습니다.'
@@ -69,14 +93,122 @@ export function DstBundleImportBand({
         attrs: { 'aria-labelledby': 'dst-bundle-import-title' },
     });
 
+    const referenceContext = (candidate, retryItem) => {
+        if (!candidate || !REFERENCE_KINDS.has(retryItem?.kind)) return null;
+        const count = Number(candidate.image_count) || 1;
+        const targets = retryItems
+            .filter((item) => item.kind === retryItem.kind && itemSequence(item))
+            .sort((left, right) => itemSequence(left) - itemSequence(right));
+        const key = `${selectedCandidateToken}:${retryItem.kind}:${count}:${targets.map((item) => item.media_id).join(',')}`;
+        if (referenceMappingKey !== key) {
+            referenceMappingKey = key;
+            referenceMappings = Array.from({ length: count }, (_, index) => targets[index]?.media_id || '');
+        }
+        const availableTargets = new Set(targets.map((item) => item.media_id));
+        const selected = referenceMappings.filter(Boolean);
+        const complete = referenceMappings.length === count
+            && selected.length === count
+            && new Set(selected).size === count
+            && selected.every((mediaId) => availableTargets.has(mediaId));
+        return { count, targets, complete };
+    };
+
+    const loadScenePreview = async (candidateToken) => {
+        if (typeof onLoadPreview !== 'function') return;
+        try {
+            const loaded = await onLoadPreview({ candidateToken });
+            if (selectedCandidateToken === candidateToken && loaded?.candidate_token === candidateToken) activePreview = loaded;
+        } catch {
+            activePreview = null;
+        }
+        render();
+    };
+
+    const ensureReferencePreviews = (context) => {
+        if (typeof onLoadPreview !== 'function') return;
+        for (let imageIndex = 1; imageIndex <= context.count; imageIndex += 1) {
+            const cacheKey = `${selectedCandidateToken}:${imageIndex}`;
+            if (previewCache.has(cacheKey)) continue;
+            const candidateToken = selectedCandidateToken;
+            previewCache.set(cacheKey, { status: 'loading', value: null });
+            Promise.resolve(onLoadPreview({ candidateToken, imageIndex })).then((loaded) => {
+                const loadedIndex = Number(loaded?.image_index ?? (imageIndex === 1 ? 1 : 0));
+                const valid = loaded?.ready === true && loaded?.candidate_token === candidateToken
+                    && loadedIndex === imageIndex && Boolean(previewSource(loaded));
+                previewCache.set(cacheKey, { status: valid ? 'ready' : 'failed', value: valid ? loaded : null });
+                if (selectedCandidateToken === candidateToken) render();
+            }).catch(() => {
+                previewCache.set(cacheKey, { status: 'failed', value: null });
+                if (selectedCandidateToken === candidateToken) render();
+            });
+        }
+    };
+
+    const mappingOptions = (context, imageIndex) => {
+        const selectedElsewhere = new Set(referenceMappings
+            .filter((_, index) => index !== imageIndex - 1)
+            .filter(Boolean));
+        const current = referenceMappings[imageIndex - 1] || '';
+        return [
+            { value: '', label: '대상 선택' },
+            ...context.targets
+                .filter((item) => item.media_id === current || !selectedElsewhere.has(item.media_id))
+                .map((item) => ({ value: item.media_id, label: itemLabel(item) })),
+        ];
+    };
+
+    const referenceMappingGrid = (context) => el('section', {
+        className: 'mt-4',
+        attrs: { 'aria-label': '참조 이미지 대상 연결' },
+    }, [
+        el('p', {
+            text: `${KIND_LABELS[retryItems.find((item) => item.media_id === selectedRetryMediaId)?.kind] || '참조'} 이미지 ${context.count}장을 각각 연결하세요.`,
+            className: 'text-xs text-secondary',
+        }),
+        el('div', { className: 'mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3' }, (
+            Array.from({ length: context.count }, (_, index) => {
+                const imageIndex = index + 1;
+                const cached = previewCache.get(`${selectedCandidateToken}:${imageIndex}`);
+                const source = cached?.status === 'ready' ? previewSource(cached.value) : '';
+                return el('article', { className: 'rounded-lg border border-white/10 bg-black/20 p-3' }, [
+                    el('strong', { text: `이미지 ${imageIndex}`, className: 'text-sm text-white' }),
+                    source
+                        ? el('img', {
+                            className: 'mt-2 aspect-[9/16] max-h-64 w-full rounded-md bg-black object-contain',
+                            attrs: { src: source, alt: `이미지 ${imageIndex} 미리보기` },
+                        })
+                        : el('p', {
+                            text: cached?.status === 'failed' ? '미리보기 없음' : '불러오는 중',
+                            className: 'mt-2 flex aspect-[9/16] max-h-64 items-center justify-center rounded-md bg-black/40 text-xs text-secondary',
+                            attrs: { role: 'status' },
+                        }),
+                    labeledSelect(
+                        `dst-reference-target-${imageIndex}`,
+                        `이미지 ${imageIndex} 대상`,
+                        mappingOptions(context, imageIndex),
+                        referenceMappings[index] || '',
+                        (value) => {
+                            referenceMappings[index] = value;
+                            activePlan = null;
+                            feedback = '';
+                            render();
+                        },
+                    ),
+                ]);
+            })
+        )),
+    ]);
+
     const render = () => {
         const candidate = candidates.find((item) => item.candidate_token === selectedCandidateToken);
         const retryItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
+        const references = referenceContext(candidate, retryItem);
         const previewUrl = previewSource(activePreview);
         const workspaceBlocked = workspace?.status === 'blocked';
         const planReady = activePlan?.ready === true && Boolean(activePlan?.plan_token);
         const imported = activePlan?.imported === true || activePlan?.already_current === true;
-        const canPlan = Boolean(selectedRetryMediaId && selectedCandidateToken && typeof onPlan === 'function');
+        const canPlan = Boolean(selectedRetryMediaId && selectedCandidateToken && typeof onPlan === 'function'
+            && (!references || references.complete));
 
         root.replaceChildren(...[
             el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
@@ -97,7 +229,7 @@ export function DstBundleImportBand({
                         '연결할 항목',
                         retryItems.map((item) => ({
                             value: item.media_id,
-                            label: `${item.sequence}. ${item.target_id || item.media_id} · ${item.kind}`,
+                            label: itemLabel(item),
                         })),
                         selectedRetryMediaId,
                         (value) => {
@@ -105,6 +237,8 @@ export function DstBundleImportBand({
                             activePlan = null;
                             feedback = '';
                             render();
+                            const nextItem = retryItems.find((item) => item.media_id === value);
+                            if (!REFERENCE_KINDS.has(nextItem?.kind)) void loadScenePreview(selectedCandidateToken);
                         },
                     ),
                     labeledSelect(
@@ -122,23 +256,16 @@ export function DstBundleImportBand({
                             activePreview = null;
                             feedback = '';
                             render();
-                            if (typeof onLoadPreview === 'function') {
-                                try {
-                                    const loaded = await onLoadPreview({ candidateToken: value });
-                                    if (selectedCandidateToken === value && loaded?.candidate_token === value) activePreview = loaded;
-                                } catch {
-                                    activePreview = null;
-                                }
-                                render();
-                            }
+                            const nextItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
+                            if (!REFERENCE_KINDS.has(nextItem?.kind)) await loadScenePreview(value);
                         },
                     ),
-                    previewUrl
+                    !references && previewUrl
                         ? el('img', {
                             className: 'aspect-video h-full max-h-28 w-full rounded-md border border-white/10 bg-black object-cover',
                             attrs: { src: previewUrl, alt: `${candidate.bundle_id} 결과 미리보기` },
                         })
-                        : emptyState('미리보기 없음'),
+                        : !references ? emptyState('미리보기 없음') : null,
                 ])
                 : emptyState(retryItems.length
                     ? workspaceBlocked
@@ -149,6 +276,7 @@ export function DstBundleImportBand({
                 text: [formatCreatedAt(candidate.created_at), candidate.prompt_excerpt].filter(Boolean).join(' · '),
                 className: 'mt-3 line-clamp-2 text-xs leading-5 text-secondary',
             }) : null,
+            references ? referenceMappingGrid(references) : null,
             retryItems.length && candidates.length ? el('div', { className: 'mt-4 flex flex-wrap items-center gap-3' }, [
                 actionButton(busy ? '확인 중…' : '묶음 확인', {
                     disabled: busy || !canPlan,
@@ -157,7 +285,13 @@ export function DstBundleImportBand({
                         feedback = '';
                         render();
                         try {
-                            activePlan = await onPlan({
+                            activePlan = await onPlan(references ? {
+                                candidateToken: selectedCandidateToken,
+                                mappings: referenceMappings.map((retryMediaId, index) => ({
+                                    imageIndex: index + 1,
+                                    retryMediaId,
+                                })),
+                            } : {
                                 candidateToken: selectedCandidateToken,
                                 retryMediaId: selectedRetryMediaId,
                             });
@@ -170,9 +304,13 @@ export function DstBundleImportBand({
                 }),
                 activePlan ? el('span', {
                     text: imported
-                        ? `${activePlan.imported_count || activePlan.image_count || 1}장을 ${activePlan.target_id || retryItem?.target_id || '선택 장면'}에 연결했습니다.`
+                        ? references
+                            ? `${activePlan.imported_count || activePlan.image_count || references.count}장을 각각 연결했습니다.`
+                            : `${activePlan.imported_count || activePlan.image_count || 1}장을 ${activePlan.target_id || retryItem?.target_id || '선택 장면'}에 연결했습니다.`
                         : planReady
-                            ? `${activePlan.new_image_count ?? activePlan.image_count ?? candidate?.image_count ?? 1}장을 ${activePlan.target_id || retryItem?.target_id || '선택 장면'}에 연결합니다.`
+                            ? references
+                                ? `${activePlan.new_image_count ?? activePlan.image_count ?? references.count}장의 연결을 확인했습니다.`
+                                : `${activePlan.new_image_count ?? activePlan.image_count ?? candidate?.image_count ?? 1}장을 ${activePlan.target_id || retryItem?.target_id || '선택 장면'}에 연결합니다.`
                             : '이미지 묶음을 확인하지 못했습니다.',
                     className: 'min-w-0 flex-1 break-words text-xs text-secondary',
                     attrs: { role: planReady || imported ? 'status' : 'alert' },
@@ -204,6 +342,8 @@ export function DstBundleImportBand({
                 attrs: { role: 'status', 'aria-live': 'polite' },
             }) : null,
         ].filter(Boolean));
+
+        if (references) ensureReferencePreviews(references);
     };
 
     render();

@@ -43,4 +43,4 @@
 - lint, Vite build 59 modules, `git diff --check`: PASS
 - live `dst image`, 영상 생성, API key, 외부 업로드: 0건
 - 가져온 이미지 품질은 자동 채택하지 않았다. 사람 검토와 Jessie 최종 승인은 별도 사실이다.
-- 실제 캐릭터·장소 3장 묶음은 서로 다른 대상이다. 하나의 retry target에 합치지 않고, 다음 단계에서 각 이미지를 서로 다른 캐릭터/장소에 배치하는 mapping UI로 처리해야 한다.
+- 실제 캐릭터·장소 3장 묶음을 서로 다른 대상에 배치하는 mapping UI는 `docs/ui_integration/48_dst_reference_sheet_mapping.md`에서 구현·검증했다.

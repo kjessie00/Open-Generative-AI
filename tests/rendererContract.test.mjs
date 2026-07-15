@@ -689,6 +689,174 @@ test('MOCK DST result import exposes only image retry targets and uses opaque pl
     assert.equal(findAll(band, 'button').some((button) => /(?:생성|명령) 실행/.test(button.textContent)), false);
 });
 
+test('MOCK DST reference bundle shows every image and maps each once to the same saved kind', async (t) => {
+    const calls = [];
+    const previewCalls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaRetryPlanBand } = await import('../src/components/pipeline/MediaRetryPlanBand.js');
+    const band = MediaRetryPlanBand({
+        plan: {
+            status: 'preview_ready',
+            blockers: [],
+            items: [{
+                sequence: 1,
+                media_id: 'character-front-retry',
+                target_id: 'character_front',
+                provider: 'dst',
+                kind: 'character_sheet',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }, {
+                sequence: 2,
+                media_id: 'character-side-retry',
+                target_id: 'character_side',
+                provider: 'dst',
+                kind: 'character_sheet',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }, {
+                sequence: 3,
+                media_id: 'character-expression-retry',
+                target_id: 'character_expression',
+                provider: 'dst',
+                kind: 'character_sheet',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }, {
+                sequence: 4,
+                media_id: 'location-retry',
+                target_id: 'backstage_hall',
+                provider: 'dst',
+                kind: 'location_sheet',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }, {
+                sequence: 5,
+                media_id: 'scene-retry',
+                target_id: 'clip_010',
+                provider: 'dst',
+                kind: 'scene_image',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }],
+        },
+        dstBundleImportWorkspace: {
+            status: 'ready',
+            blockers: [],
+            candidates: [{
+                candidate_token: 'opaque-reference-token',
+                bundle_id: 'character-reference-bundle',
+                created_at: '2026-07-15T08:00:00Z',
+                prompt_excerpt: '주인공 캐릭터 시트 세 장',
+                mime_type: 'image/png',
+                size_bytes: 2048,
+                total_size_bytes: 6144,
+                image_count: 3,
+            }],
+        },
+        dstBundleImportPreview: {
+            status: 'ready',
+            ready: true,
+            candidate_token: 'opaque-reference-token',
+            preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=', byte_length: 8 },
+            blockers: [],
+        },
+        async onLoadDstBundleImportPreview(payload) {
+            previewCalls.push(payload);
+            return {
+                status: 'ready',
+                ready: true,
+                candidate_token: payload.candidateToken,
+                image_index: payload.imageIndex,
+                preview: { mime_type: 'image/png', base64: `iVBORw0KGg${payload.imageIndex}=`, byte_length: 8 },
+                blockers: [],
+            };
+        },
+        async onPlanDstBundleImport(payload) {
+            calls.push(['plan', payload]);
+            return {
+                status: 'ready',
+                ready: true,
+                already_current: false,
+                plan_token: 'opaque-reference-plan',
+                source_bundle_id: 'character-reference-bundle',
+                image_count: 3,
+                new_image_count: 3,
+                blockers: [],
+                executed: false,
+            };
+        },
+        async onConfirmDstBundleImport(payload) {
+            calls.push(['confirm', payload]);
+            return {
+                ok: true,
+                imported: true,
+                already_current: false,
+                imported_count: 3,
+                executed: true,
+            };
+        },
+    });
+
+    assert.match(band.textContent, /불러오는 중/, 'uncached reference thumbnails use short Korean loading text');
+    await flushRenderer();
+    assert.deepEqual(previewCalls, [
+        { candidateToken: 'opaque-reference-token', imageIndex: 2 },
+        { candidateToken: 'opaque-reference-token', imageIndex: 3 },
+    ], 'the existing index-less preview is safely cached as image 1');
+    for (let imageIndex = 1; imageIndex <= 3; imageIndex += 1) {
+        const image = byAttribute(band, 'img', 'alt', `이미지 ${imageIndex} 미리보기`);
+        const select = byAttribute(band, 'select', 'id', `dst-reference-target-${imageIndex}`);
+        const label = byAttribute(band, 'label', 'for', `dst-reference-target-${imageIndex}`);
+        assert.match(image.attributes.get('src'), /^data:image\/png;base64,/);
+        assert.ok(select);
+        assert.match(select.className, /min-h-11/);
+        assert.equal(label.textContent, `이미지 ${imageIndex} 대상`);
+        assert.equal(select.value, ['character-front-retry', 'character-side-retry', 'character-expression-retry'][imageIndex - 1]);
+        assert.doesNotMatch(select.textContent, /backstage_hall|clip_010/, 'other reference kinds and scenes stay hidden');
+    }
+    assert.ok(descendants(band).some((node) => /sm:grid-cols-2/.test(node.className)), 'reference cards use a responsive grid');
+
+    let second = byAttribute(band, 'select', 'id', 'dst-reference-target-2');
+    second.value = '';
+    await second.dispatchEvent({ type: 'change' });
+    assert.equal(byText(band, 'button', '묶음 확인').disabled, true, 'every image needs a target before planning');
+
+    let first = byAttribute(band, 'select', 'id', 'dst-reference-target-1');
+    assert.deepEqual(findAll(first, 'option').map((option) => option.value), ['', 'character-front-retry', 'character-side-retry']);
+    first.value = 'character-side-retry';
+    await first.dispatchEvent({ type: 'change' });
+    second = byAttribute(band, 'select', 'id', 'dst-reference-target-2');
+    assert.deepEqual(findAll(second, 'option').map((option) => option.value), ['', 'character-front-retry']);
+    second.value = 'character-front-retry';
+    await second.dispatchEvent({ type: 'change' });
+    assert.equal(byText(band, 'button', '묶음 확인').disabled, false);
+
+    await byText(band, 'button', '묶음 확인').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[0], ['plan', {
+        candidateToken: 'opaque-reference-token',
+        mappings: [
+            { imageIndex: 1, retryMediaId: 'character-side-retry' },
+            { imageIndex: 2, retryMediaId: 'character-front-retry' },
+            { imageIndex: 3, retryMediaId: 'character-expression-retry' },
+        ],
+    }]);
+    assert.match(band.textContent, /3장의 연결을 확인했습니다/);
+    assert.doesNotMatch(band.textContent, /PASS|PREVIEW|BLOCK|DST_/);
+
+    await byText(band, 'button', '3장 연결').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[1], ['confirm', { planToken: 'opaque-reference-plan', confirmed: true }]);
+    assert.match(band.textContent, /3장을 각각 연결했습니다/);
+    assert.match(band.textContent, /이미지 묶음을 작업대에 연결했습니다/);
+    assert.equal(previewCalls.length, 2, 'cached thumbnails are not fetched again after rerenders');
+});
+
 test('MOCK video result import binds Flow candidates to the exact saved video retry', async (t) => {
     const calls = [];
     const { restore } = installDeterministicDom({});

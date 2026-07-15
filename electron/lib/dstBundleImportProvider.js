@@ -283,6 +283,7 @@ function blockedPreview(code) {
         status: 'blocked',
         ready: false,
         candidate_token: '',
+        image_index: 0,
         preview: null,
         blockers: [code],
         executed: false,
@@ -292,21 +293,27 @@ function blockedPreview(code) {
 
 function getDstBundleImportPreview(payload, context = {}) {
     try {
-        exactKeys(payload, ['candidateToken'], 'DST_IMPORT_PREVIEW_REQUEST_INVALID');
+        const hasImageIndex = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'imageIndex'));
+        exactKeys(payload, hasImageIndex ? ['candidateToken', 'imageIndex'] : ['candidateToken'], 'DST_IMPORT_PREVIEW_REQUEST_INVALID');
         const token = boundedText(payload.candidateToken, 256, 'DST_IMPORT_CANDIDATE_TOKEN_INVALID');
         if (!TOKEN_PATTERN.test(token)) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
+        const imageIndex = hasImageIndex ? payload.imageIndex : 1;
+        if (!Number.isSafeInteger(imageIndex) || imageIndex < 1) throw failure('DST_IMPORT_PREVIEW_IMAGE_INDEX_INVALID');
         const inventory = scanInventory(context);
         const candidate = inventory.candidates.find((entry) => entry.token === token);
         if (!candidate) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
-        if (candidate.image.size > MAX_PREVIEW_BYTES) throw failure('DST_IMPORT_PREVIEW_TOO_LARGE');
+        const selected = candidate.images[imageIndex - 1];
+        if (!selected) throw failure('DST_IMPORT_PREVIEW_IMAGE_INDEX_INVALID');
+        if (selected.image.size > MAX_PREVIEW_BYTES) throw failure('DST_IMPORT_PREVIEW_TOO_LARGE');
         return {
             status: 'ready',
             ready: true,
             candidate_token: candidate.token,
+            image_index: imageIndex,
             preview: {
-                mime_type: candidate.mimeType,
-                byte_length: candidate.image.size,
-                base64: candidate.image.buffer.toString('base64'),
+                mime_type: selected.mimeType,
+                byte_length: selected.image.size,
+                base64: selected.image.buffer.toString('base64'),
             },
             blockers: [],
             executed: false,
@@ -447,72 +454,146 @@ function operationIso(context = {}) {
     return value;
 }
 
-function buildInputs(context, candidate, retryMediaId, importedAt) {
-    const retry = retryContext(context, retryMediaId);
-    const attempts = retry.records
-        .filter((record) => record.kind === retry.item.kind && record.target_id === retry.item.target_id && record.provider === 'dst')
-        .map((record) => Number(record.attempt)).filter((value) => Number.isSafeInteger(value) && value > 0);
-    let nextAttempt = Math.max(0, ...attempts) + 1;
+function buildEntry(context, candidate, bundleImage, retry, retryMediaId, importedAt, attempt) {
+    const imageCandidate = { ...candidate, ...bundleImage };
+    const deterministic = sha256(candidate.imageCount === 1
+        ? `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.image.sha256}`
+        : `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.imageName}\0${bundleImage.image.sha256}`);
+    const mediaId = `dst_${deterministic.slice(0, 32)}`;
+    const targetRelativePath = `${IMPORT_RELATIVE_ROOT}/${bundleImage.image.sha256}${bundleImage.extension}`;
+    const existing = retry.records.find((record) => record.media_id === mediaId);
+    const resolvedAttempt = existing ? Number(existing.attempt) : attempt;
+    if (!Number.isSafeInteger(resolvedAttempt) || resolvedAttempt <= 0 || resolvedAttempt > 10000) {
+        throw failure('DST_IMPORT_ATTEMPT_INVALID');
+    }
     const manifestId = safeId(candidate.manifestValue.id, 'DST_IMPORT_OPERATION_ID_INVALID');
     const referenceIds = Array.isArray(retry.source.reference_ids)
         ? retry.source.reference_ids.map((value) => safeId(value, 'DST_IMPORT_REFERENCE_ID_INVALID')).slice(0, 8) : [];
-    const entries = candidate.images.map((bundleImage) => {
-        const imageCandidate = { ...candidate, ...bundleImage };
-        const deterministic = sha256(candidate.imageCount === 1
-            ? `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.image.sha256}`
-            : `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.imageName}\0${bundleImage.image.sha256}`);
-        const mediaId = `dst_${deterministic.slice(0, 32)}`;
-        const targetRelativePath = `${IMPORT_RELATIVE_ROOT}/${bundleImage.image.sha256}${bundleImage.extension}`;
-        const existing = retry.records.find((record) => record.media_id === mediaId);
-        const attempt = existing ? Number(existing.attempt) : nextAttempt++;
-        if (!Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10000) throw failure('DST_IMPORT_ATTEMPT_INVALID');
-        const desired = {
-            media_id: mediaId,
-            kind: retry.item.kind,
-            target_id: retry.item.target_id,
-            provider: 'dst',
-            operation_id: manifestId,
-            attempt,
-            reference_ids: referenceIds,
-            relative_path: targetRelativePath,
-            generation_status: 'imported',
-            prompt: candidate.query,
-            aspect_ratio: typeof retry.source.aspect_ratio === 'string' ? retry.source.aspect_ratio : '',
-            review_status: 'unreviewed',
-            retry_of: retryMediaId,
-            source_bundle_id: candidate.bundleId,
-            source_image_name: bundleImage.imageName,
-            source_manifest_sha256: candidate.manifest.sha256,
-            source_metadata_sha256: candidate.metadata.sha256,
-            source_image_sha256: bundleImage.image.sha256,
-            imported_at: importedAt,
-        };
-        if (existing && !recordMatches(existing, desired)) throw failure('DST_IMPORT_MEDIA_ID_CONFLICT');
-        const target = destinationSnapshot(retry.rootInfo, targetRelativePath, context.maxImageBytes || MAX_IMAGE_BYTES);
-        if (target.snapshot.exists && target.snapshot.sha256 !== bundleImage.image.sha256) {
-            throw failure('DST_IMPORT_TARGET_COLLISION');
-        }
-        const ledgerAppendNeeded = !existing;
-        const targetReady = target.snapshot.exists && target.snapshot.sha256 === bundleImage.image.sha256;
-        return {
-            retry,
-            candidate: imageCandidate,
-            desired,
-            target,
-            ledgerAppendNeeded,
-            alreadyCurrent: !ledgerAppendNeeded && targetReady,
-        };
-    });
-    const first = entries[0];
+    const desired = {
+        media_id: mediaId,
+        kind: retry.item.kind,
+        target_id: retry.item.target_id,
+        provider: 'dst',
+        operation_id: manifestId,
+        attempt: resolvedAttempt,
+        reference_ids: referenceIds,
+        relative_path: targetRelativePath,
+        generation_status: 'imported',
+        prompt: candidate.query,
+        aspect_ratio: typeof retry.source.aspect_ratio === 'string' ? retry.source.aspect_ratio : '',
+        review_status: 'unreviewed',
+        retry_of: retryMediaId,
+        source_bundle_id: candidate.bundleId,
+        source_image_name: bundleImage.imageName,
+        source_manifest_sha256: candidate.manifest.sha256,
+        source_metadata_sha256: candidate.metadata.sha256,
+        source_image_sha256: bundleImage.image.sha256,
+        imported_at: importedAt,
+    };
+    if (existing && !recordMatches(existing, desired)) throw failure('DST_IMPORT_MEDIA_ID_CONFLICT');
+    const target = destinationSnapshot(retry.rootInfo, targetRelativePath, context.maxImageBytes || MAX_IMAGE_BYTES);
+    if (target.snapshot.exists && target.snapshot.sha256 !== bundleImage.image.sha256) {
+        throw failure('DST_IMPORT_TARGET_COLLISION');
+    }
+    const ledgerAppendNeeded = !existing;
+    const targetReady = target.snapshot.exists && target.snapshot.sha256 === bundleImage.image.sha256;
     return {
         retry,
+        candidate: imageCandidate,
+        desired,
+        target,
+        ledgerAppendNeeded,
+        alreadyCurrent: !ledgerAppendNeeded && targetReady,
+    };
+}
+
+function assembleInputs(candidate, entries, mappingMode) {
+    const first = entries[0];
+    return {
+        retry: first.retry,
+        retries: entries.map((entry) => entry.retry),
         candidate,
         entries,
         desired: first.desired,
         target: first.target,
         ledgerAppendNeeded: first.ledgerAppendNeeded,
         alreadyCurrent: entries.every((entry) => entry.alreadyCurrent),
+        mappingMode,
     };
+}
+
+function buildInputs(context, candidate, retryMediaId, importedAt) {
+    const retry = retryContext(context, retryMediaId);
+    if (candidate.imageCount > 1 && ['character_sheet', 'location_sheet'].includes(retry.item.kind)) {
+        throw failure('DST_IMPORT_MAPPING_REQUIRED');
+    }
+    const attempts = retry.records
+        .filter((record) => record.kind === retry.item.kind && record.target_id === retry.item.target_id && record.provider === 'dst')
+        .map((record) => Number(record.attempt)).filter((value) => Number.isSafeInteger(value) && value > 0);
+    let nextAttempt = Math.max(0, ...attempts) + 1;
+    const entries = candidate.images.map((bundleImage) => {
+        const deterministic = sha256(candidate.imageCount === 1
+            ? `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.image.sha256}`
+            : `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.imageName}\0${bundleImage.image.sha256}`);
+        const mediaId = `dst_${deterministic.slice(0, 32)}`;
+        const existing = retry.records.find((record) => record.media_id === mediaId);
+        const attempt = existing ? Number(existing.attempt) : nextAttempt++;
+        return buildEntry(context, candidate, bundleImage, retry, retryMediaId, importedAt, attempt);
+    });
+    return assembleInputs(candidate, entries, 'single_retry_target');
+}
+
+function buildMappedInputs(context, candidate, mappings, importedAt) {
+    if (!Array.isArray(mappings) || mappings.length !== candidate.imageCount) {
+        throw failure('DST_IMPORT_MAPPING_COUNT_INVALID');
+    }
+    const retryIds = new Set();
+    const normalized = mappings.map((mapping, index) => {
+        exactKeys(mapping, ['imageIndex', 'retryMediaId'], 'DST_IMPORT_MAPPING_INVALID');
+        if (!Number.isSafeInteger(mapping.imageIndex) || mapping.imageIndex !== index + 1) {
+            throw failure('DST_IMPORT_MAPPING_SEQUENCE_INVALID');
+        }
+        const retryMediaId = safeId(mapping.retryMediaId, 'DST_IMPORT_RETRY_ID_INVALID');
+        if (retryIds.has(retryMediaId)) throw failure('DST_IMPORT_MAPPING_RETRY_DUPLICATE');
+        retryIds.add(retryMediaId);
+        return { imageIndex: mapping.imageIndex, retryMediaId };
+    });
+    const retries = normalized.map((mapping) => retryContext(context, mapping.retryMediaId));
+    const first = retries[0];
+    for (const retry of retries) {
+        if (!sameSnapshot(first.ledger, retry.ledger) || !sameSnapshot(first.review, retry.review)
+            || retry.rootInfo.fingerprint !== first.rootInfo.fingerprint) {
+            throw failure('DST_IMPORT_MAPPING_SOURCES_CHANGED');
+        }
+        if (!['character_sheet', 'location_sheet'].includes(retry.item.kind)
+            || retry.item.provider !== 'dst' || retry.source.provider !== 'dst'
+            || retry.source.media_id !== retry.item.media_id
+            || retry.source.kind !== retry.item.kind || retry.source.target_id !== retry.item.target_id) {
+            throw failure('DST_IMPORT_MAPPING_RETRY_INVALID');
+        }
+    }
+    if (new Set(retries.map((retry) => retry.item.kind)).size !== 1) {
+        throw failure('DST_IMPORT_MAPPING_KIND_MISMATCH');
+    }
+    const entries = normalized.map((mapping, index) => {
+        const retry = retries[index];
+        const attempts = retry.records
+            .filter((record) => record.kind === retry.item.kind
+                && record.target_id === retry.item.target_id && record.provider === 'dst')
+            .map((record) => Number(record.attempt))
+            .filter((value) => Number.isSafeInteger(value) && value > 0);
+        const attempt = Math.max(0, ...attempts) + 1;
+        return buildEntry(
+            context,
+            candidate,
+            candidate.images[mapping.imageIndex - 1],
+            retry,
+            mapping.retryMediaId,
+            importedAt,
+            attempt,
+        );
+    });
+    return assembleInputs(candidate, entries, 'explicit_retry_items');
 }
 
 function evidence(inputs) {
@@ -521,7 +602,8 @@ function evidence(inputs) {
         productionRootIdentity: inputs.retry.rootInfo.identity,
         ledger: inputs.retry.ledger,
         review: inputs.retry.review,
-        retryItem: inputs.retry.item,
+        retryItems: inputs.retries.map((retry) => retry.item),
+        mappingMode: inputs.mappingMode,
         candidateToken: inputs.candidate.token,
         bundleIdentity: inputs.candidate.bundleIdentity,
         manifestSha256: inputs.candidate.manifest.sha256,
@@ -546,7 +628,8 @@ function stableEvidence(left, right) {
         // provenance is its device/inode/mode; mutable inputs are bound separately below.
         && sameDirectoryIdentity(left.productionRootIdentity, right.productionRootIdentity)
         && sameSnapshot(left.ledger, right.ledger) && sameSnapshot(left.review, right.review)
-        && JSON.stringify(left.retryItem) === JSON.stringify(right.retryItem)
+        && JSON.stringify(left.retryItems) === JSON.stringify(right.retryItems)
+        && left.mappingMode === right.mappingMode
         && left.candidateToken === right.candidateToken
         && sameIdentity(left.bundleIdentity, right.bundleIdentity)
         && left.manifestSha256 === right.manifestSha256 && left.metadataSha256 === right.metadataSha256
@@ -587,6 +670,7 @@ function blockedPlan(code) {
         status: 'blocked',
         ready: false,
         already_current: false,
+        mapping_mode: '',
         plan_token: '',
         expires_at: '',
         retry_media_id: '',
@@ -612,15 +696,25 @@ function blockedPlan(code) {
 
 function planDstBundleImport(payload, context = {}) {
     try {
-        exactKeys(payload, ['candidateToken', 'retryMediaId'], 'DST_IMPORT_PLAN_REQUEST_INVALID');
+        const hasMappings = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'mappings'));
+        exactKeys(
+            payload,
+            hasMappings ? ['candidateToken', 'mappings'] : ['candidateToken', 'retryMediaId'],
+            'DST_IMPORT_PLAN_REQUEST_INVALID',
+        );
         const candidateTokenValue = boundedText(payload.candidateToken, 256, 'DST_IMPORT_CANDIDATE_TOKEN_INVALID');
         if (!TOKEN_PATTERN.test(candidateTokenValue)) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
-        const retryMediaId = safeId(payload.retryMediaId, 'DST_IMPORT_RETRY_ID_INVALID');
+        const retryMediaId = hasMappings ? '' : safeId(payload.retryMediaId, 'DST_IMPORT_RETRY_ID_INVALID');
         const inventory = scanInventory(context);
         const candidate = inventory.candidates.find((entry) => entry.token === candidateTokenValue);
         if (!candidate) throw failure('DST_IMPORT_CANDIDATE_TOKEN_INVALID');
         const importedAt = operationIso(context);
-        const inputs = buildInputs(context, candidate, retryMediaId, importedAt);
+        const inputs = hasMappings
+            ? buildMappedInputs(context, candidate, payload.mappings, importedAt)
+            : buildInputs(context, candidate, retryMediaId, importedAt);
+        const storedMappings = hasMappings
+            ? payload.mappings.map((mapping) => ({ imageIndex: mapping.imageIndex, retryMediaId: mapping.retryMediaId }))
+            : null;
         const now = clockMs(context);
         const expiresAtMs = now + planTtl(context);
         const store = planStore(context);
@@ -638,6 +732,7 @@ function planDstBundleImport(payload, context = {}) {
             expiresAtMs,
             candidateToken: candidate.token,
             retryMediaId,
+            mappings: storedMappings,
             importedAt,
             evidence: evidence(inputs),
         });
@@ -646,9 +741,10 @@ function planDstBundleImport(payload, context = {}) {
             status: inputs.alreadyCurrent ? 'already_current' : 'ready',
             ready: !inputs.alreadyCurrent,
             already_current: inputs.alreadyCurrent,
+            mapping_mode: inputs.mappingMode,
             plan_token: token,
             expires_at: new Date(expiresAtMs).toISOString(),
-            retry_media_id: retryMediaId,
+            retry_media_id: inputs.desired.retry_of,
             target_id: inputs.desired.target_id,
             new_media_id: inputs.desired.media_id,
             source_bundle_id: candidate.bundleId,
@@ -953,7 +1049,9 @@ function confirmDstBundleImport(payload, context = {}) {
         const inventory = scanInventory(context);
         const candidate = inventory.candidates.find((entry) => entry.token === record.candidateToken);
         if (!candidate) throw failure('DST_IMPORT_SOURCE_CHANGED');
-        const inputs = buildInputs(context, candidate, record.retryMediaId, record.importedAt);
+        const inputs = record.mappings
+            ? buildMappedInputs(context, candidate, record.mappings, record.importedAt)
+            : buildInputs(context, candidate, record.retryMediaId, record.importedAt);
         const currentEvidence = evidence(inputs);
         if (!stableEvidence(record.evidence, currentEvidence)) throw failure('DST_IMPORT_PLAN_STALE');
         if (inputs.alreadyCurrent) {

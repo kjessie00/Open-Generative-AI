@@ -110,6 +110,50 @@ function selectedCandidate(context) {
     return workspace.candidates[0];
 }
 
+function configureRetryTargets(fx, specs) {
+    const records = specs.map((spec) => ({
+        media_id: spec.mediaId,
+        kind: spec.kind,
+        target_id: spec.targetId,
+        provider: spec.provider || 'dst',
+        operation_id: `old_${spec.mediaId}`,
+        attempt: 1,
+        reference_ids: [],
+        relative_path: `media/${spec.mediaId}.png`,
+        generation_status: 'downloaded',
+        prompt: `Retry ${spec.mediaId}`,
+        aspect_ratio: '9:16',
+        review_status: 'retry_requested',
+        retry_of: '',
+    }));
+    fs.writeFileSync(
+        path.join(fx.productionRoot, 'media_attempts.jsonl'),
+        records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    fs.writeFileSync(path.join(fx.productionRoot, 'reviews', 'media_review_draft.json'), `${JSON.stringify({
+        schema: 'film_pipeline.media_review_draft.v1',
+        execution: 'not_run',
+        reviews: records.map((record) => ({
+            media_id: record.media_id,
+            review_status: 'retry_requested',
+            review_note: '',
+            selected_for_retry: true,
+        })),
+        retry_queue: records.map((record, index) => ({
+            sequence: index + 1,
+            media_id: record.media_id,
+            kind: record.kind,
+            target_id: record.target_id,
+            provider: record.provider,
+            attempt: record.attempt,
+            retry_of: record.media_id,
+            review_note: '',
+            execution_status: 'draft_not_executed',
+        })),
+    })}\n`);
+    return records;
+}
+
 test('real local workspace returns only opaque bounded completed single-image bundle evidence', (t) => {
     const fx = fixture(t);
     writeBundle(fx.dstRoot, {
@@ -145,10 +189,11 @@ test('real local workspace returns only opaque bounded completed single-image bu
 
     const preview = provider.getDstBundleImportPreview({ candidateToken: candidate.candidate_token }, fx.context);
     assert.deepEqual(Object.keys(preview).sort(), [
-        'blockers', 'candidate_token', 'executed', 'generation_executed', 'preview', 'ready', 'status',
+        'blockers', 'candidate_token', 'executed', 'generation_executed', 'image_index', 'preview', 'ready', 'status',
     ]);
     assert.equal(preview.status, 'ready');
     assert.equal(preview.candidate_token, candidate.candidate_token);
+    assert.equal(preview.image_index, 1);
     assert.deepEqual(Buffer.from(preview.preview.base64, 'base64'), PNG);
     assert.equal(preview.preview.byte_length, PNG.length);
     assert.equal(preview.executed, false);
@@ -194,6 +239,30 @@ test('completed multi-image bundle is one representative candidate and imports t
 
     const preview = provider.getDstBundleImportPreview({ candidateToken: candidate.candidate_token }, fx.context);
     assert.deepEqual(Buffer.from(preview.preview.base64, 'base64'), images[0].buffer);
+    assert.equal(preview.image_index, 1);
+    for (let imageIndex = 1; imageIndex <= images.length; imageIndex += 1) {
+        const indexed = provider.getDstBundleImportPreview({
+            candidateToken: candidate.candidate_token,
+            imageIndex,
+        }, fx.context);
+        assert.equal(indexed.status, 'ready');
+        assert.equal(indexed.image_index, imageIndex);
+        assert.deepEqual(Buffer.from(indexed.preview.base64, 'base64'), images[imageIndex - 1].buffer);
+    }
+    for (const imageIndex of [0, 4, 1.5, '2']) {
+        const blocked = provider.getDstBundleImportPreview({
+            candidateToken: candidate.candidate_token,
+            imageIndex,
+        }, fx.context);
+        assert.deepEqual(blocked.blockers, ['DST_IMPORT_PREVIEW_IMAGE_INDEX_INVALID']);
+        assert.equal(blocked.preview, null);
+    }
+    const extraPreviewField = provider.getDstBundleImportPreview({
+        candidateToken: candidate.candidate_token,
+        imageIndex: 2,
+        sourcePath: fx.dstRoot,
+    }, fx.context);
+    assert.deepEqual(extraPreviewField.blockers, ['DST_IMPORT_PREVIEW_REQUEST_INVALID']);
 
     const plan = provider.planDstBundleImport({
         candidateToken: candidate.candidate_token,
@@ -349,6 +418,232 @@ test('multi-image ledger publication is one atomic rename and repairs after copy
         ledger: repaired.ledger_appended_count,
     }, { imported: 3, copied: 0, ledger: 3 });
     assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 4);
+});
+
+test('explicit sheet mapping imports each image into its own saved DST retry item with one ledger rename', (t) => {
+    const fx = fixture(t);
+    const images = [
+        { name: 'image_01.png', buffer: pngFixture('character-one') },
+        { name: 'image_02.png', buffer: pngFixture('character-two') },
+        { name: 'image_03.png', buffer: pngFixture('character-three') },
+    ];
+    writeBundle(fx.dstRoot, { images });
+    const sources = configureRetryTargets(fx, [
+        { mediaId: 'character_retry_1', kind: 'character_sheet', targetId: 'character_1' },
+        { mediaId: 'character_retry_2', kind: 'character_sheet', targetId: 'character_2' },
+        { mediaId: 'character_retry_3', kind: 'character_sheet', targetId: 'character_3' },
+    ]);
+    const candidate = selectedCandidate(fx.context);
+    const mappings = sources.map((source, index) => ({ imageIndex: index + 1, retryMediaId: source.media_id }));
+    const plan = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, mappings }, fx.context);
+    assert.equal(plan.status, 'ready', JSON.stringify(plan));
+    assert.equal(plan.mapping_mode, 'explicit_retry_items');
+    assert.equal(plan.retry_media_id, 'character_retry_1');
+    assert.equal(plan.target_id, 'character_1');
+    assert.equal(plan.image_count, 3);
+    assert.equal(plan.new_image_count, 3);
+    assert.equal(JSON.stringify(plan).includes(fx.productionRoot), false);
+
+    let renameCount = 0;
+    const result = provider.confirmDstBundleImport({ planToken: plan.plan_token, confirmed: true }, {
+        ...fx.context,
+        ledgerRenameFile(from, to) {
+            renameCount += 1;
+            fs.renameSync(from, to);
+        },
+    });
+    assert.equal(renameCount, 1);
+    assert.deepEqual({
+        imported: result.imported_count,
+        copied: result.copy_count,
+        ledger: result.ledger_appended_count,
+    }, { imported: 3, copied: 3, ledger: 3 });
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const imported = records.slice(3);
+    assert.deepEqual(imported.map((record) => record.retry_of), sources.map((source) => source.media_id));
+    assert.deepEqual(imported.map((record) => record.target_id), sources.map((source) => source.target_id));
+    assert.deepEqual(imported.map((record) => record.kind), ['character_sheet', 'character_sheet', 'character_sheet']);
+    assert.deepEqual(imported.map((record) => record.attempt), [2, 2, 2]);
+    assert.deepEqual(imported.map((record) => record.source_image_name), images.map((image) => image.name));
+});
+
+test('explicit sheet mapping rejects missing, unordered, duplicate, unknown, mixed-kind, non-DST, and forged mappings', (t) => {
+    const make = (specs) => {
+        const fx = fixture(t);
+        writeBundle(fx.dstRoot, { images: [
+            { name: 'image_01.png', buffer: pngFixture('mapped-one') },
+            { name: 'image_02.png', buffer: pngFixture('mapped-two') },
+            { name: 'image_03.png', buffer: pngFixture('mapped-three') },
+        ] });
+        const sources = configureRetryTargets(fx, specs || [
+            { mediaId: 'sheet_retry_1', kind: 'location_sheet', targetId: 'location_1' },
+            { mediaId: 'sheet_retry_2', kind: 'location_sheet', targetId: 'location_2' },
+            { mediaId: 'sheet_retry_3', kind: 'location_sheet', targetId: 'location_3' },
+        ]);
+        return { fx, sources, candidate: selectedCandidate(fx.context) };
+    };
+    const validMappings = (sources) => sources.map((source, index) => ({ imageIndex: index + 1, retryMediaId: source.media_id }));
+
+    const cases = [
+        {
+            name: 'missing mapping',
+            setup: () => make(),
+            payload: ({ sources }) => ({ mappings: validMappings(sources).slice(0, 2) }),
+        },
+        {
+            name: 'unordered image sequence',
+            setup: () => make(),
+            payload: ({ sources }) => ({ mappings: [
+                { imageIndex: 2, retryMediaId: sources[0].media_id },
+                { imageIndex: 1, retryMediaId: sources[1].media_id },
+                { imageIndex: 3, retryMediaId: sources[2].media_id },
+            ] }),
+        },
+        {
+            name: 'duplicate retry item',
+            setup: () => make(),
+            payload: ({ sources }) => ({ mappings: [
+                { imageIndex: 1, retryMediaId: sources[0].media_id },
+                { imageIndex: 2, retryMediaId: sources[0].media_id },
+                { imageIndex: 3, retryMediaId: sources[2].media_id },
+            ] }),
+        },
+        {
+            name: 'unknown retry item',
+            setup: () => make(),
+            payload: ({ sources }) => ({ mappings: [
+                ...validMappings(sources).slice(0, 2),
+                { imageIndex: 3, retryMediaId: 'unknown_retry_item' },
+            ] }),
+        },
+        {
+            name: 'mixed sheet kinds',
+            setup: () => make([
+                { mediaId: 'sheet_retry_1', kind: 'character_sheet', targetId: 'character_1' },
+                { mediaId: 'sheet_retry_2', kind: 'character_sheet', targetId: 'character_2' },
+                { mediaId: 'sheet_retry_3', kind: 'location_sheet', targetId: 'location_3' },
+            ]),
+            payload: ({ sources }) => ({ mappings: validMappings(sources) }),
+        },
+        {
+            name: 'non-DST retry item',
+            setup: () => make([
+                { mediaId: 'sheet_retry_1', kind: 'location_sheet', targetId: 'location_1' },
+                { mediaId: 'sheet_retry_2', kind: 'location_sheet', targetId: 'location_2', provider: 'flow' },
+                { mediaId: 'sheet_retry_3', kind: 'location_sheet', targetId: 'location_3' },
+            ]),
+            payload: ({ sources }) => ({ mappings: validMappings(sources) }),
+        },
+        {
+            name: 'extra mapping authority',
+            setup: () => make(),
+            payload: ({ sources }) => ({ mappings: validMappings(sources).map((mapping, index) => (
+                index === 0 ? { ...mapping, targetId: 'forged_target' } : mapping
+            )) }),
+        },
+    ];
+    for (const item of cases) {
+        const setup = item.setup();
+        const payload = item.payload(setup);
+        const plan = provider.planDstBundleImport({
+            candidateToken: setup.candidate.candidate_token,
+            ...payload,
+        }, setup.fx.context);
+        assert.equal(plan.ready, false, item.name);
+        assert.equal(plan.status, 'blocked', item.name);
+        assert.equal(fs.existsSync(path.join(setup.fx.productionRoot, 'media', 'imports', 'dst')), false, item.name);
+        assert.equal(
+            fs.readFileSync(path.join(setup.fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length,
+            3,
+            item.name,
+        );
+    }
+
+    const forgedTopLevel = make();
+    const blocked = provider.planDstBundleImport({
+        candidateToken: forgedTopLevel.candidate.candidate_token,
+        mappings: validMappings(forgedTopLevel.sources),
+        targetPath: '/tmp/forged.png',
+    }, forgedTopLevel.fx.context);
+    assert.deepEqual(blocked.blockers, ['DST_IMPORT_PLAN_REQUEST_INVALID']);
+});
+
+test('explicit sheet mapping becomes stale when the saved review mapping changes before confirm', (t) => {
+    const fx = fixture(t);
+    writeBundle(fx.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('stale-one') },
+        { name: 'image_02.png', buffer: pngFixture('stale-two') },
+    ] });
+    const sources = configureRetryTargets(fx, [
+        { mediaId: 'location_retry_1', kind: 'location_sheet', targetId: 'location_1' },
+        { mediaId: 'location_retry_2', kind: 'location_sheet', targetId: 'location_2' },
+    ]);
+    const candidate = selectedCandidate(fx.context);
+    const plan = provider.planDstBundleImport({
+        candidateToken: candidate.candidate_token,
+        mappings: sources.map((source, index) => ({ imageIndex: index + 1, retryMediaId: source.media_id })),
+    }, fx.context);
+    assert.equal(plan.ready, true, JSON.stringify(plan));
+    const reviewPath = path.join(fx.productionRoot, 'reviews', 'media_review_draft.json');
+    const review = JSON.parse(fs.readFileSync(reviewPath, 'utf8'));
+    review.retry_queue[1].review_note = 'changed after plan';
+    fs.writeFileSync(reviewPath, `${JSON.stringify(review)}\n`);
+    assert.throws(
+        () => provider.confirmDstBundleImport({ planToken: plan.plan_token, confirmed: true }, fx.context),
+        { code: 'DST_IMPORT_PLAN_STALE' },
+    );
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'media', 'imports', 'dst')), false);
+    assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 2);
+});
+
+test('single-target contract allows one reference or multiple scene images but rejects multi-reference bundles', (t) => {
+    const singleReference = fixture(t);
+    configureRetryTargets(singleReference, [
+        { mediaId: 'single_character_retry', kind: 'character_sheet', targetId: 'character_1' },
+    ]);
+    const singleReferenceCandidate = selectedCandidate(singleReference.context);
+    const singleReferencePlan = provider.planDstBundleImport({
+        candidateToken: singleReferenceCandidate.candidate_token,
+        retryMediaId: 'single_character_retry',
+    }, singleReference.context);
+    assert.equal(singleReferencePlan.ready, true, JSON.stringify(singleReferencePlan));
+    assert.equal(singleReferencePlan.mapping_mode, 'single_retry_target');
+    assert.equal(singleReferencePlan.image_count, 1);
+
+    const multiScene = fixture(t);
+    writeBundle(multiScene.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('scene-one') },
+        { name: 'image_02.png', buffer: pngFixture('scene-two') },
+    ] });
+    const multiSceneCandidate = selectedCandidate(multiScene.context);
+    const multiScenePlan = provider.planDstBundleImport({
+        candidateToken: multiSceneCandidate.candidate_token,
+        retryMediaId: multiScene.source.media_id,
+    }, multiScene.context);
+    assert.equal(multiScenePlan.ready, true, JSON.stringify(multiScenePlan));
+    assert.equal(multiScenePlan.mapping_mode, 'single_retry_target');
+    assert.equal(multiScenePlan.image_count, 2);
+
+    const multiReference = fixture(t);
+    writeBundle(multiReference.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('reference-one') },
+        { name: 'image_02.png', buffer: pngFixture('reference-two') },
+    ] });
+    configureRetryTargets(multiReference, [
+        { mediaId: 'multi_location_retry', kind: 'location_sheet', targetId: 'location_1' },
+    ]);
+    const multiReferenceCandidate = selectedCandidate(multiReference.context);
+    const blocked = provider.planDstBundleImport({
+        candidateToken: multiReferenceCandidate.candidate_token,
+        retryMediaId: 'multi_location_retry',
+    }, multiReference.context);
+    assert.equal(blocked.ready, false);
+    assert.deepEqual(blocked.blockers, ['DST_IMPORT_MAPPING_REQUIRED']);
+    assert.equal(fs.existsSync(path.join(multiReference.productionRoot, 'media', 'imports', 'dst')), false);
+    assert.equal(
+        fs.readFileSync(path.join(multiReference.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length,
+        1,
+    );
 });
 
 test('blocked or mismatched retry plans cannot be used as import write authority', (t) => {
