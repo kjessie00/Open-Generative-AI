@@ -1,7 +1,7 @@
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { DstBundleImportBand } from './DstBundleImportBand.js';
 import { VideoResultImportBand } from './VideoResultImportBand.js';
-import { actionButton, card, el, emptyState, statusBadge } from './ui.js';
+import { actionButton, card, el, emptyState } from './ui.js';
 
 const READINESS_LABELS = Object.freeze({
     preview_ready: '미리보기 준비',
@@ -24,13 +24,13 @@ function retryPlanItem(item) {
                     el('h4', { text: item.target_id || item.media_id, className: 'mt-1 font-bold text-white' }),
                     el('p', { text: `${item.provider || '제공자 미상'} · ${item.kind}`, className: 'mt-1 text-xs text-secondary' }),
                 ]),
-                statusBadge(
-                    READINESS_LABELS[item.readiness] || '차단',
-                    item.readiness === 'preview_ready' ? 'PREVIEW' : 'BLOCK',
-                ),
+                el('span', {
+                    text: READINESS_LABELS[item.readiness] || '준비 필요',
+                    className: 'text-xs text-secondary',
+                }),
             ]),
             item.blockers?.length
-                ? el('p', { text: item.blockers.join(' · '), className: 'mt-3 break-words text-xs text-secondary' })
+                ? el('p', { text: '이 항목은 준비 조건을 먼저 확인해야 합니다.', className: 'mt-3 text-xs text-secondary' })
                 : el('p', { text: '명령 미리보기만 준비됐으며 실제 생성은 실행되지 않습니다.', className: 'mt-3 text-xs text-secondary' }),
         ]),
         hasCommand ? el('details', { className: 'media-retry-command-details' }, [
@@ -78,9 +78,8 @@ export function MediaRetryPlanBand({
             }),
         ]),
         el('div', { className: 'media-review-queue-status' }, [
-            statusBadge('실행 안 함', 'BLOCK'),
-            el('strong', { text: items.length ? `저장된 순서 ${items.length}개` : '저장된 실행 계획 없음' }),
-            plan?.blockers?.length ? el('span', { text: plan.blockers.join(' · ') }) : null,
+            el('strong', { text: items.length ? `실행 안 함 · 저장된 순서 ${items.length}개` : '저장된 실행 계획 없음' }),
+            plan?.blockers?.length ? el('span', { text: '준비되지 않은 항목이 있습니다.' }) : null,
         ]),
         items.length
             ? el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, items.map(retryPlanItem))

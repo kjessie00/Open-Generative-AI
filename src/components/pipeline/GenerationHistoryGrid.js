@@ -1,6 +1,7 @@
-import { actionButton, card, el, emptyState, statusBadge } from './ui.js';
+import { actionButton, card, el, emptyState } from './ui.js';
 import { p } from './copy.js';
 import { localMediaSource } from '../../lib/pipeline/mediaSources.js';
+import { simpleStatusLabel } from './generationUi.js';
 
 function isVideo(path = '') {
     return /\.(mp4|mov|webm)$/i.test(path);
@@ -154,7 +155,6 @@ export function GenerationHistoryGrid({ state = {}, payload = {} }) {
                 el('h3', { text: p('History And Preview Grid'), className: 'text-sm font-bold text-white' }),
                 el('p', { text: p('Preview-only grid for local references, downloaded evidence, and current payload JSON.'), className: 'mt-1 text-xs text-secondary' }),
             ]),
-            statusBadge(p('no run controls'), 'BLOCK'),
         ]),
         items.length ? el('div', { className: 'grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4' }, items.map((item) => {
             const kind = mediaKind(item);
@@ -165,7 +165,7 @@ export function GenerationHistoryGrid({ state = {}, payload = {} }) {
                     el('div', { text: item.label, className: 'truncate text-sm font-bold text-white' }),
                     el('div', { text: item.path || item.source, className: 'mt-1 line-clamp-2 break-all text-xs text-secondary' }),
                 ]),
-                statusBadge(item.status, item.status),
+                el('span', { text: simpleStatusLabel(item.status), className: 'shrink-0 text-xs text-secondary' }),
             ]),
             el('button', {
                 onClick: () => openFullscreenPreview(item),
@@ -180,10 +180,7 @@ export function GenerationHistoryGrid({ state = {}, payload = {} }) {
                             ? el('span', { text: p('Video Preview') })
                             : el('span', { text: kind ? p('Preview unavailable') : p('Open Preview') }),
             ]),
-            el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
-                statusBadge(item.type, 'PREVIEW'),
-                statusBadge(item.source, 'UNREVIEWED'),
-            ]),
+            el('p', { text: `${item.type} · ${item.source}`, className: 'mt-3 text-xs text-secondary' }),
             ], 'p-4');
         })) : emptyState(p('No preview or history items recorded yet.')),
     ]);

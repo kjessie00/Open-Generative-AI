@@ -519,21 +519,21 @@ test('MOCK media review board updates selection and filter, then saves the exact
     note.value = '손 모양과 조명을 수정';
     await note.dispatchEvent({ type: 'input' });
     const retryCardButton = findAll(board, 'button').find((button) => (
-        button.textContent.trim() === '다시 만들기 선택' && !button.attributes.has('aria-pressed')
+        button.textContent.trim() === '다시 만들기' && !button.attributes.has('aria-pressed')
     ));
     await retryCardButton.dispatchEvent({ type: 'click' });
     assert.match(board.textContent, /다시 만들기 1개 선택/);
-    assert.ok(byText(board, 'button', '다시 만들기 해제'));
+    assert.ok(byText(board, 'button', '선택 해제'));
 
     const retryFilterButton = findAll(board, 'button').find((button) => (
         button.textContent.trim() === '다시 만들기 선택' && button.attributes.has('aria-pressed')
     ));
     await retryFilterButton.dispatchEvent({ type: 'click' });
-    assert.equal(byText(board, 'button', '다시 만들기 해제') !== null, true, 'filter button remains available after card label changes');
+    assert.equal(byText(board, 'button', '선택 해제') !== null, true, 'filter button remains available after card label changes');
     assert.match(board.textContent, /scene-image-1|clip_001/);
 
     await byText(board, 'button', '선택 항목 순차 대기열에 담기').dispatchEvent({ type: 'click' });
-    assert.match(board.textContent, /순차 대기열 초안 1개/);
+    assert.match(board.textContent, /실행 안 함 · 순차 대기열 1개/);
     assert.match(board.textContent, /실제 이미지·영상 생성은 시작되지 않습니다|clip_001/);
     await byText(board, 'button', '검토 초안 저장').dispatchEvent({ type: 'click' });
 
@@ -617,6 +617,8 @@ test('MOCK DST result import exposes only image retry targets and uses opaque pl
                 prompt_excerpt: '비 오는 골목의 주인공',
                 mime_type: 'image/png',
                 size_bytes: 2048,
+                total_size_bytes: 6144,
+                image_count: 3,
             }],
         },
         dstBundleImportPreview: {
@@ -636,6 +638,9 @@ test('MOCK DST result import exposes only image retry targets and uses opaque pl
                 retry_media_id: payload.retryMediaId,
                 target_id: 'clip_001',
                 source_bundle_id: '20260715_street_scene_1234',
+                image_count: 3,
+                new_image_count: 3,
+                already_current_count: 0,
                 source_image_name: 'secret-source.png',
                 target_relative_path: 'media/private-target.png',
                 blockers: [],
@@ -648,6 +653,7 @@ test('MOCK DST result import exposes only image retry targets and uses opaque pl
                 ok: true,
                 imported: true,
                 already_current: false,
+                imported_count: 3,
                 media_id: 'dst-image-imported',
                 target_id: 'clip_001',
                 relative_path: 'media/private-target.png',
@@ -665,19 +671,21 @@ test('MOCK DST result import exposes only image retry targets and uses opaque pl
     const preview = byAttribute(band, 'img', 'alt', '20260715_street_scene_1234 결과 미리보기');
     assert.match(preview.attributes.get('src'), /^data:image\/png;base64,/);
 
-    await byText(band, 'button', '가져오기 계획').dispatchEvent({ type: 'click' });
+    assert.match(candidateSelect.textContent, /3장/);
+    await byText(band, 'button', '묶음 확인').dispatchEvent({ type: 'click' });
     assert.deepEqual(calls[0], ['plan', {
         candidateToken: 'opaque-candidate-token',
         retryMediaId: 'dst-image-retry',
     }]);
-    assert.match(band.textContent, /가져오기 준비/);
+    assert.match(band.textContent, /3장을 clip_001에 연결합니다/);
+    assert.doesNotMatch(band.textContent, /가져오기 준비|PASS|PREVIEW|BLOCK/);
     assert.equal(band.textContent.includes('secret-source.png'), false, 'source filenames stay in Electron main');
     assert.equal(band.textContent.includes('private-target.png'), false, 'target paths stay in Electron main');
 
-    await byText(band, 'button', '선택한 결과 가져오기').dispatchEvent({ type: 'click' });
+    await byText(band, 'button', '3장 연결').dispatchEvent({ type: 'click' });
     assert.deepEqual(calls[1], ['confirm', { planToken: 'opaque-plan-token', confirmed: true }]);
-    assert.match(band.textContent, /가져오기 완료/);
-    assert.match(band.textContent, /작업대 기록에 반영했습니다/);
+    assert.match(band.textContent, /3장을 clip_001에 연결했습니다/);
+    assert.match(band.textContent, /이미지 묶음을 작업대에 연결했습니다/);
     assert.equal(findAll(band, 'button').some((button) => /(?:생성|명령) 실행/.test(button.textContent)), false);
 });
 

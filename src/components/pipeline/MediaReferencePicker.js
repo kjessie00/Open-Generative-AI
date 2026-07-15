@@ -1,5 +1,6 @@
-import { actionButton, card, el, statusBadge, textOrDash } from './ui.js';
+import { actionButton, card, el, textOrDash } from './ui.js';
 import { p } from './copy.js';
+import { simpleStatusLabel } from './generationUi.js';
 
 function normalizeReferences(references = []) {
     return references.map((reference) => (
@@ -99,7 +100,6 @@ export function MediaReferencePicker({ state = {}, value = {}, onChange }) {
                 el('h3', { text: p('Media References'), className: 'text-sm font-bold text-white' }),
                 el('p', { text: p('Displays existing local stills and references. There is no upload, generation, or external review.'), className: 'mt-1 text-xs text-secondary' }),
             ]),
-            statusBadge(p('local display only'), 'PREVIEW'),
         ]),
         el('div', { className: 'mb-4 grid grid-cols-1 gap-3 md:grid-cols-3' }, [
             el('div', { className: 'rounded-xl border border-white/10 bg-black/20 px-3 py-2' }, [
@@ -125,13 +125,12 @@ export function MediaReferencePicker({ state = {}, value = {}, onChange }) {
                     el('div', { text: asset.asset_id || asset.type, className: 'break-all text-sm font-bold text-white' }),
                     el('div', { text: asset.path || p('No path recorded'), className: 'mt-1 break-all font-mono text-xs text-secondary' }),
                 ]),
-                statusBadge(asset.review_verdict || 'UNREVIEWED', asset.review_verdict || 'UNREVIEWED'),
+                el('span', { text: simpleStatusLabel(asset.review_verdict), className: 'text-xs text-secondary' }),
             ]),
-            el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
-                statusBadge(asset.type || 'asset', 'PREVIEW'),
-                asset.target_clip_id ? statusBadge(asset.target_clip_id, 'UNREVIEWED') : null,
-                asset.video_use_status ? statusBadge(asset.video_use_status, 'UNREVIEWED') : null,
-            ].filter(Boolean)),
+            el('p', {
+                text: [asset.type || '자료', asset.target_clip_id, asset.video_use_status].filter(Boolean).join(' · '),
+                className: 'mt-3 text-xs text-secondary',
+            }),
             el('div', { className: 'mt-4 flex flex-wrap gap-2' }, [
                 actionButton(p('Set first frame'), { variant: 'muted', onClick: () => setFirstFrame(asset) }),
                 actionButton(p('Set end frame'), { variant: 'muted', onClick: () => setEndFrame(asset) }),

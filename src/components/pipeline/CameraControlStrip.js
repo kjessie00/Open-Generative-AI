@@ -1,4 +1,4 @@
-import { card, el, statusBadge } from './ui.js';
+import { card, el } from './ui.js';
 import { p } from './copy.js';
 
 export const CAMERA_OPTIONS = Object.freeze([
@@ -76,7 +76,6 @@ export function CameraControlStrip({ value = {}, onChange }) {
                 el('h3', { text: p('Camera Controls'), className: 'text-sm font-bold text-white' }),
                 el('p', { text: p('Local shot metadata only. These controls never submit a render job.'), className: 'mt-1 text-xs text-secondary' }),
             ]),
-            statusBadge(p('payload only'), 'PREVIEW'),
         ]),
         el('div', { className: 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5' }, [
             selectControl('shot-camera', p('Camera'), current.camera, CAMERA_OPTIONS, (camera) => update({ camera })),

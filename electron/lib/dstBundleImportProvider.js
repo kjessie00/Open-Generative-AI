@@ -9,6 +9,7 @@ const WORKSPACE_SCHEMA = 'film_pipeline.dst_bundle_import_workspace.v1';
 const PLAN_SCHEMA = 'film_pipeline.dst_bundle_import_plan.v1';
 const DEFAULT_DST_IMAGES_ROOT = '/Users/jessiek/StudioProjects/deepSearchTeam/output/images';
 const MAX_CANDIDATES = 12;
+const MAX_IMAGES_PER_BUNDLE = 12;
 const MAX_SCAN_DIRECTORIES = 240;
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
@@ -167,8 +168,7 @@ function candidateToken(candidate, context = {}) {
         candidate.bundleId,
         candidate.manifest.sha256,
         candidate.metadata.sha256,
-        candidate.imageName,
-        candidate.image.sha256,
+        ...candidate.images.flatMap((image) => [image.imageName, image.image.sha256]),
     ].join('\0')).digest('base64url');
 }
 
@@ -187,22 +187,35 @@ function inspectBundle(imagesRoot, inventoryRootFingerprint, bundleName, context
     if (manifest.type !== 'image_generation' || manifest.status !== 'complete'
         || manifest.profile !== 'goldpure369' || manifest.files?.images !== 'images/'
         || metadata.status !== 'complete' || metadata.profile !== 'goldpure369'
-        || metadata.image_count !== 1 || metadata.query !== query) {
+        || !Number.isSafeInteger(metadata.image_count) || metadata.image_count < 1
+        || metadata.image_count > MAX_IMAGES_PER_BUNDLE || metadata.query !== query) {
         throw failure('DST_IMPORT_BUNDLE_CONTRACT_INVALID');
     }
 
     const entries = fs.readdirSync(images.path, { withFileTypes: true });
-    if (entries.length !== 1 || !entries[0].isFile() || entries[0].isSymbolicLink()) {
-        throw failure('DST_IMPORT_SINGLE_IMAGE_REQUIRED');
-    }
-    const imageName = safeId(entries[0].name, 'DST_IMPORT_IMAGE_NAME_INVALID');
-    if (imageName !== path.basename(imageName) || !/^image_01\.(?:png|jpe?g|webp)$/i.test(imageName)) {
-        throw failure('DST_IMPORT_IMAGE_NAME_INVALID');
-    }
-    const imagePath = path.join(images.path, imageName);
     const imageLimit = context.maxImageBytes || MAX_IMAGE_BYTES;
-    const imageRead = stableFile(imagePath, imageLimit, 'DST_IMPORT_IMAGE_UNSAFE');
-    const type = imageType(imageName, imageRead.buffer);
+    if (entries.length !== metadata.image_count) throw failure('DST_IMPORT_IMAGE_COUNT_MISMATCH');
+    const orderedEntries = entries.slice().sort((left, right) => left.name.localeCompare(right.name));
+    const bundleImages = orderedEntries.map((entry, index) => {
+        if (!entry.isFile() || entry.isSymbolicLink()) throw failure('DST_IMPORT_IMAGE_ENTRY_UNSAFE');
+        const imageName = safeId(entry.name, 'DST_IMPORT_IMAGE_NAME_INVALID');
+        const expectedPrefix = `image_${String(index + 1).padStart(2, '0')}.`;
+        if (imageName !== path.basename(imageName) || !imageName.startsWith(expectedPrefix)
+            || !/^image_\d{2}\.(?:png|jpe?g|webp)$/.test(imageName)) {
+            throw failure('DST_IMPORT_IMAGE_NAME_INVALID');
+        }
+        const imagePath = path.join(images.path, imageName);
+        const imageRead = stableFile(imagePath, imageLimit, 'DST_IMPORT_IMAGE_UNSAFE');
+        const type = imageType(imageName, imageRead.buffer);
+        return {
+            imageName,
+            imagePath,
+            image: imageRead,
+            mimeType: type.mimeType,
+            extension: type.extension,
+        };
+    });
+    const representative = bundleImages[0];
     const candidate = {
         inventoryRootFingerprint,
         bundleName,
@@ -213,11 +226,14 @@ function inspectBundle(imagesRoot, inventoryRootFingerprint, bundleName, context
         manifestValue: manifest,
         metadataValue: metadata,
         query,
-        imageName,
-        imagePath,
-        image: imageRead,
-        mimeType: type.mimeType,
-        extension: type.extension,
+        images: bundleImages,
+        imageCount: bundleImages.length,
+        totalSizeBytes: bundleImages.reduce((total, image) => total + image.image.size, 0),
+        imageName: representative.imageName,
+        imagePath: representative.imagePath,
+        image: representative.image,
+        mimeType: representative.mimeType,
+        extension: representative.extension,
         createdAt: typeof manifest.created_at === 'string' && Number.isFinite(Date.parse(manifest.created_at))
             ? manifest.created_at : '',
     };
@@ -226,7 +242,8 @@ function inspectBundle(imagesRoot, inventoryRootFingerprint, bundleName, context
 }
 
 function scanInventory(context = {}) {
-    const rootPath = context.dstImagesRoot || DEFAULT_DST_IMAGES_ROOT;
+    const env = context.env || process.env;
+    const rootPath = context.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT || DEFAULT_DST_IMAGES_ROOT;
     const imagesRoot = assertRealDirectory(rootPath, 'DST_IMPORT_ROOT_UNSAFE');
     const inventoryRootFingerprint = sha256(`${imagesRoot.realPath}\0${imagesRoot.stats.dev}\0${imagesRoot.stats.ino}`);
     const directories = fs.readdirSync(imagesRoot.path, { withFileTypes: true })
@@ -256,6 +273,8 @@ function publicCandidate(candidate) {
         prompt_excerpt: candidate.query.slice(0, 160),
         mime_type: candidate.mimeType,
         size_bytes: candidate.image.size,
+        image_count: candidate.imageCount,
+        total_size_bytes: candidate.totalSizeBytes,
     };
 }
 
@@ -430,51 +449,69 @@ function operationIso(context = {}) {
 
 function buildInputs(context, candidate, retryMediaId, importedAt) {
     const retry = retryContext(context, retryMediaId);
-    const deterministic = sha256(`${retryMediaId}\0${candidate.bundleId}\0${candidate.image.sha256}`);
-    const mediaId = `dst_${deterministic.slice(0, 32)}`;
-    const targetRelativePath = `${IMPORT_RELATIVE_ROOT}/${candidate.image.sha256}${candidate.extension}`;
-    const existing = retry.records.find((record) => record.media_id === mediaId);
     const attempts = retry.records
         .filter((record) => record.kind === retry.item.kind && record.target_id === retry.item.target_id && record.provider === 'dst')
         .map((record) => Number(record.attempt)).filter((value) => Number.isSafeInteger(value) && value > 0);
-    const attempt = existing ? Number(existing.attempt) : Math.max(0, ...attempts) + 1;
-    if (!Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10000) throw failure('DST_IMPORT_ATTEMPT_INVALID');
+    let nextAttempt = Math.max(0, ...attempts) + 1;
     const manifestId = safeId(candidate.manifestValue.id, 'DST_IMPORT_OPERATION_ID_INVALID');
     const referenceIds = Array.isArray(retry.source.reference_ids)
         ? retry.source.reference_ids.map((value) => safeId(value, 'DST_IMPORT_REFERENCE_ID_INVALID')).slice(0, 8) : [];
-    const desired = {
-        media_id: mediaId,
-        kind: retry.item.kind,
-        target_id: retry.item.target_id,
-        provider: 'dst',
-        operation_id: manifestId,
-        attempt,
-        reference_ids: referenceIds,
-        relative_path: targetRelativePath,
-        generation_status: 'imported',
-        prompt: candidate.query,
-        aspect_ratio: typeof retry.source.aspect_ratio === 'string' ? retry.source.aspect_ratio : '',
-        review_status: 'unreviewed',
-        retry_of: retryMediaId,
-        source_bundle_id: candidate.bundleId,
-        source_image_name: candidate.imageName,
-        source_manifest_sha256: candidate.manifest.sha256,
-        source_metadata_sha256: candidate.metadata.sha256,
-        source_image_sha256: candidate.image.sha256,
-        imported_at: importedAt,
-    };
-    if (existing && !recordMatches(existing, desired)) throw failure('DST_IMPORT_MEDIA_ID_CONFLICT');
-    const target = destinationSnapshot(retry.rootInfo, targetRelativePath, context.maxImageBytes || MAX_IMAGE_BYTES);
-    if (target.snapshot.exists && target.snapshot.sha256 !== candidate.image.sha256) throw failure('DST_IMPORT_TARGET_COLLISION');
-    const ledgerAppendNeeded = !existing;
-    const targetReady = target.snapshot.exists && target.snapshot.sha256 === candidate.image.sha256;
+    const entries = candidate.images.map((bundleImage) => {
+        const imageCandidate = { ...candidate, ...bundleImage };
+        const deterministic = sha256(candidate.imageCount === 1
+            ? `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.image.sha256}`
+            : `${retryMediaId}\0${candidate.bundleId}\0${bundleImage.imageName}\0${bundleImage.image.sha256}`);
+        const mediaId = `dst_${deterministic.slice(0, 32)}`;
+        const targetRelativePath = `${IMPORT_RELATIVE_ROOT}/${bundleImage.image.sha256}${bundleImage.extension}`;
+        const existing = retry.records.find((record) => record.media_id === mediaId);
+        const attempt = existing ? Number(existing.attempt) : nextAttempt++;
+        if (!Number.isSafeInteger(attempt) || attempt <= 0 || attempt > 10000) throw failure('DST_IMPORT_ATTEMPT_INVALID');
+        const desired = {
+            media_id: mediaId,
+            kind: retry.item.kind,
+            target_id: retry.item.target_id,
+            provider: 'dst',
+            operation_id: manifestId,
+            attempt,
+            reference_ids: referenceIds,
+            relative_path: targetRelativePath,
+            generation_status: 'imported',
+            prompt: candidate.query,
+            aspect_ratio: typeof retry.source.aspect_ratio === 'string' ? retry.source.aspect_ratio : '',
+            review_status: 'unreviewed',
+            retry_of: retryMediaId,
+            source_bundle_id: candidate.bundleId,
+            source_image_name: bundleImage.imageName,
+            source_manifest_sha256: candidate.manifest.sha256,
+            source_metadata_sha256: candidate.metadata.sha256,
+            source_image_sha256: bundleImage.image.sha256,
+            imported_at: importedAt,
+        };
+        if (existing && !recordMatches(existing, desired)) throw failure('DST_IMPORT_MEDIA_ID_CONFLICT');
+        const target = destinationSnapshot(retry.rootInfo, targetRelativePath, context.maxImageBytes || MAX_IMAGE_BYTES);
+        if (target.snapshot.exists && target.snapshot.sha256 !== bundleImage.image.sha256) {
+            throw failure('DST_IMPORT_TARGET_COLLISION');
+        }
+        const ledgerAppendNeeded = !existing;
+        const targetReady = target.snapshot.exists && target.snapshot.sha256 === bundleImage.image.sha256;
+        return {
+            retry,
+            candidate: imageCandidate,
+            desired,
+            target,
+            ledgerAppendNeeded,
+            alreadyCurrent: !ledgerAppendNeeded && targetReady,
+        };
+    });
+    const first = entries[0];
     return {
         retry,
         candidate,
-        desired,
-        target,
-        ledgerAppendNeeded,
-        alreadyCurrent: !ledgerAppendNeeded && targetReady,
+        entries,
+        desired: first.desired,
+        target: first.target,
+        ledgerAppendNeeded: first.ledgerAppendNeeded,
+        alreadyCurrent: entries.every((entry) => entry.alreadyCurrent),
     };
 }
 
@@ -491,11 +528,14 @@ function evidence(inputs) {
         manifestIdentity: inputs.candidate.manifest.identity,
         metadataSha256: inputs.candidate.metadata.sha256,
         metadataIdentity: inputs.candidate.metadata.identity,
-        imageSha256: inputs.candidate.image.sha256,
-        imageIdentity: inputs.candidate.image.identity,
-        target: inputs.target.snapshot,
-        desired: inputs.desired,
-        ledgerAppendNeeded: inputs.ledgerAppendNeeded,
+        images: inputs.entries.map((entry) => ({
+            imageSha256: entry.candidate.image.sha256,
+            imageIdentity: entry.candidate.image.identity,
+            target: entry.target.snapshot,
+            desired: entry.desired,
+            ledgerAppendNeeded: entry.ledgerAppendNeeded,
+            alreadyCurrent: entry.alreadyCurrent,
+        })),
         alreadyCurrent: inputs.alreadyCurrent,
     };
 }
@@ -512,10 +552,17 @@ function stableEvidence(left, right) {
         && left.manifestSha256 === right.manifestSha256 && left.metadataSha256 === right.metadataSha256
         && sameIdentity(left.manifestIdentity, right.manifestIdentity)
         && sameIdentity(left.metadataIdentity, right.metadataIdentity)
-        && left.imageSha256 === right.imageSha256 && sameIdentity(left.imageIdentity, right.imageIdentity)
-        && sameSnapshot(left.target, right.target)
-        && JSON.stringify(left.desired) === JSON.stringify(right.desired)
-        && left.ledgerAppendNeeded === right.ledgerAppendNeeded && left.alreadyCurrent === right.alreadyCurrent;
+        && left.images.length === right.images.length
+        && left.images.every((image, index) => {
+            const current = right.images[index];
+            return image.imageSha256 === current.imageSha256
+                && sameIdentity(image.imageIdentity, current.imageIdentity)
+                && sameSnapshot(image.target, current.target)
+                && JSON.stringify(image.desired) === JSON.stringify(current.desired)
+                && image.ledgerAppendNeeded === current.ledgerAppendNeeded
+                && image.alreadyCurrent === current.alreadyCurrent;
+        })
+        && left.alreadyCurrent === right.alreadyCurrent;
 }
 
 function clockMs(context = {}) {
@@ -551,6 +598,10 @@ function blockedPlan(code) {
         source_image_sha256: '',
         mime_type: '',
         size_bytes: 0,
+        image_count: 0,
+        new_image_count: 0,
+        already_current_count: 0,
+        total_size_bytes: 0,
         target_relative_path: '',
         preview: null,
         blockers: [code],
@@ -606,6 +657,10 @@ function planDstBundleImport(payload, context = {}) {
             source_image_sha256: candidate.image.sha256,
             mime_type: candidate.mimeType,
             size_bytes: candidate.image.size,
+            image_count: candidate.imageCount,
+            new_image_count: inputs.entries.filter((entry) => !entry.alreadyCurrent).length,
+            already_current_count: inputs.entries.filter((entry) => entry.alreadyCurrent).length,
+            total_size_bytes: candidate.totalSizeBytes,
             target_relative_path: inputs.desired.relative_path,
             preview: null,
             blockers: [],
@@ -716,8 +771,9 @@ function publishImage(inputs, context = {}) {
 }
 
 function appendLedger(inputs, context = {}) {
-    if (!inputs.ledgerAppendNeeded) return false;
-    const recordBuffer = Buffer.from(`${JSON.stringify(inputs.desired)}\n`, 'utf8');
+    const pending = inputs.entries.filter((entry) => entry.ledgerAppendNeeded);
+    if (!pending.length) return 0;
+    const recordBuffer = Buffer.from(pending.map((entry) => JSON.stringify(entry.desired)).join('\n') + '\n', 'utf8');
     const separator = inputs.retry.ledger.buffer.length && !inputs.retry.ledger.buffer.toString('utf8').endsWith('\n') ? Buffer.from('\n') : Buffer.alloc(0);
     const nextBuffer = Buffer.concat([inputs.retry.ledger.buffer, separator, recordBuffer]);
     if (nextBuffer.byteLength > MAX_LEDGER_BYTES) throw failure('DST_IMPORT_LEDGER_TOO_LARGE');
@@ -740,7 +796,7 @@ function appendLedger(inputs, context = {}) {
         if (written.sha256 !== sha256(nextBuffer) || written.size !== nextBuffer.byteLength) {
             throw failure('DST_IMPORT_LEDGER_POST_WRITE_MISMATCH');
         }
-        return true;
+        return pending.length;
     } finally {
         if (!renamed) {
             try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -911,21 +967,31 @@ function confirmDstBundleImport(payload, context = {}) {
                 target_relative_path: inputs.desired.relative_path,
                 copied: false,
                 ledger_appended: false,
+                imported_count: 0,
+                copy_count: 0,
+                ledger_appended_count: 0,
                 sha256: inputs.candidate.image.sha256,
             };
         }
-        const copy = publishImage(inputs, context);
-        const ledgerAppended = appendLedger(inputs, context);
+        const copies = inputs.entries.map((entry) => publishImage(entry, context));
+        const ledgerAppendedCount = appendLedger(inputs, context);
+        const copyCount = copies.filter((copy) => copy.created).length;
+        const importedCount = inputs.entries.filter((entry) => !entry.alreadyCurrent).length;
+        const firstCopy = copies[0];
+        const firstLedgerAppended = inputs.entries[0].ledgerAppendNeeded && ledgerAppendedCount > 0;
         return {
             ok: true,
-            imported: copy.created || ledgerAppended,
+            imported: importedCount > 0,
             already_current: false,
-            executed: copy.created || ledgerAppended,
+            executed: copyCount > 0 || ledgerAppendedCount > 0,
             generation_executed: false,
             media_id: inputs.desired.media_id,
             target_relative_path: inputs.desired.relative_path,
-            copied: copy.created,
-            ledger_appended: ledgerAppended,
+            copied: firstCopy.created,
+            ledger_appended: firstLedgerAppended,
+            imported_count: importedCount,
+            copy_count: copyCount,
+            ledger_appended_count: ledgerAppendedCount,
             sha256: inputs.candidate.image.sha256,
         };
     } finally {

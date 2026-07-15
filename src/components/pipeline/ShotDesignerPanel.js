@@ -1,4 +1,4 @@
-import { actionButton, card, codeBlock, el, panelShell, statusBadge } from './ui.js';
+import { actionButton, card, codeBlock, el, panelShell } from './ui.js';
 import {
     buildDeepSearchSceneImageCommandSpec,
     buildDeepSearchSceneImageDraftMarkdown,
@@ -214,10 +214,6 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
 
         container.appendChild(panelShell(p('Shot Design'), p('Preview-only shot payload builder adapted from the old Video and Cinema Studio control patterns. No generation, upload, or external review is wired.'), [
             el('div', { className: 'flex flex-wrap items-center gap-2' }, [
-                statusBadge(p('ShotPayload draft'), 'PREVIEW'),
-                statusBadge(p('No hosted API calls'), 'BLOCK'),
-                statusBadge(p('No submit jobs'), 'BLOCK'),
-                statusBadge(p('Planning file only'), 'PASS'),
                 copyButton,
                 saveButton,
             ]),
@@ -227,7 +223,6 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
                         el('h3', { text: p('Prompt And Output Shape'), className: 'text-sm font-bold text-white' }),
                         el('p', { text: p('Model is UI metadata only. The emitted JSON uses the ShotPayload contract fields.'), className: 'mt-1 text-xs text-secondary' }),
                     ]),
-                    statusBadge(selectedModel, 'PREVIEW'),
                 ]),
                 el('div', { className: 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4' }, [
                     clipSelect,
@@ -265,7 +260,6 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
             card([
                 el('div', { className: 'mb-3 flex flex-wrap items-center justify-between gap-2' }, [
                     el('h3', { text: p('ShotPayload JSON'), className: 'text-sm font-bold text-white' }),
-                    statusBadge(p('copy/save only'), 'PREVIEW'),
                 ]),
                 jsonBlock,
             ]),
@@ -278,11 +272,8 @@ export function ShotDesignerPanel({ state, onSavePlanningFile }) {
                             className: 'mt-1 text-xs leading-5 text-secondary',
                         }),
                     ]),
-                    el('div', { className: 'flex flex-wrap gap-2' }, [
-                        statusBadge(p('goldpure369 required'), 'BLOCK'),
-                        statusBadge(p('Thinking mode required'), 'BLOCK'),
-                        statusBadge(p('one image only'), 'PREVIEW'),
-                        statusBadge(p('no generation run'), 'BLOCK'),
+                    el('div', { className: 'flex flex-wrap items-center gap-2' }, [
+                        el('span', { text: 'DST 설정: goldpure369 · Thinking · 1장', className: 'text-xs text-secondary' }),
                         copyDeepSearchPromptButton,
                         saveDeepSearchPromptButton,
                     ]),

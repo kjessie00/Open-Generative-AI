@@ -16,10 +16,15 @@ const PNG = Buffer.concat([
     Buffer.from('dst-import-real-local-fixture'),
 ]);
 
+function pngFixture(label) {
+    return Buffer.concat([PNG.subarray(0, 8), Buffer.from(label)]);
+}
+
 function writeBundle(dstRoot, overrides = {}) {
     const bundleName = overrides.bundleName || '20260715_1200_fixture_bundle_abcdef1234';
     const bundleRoot = path.join(dstRoot, bundleName);
     const imageName = overrides.imageName || 'image_01.png';
+    const images = overrides.images || [{ name: imageName, buffer: overrides.image || PNG }];
     fs.mkdirSync(path.join(bundleRoot, 'images'), { recursive: true });
     const manifest = {
         id: overrides.id || 'fixture_bundle_abcdef1234',
@@ -34,14 +39,14 @@ function writeBundle(dstRoot, overrides = {}) {
     const metadata = {
         status: 'complete',
         profile: 'goldpure369',
-        image_count: 1,
+        image_count: images.length,
         query: manifest.query,
         ...overrides.metadata,
     };
     fs.writeFileSync(path.join(bundleRoot, 'manifest.json'), JSON.stringify(manifest));
     fs.writeFileSync(path.join(bundleRoot, 'metadata.json'), JSON.stringify(metadata));
-    fs.writeFileSync(path.join(bundleRoot, 'images', imageName), overrides.image || PNG);
-    return { bundleRoot, imageName, manifest, metadata };
+    for (const image of images) fs.writeFileSync(path.join(bundleRoot, 'images', image.name), image.buffer);
+    return { bundleRoot, imageName: images[0].name, imageNames: images.map((image) => image.name), manifest, metadata };
 }
 
 function fixture(t) {
@@ -131,6 +136,13 @@ test('real local workspace returns only opaque bounded completed single-image bu
     assert.equal(workspace.executed, false);
     assert.equal(workspace.generation_executed, false);
 
+    const envWorkspace = provider.getDstBundleImportWorkspace({
+        ...fx.context,
+        dstImagesRoot: undefined,
+        env: { OPEN_GENERATIVE_AI_DST_IMAGES_ROOT: fx.dstRoot },
+    });
+    assert.equal(envWorkspace.candidates.length, 1, 'Electron main may select an isolated DST inventory root');
+
     const preview = provider.getDstBundleImportPreview({ candidateToken: candidate.candidate_token }, fx.context);
     assert.deepEqual(Object.keys(preview).sort(), [
         'blockers', 'candidate_token', 'executed', 'generation_executed', 'preview', 'ready', 'status',
@@ -159,6 +171,184 @@ test('workspace hard-caps newest valid inventory candidates at twelve', (t) => {
     }
     const workspace = provider.getDstBundleImportWorkspace({ ...fx.context, maxCandidates: 99 });
     assert.equal(workspace.candidates.length, 12);
+});
+
+test('completed multi-image bundle is one representative candidate and imports the whole set atomically', (t) => {
+    const fx = fixture(t);
+    const images = [
+        { name: 'image_01.png', buffer: pngFixture('multi-one') },
+        { name: 'image_02.png', buffer: pngFixture('multi-two') },
+        { name: 'image_03.png', buffer: pngFixture('multi-three') },
+    ];
+    writeBundle(fx.dstRoot, { images });
+
+    const workspace = provider.getDstBundleImportWorkspace(fx.context);
+    assert.equal(workspace.candidates.length, 1);
+    const candidate = workspace.candidates[0];
+    assert.equal(candidate.image_count, 3);
+    assert.equal(candidate.size_bytes, images[0].buffer.length, 'singular size remains the representative image size');
+    assert.equal(candidate.total_size_bytes, images.reduce((total, image) => total + image.buffer.length, 0));
+    assert.equal(candidate.image_name, undefined);
+    assert.equal(candidate.sha256, undefined);
+    assert.equal(JSON.stringify(candidate).includes(fx.dstRoot), false);
+
+    const preview = provider.getDstBundleImportPreview({ candidateToken: candidate.candidate_token }, fx.context);
+    assert.deepEqual(Buffer.from(preview.preview.base64, 'base64'), images[0].buffer);
+
+    const plan = provider.planDstBundleImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, fx.context);
+    assert.equal(plan.ready, true, JSON.stringify(plan));
+    assert.equal(plan.image_count, 3);
+    assert.equal(plan.new_image_count, 3);
+    assert.equal(plan.already_current_count, 0);
+    assert.equal(plan.total_size_bytes, candidate.total_size_bytes);
+    assert.equal(plan.source_image_name, 'image_01.png', 'singular fields describe the representative image');
+
+    const result = provider.confirmDstBundleImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.deepEqual({
+        imported: result.imported,
+        importedCount: result.imported_count,
+        copied: result.copied,
+        copyCount: result.copy_count,
+        ledger: result.ledger_appended,
+        ledgerCount: result.ledger_appended_count,
+    }, {
+        imported: true,
+        importedCount: 3,
+        copied: true,
+        copyCount: 3,
+        ledger: true,
+        ledgerCount: 3,
+    });
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.slice(1).map((record) => record.attempt), [2, 3, 4]);
+    assert.deepEqual(records.slice(1).map((record) => record.source_image_name), images.map((image) => image.name));
+    assert.equal(new Set(records.slice(1).map((record) => record.media_id)).size, 3);
+    for (let index = 0; index < images.length; index += 1) {
+        const target = path.join(fx.productionRoot, ...records[index + 1].relative_path.split('/'));
+        assert.deepEqual(fs.readFileSync(target), images[index].buffer);
+    }
+
+    const again = provider.planDstBundleImport({
+        candidateToken: selectedCandidate(fx.context).candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, fx.context);
+    assert.equal(again.status, 'already_current');
+    assert.equal(again.image_count, 3);
+    assert.equal(again.new_image_count, 0);
+    assert.equal(again.already_current_count, 3);
+    const noOp = provider.confirmDstBundleImport({ planToken: again.plan_token, confirmed: true }, fx.context);
+    assert.deepEqual({
+        imported: noOp.imported,
+        importedCount: noOp.imported_count,
+        copyCount: noOp.copy_count,
+        ledgerCount: noOp.ledger_appended_count,
+    }, { imported: false, importedCount: 0, copyCount: 0, ledgerCount: 0 });
+});
+
+test('multi-image bundles reject the whole set on count, sequence, extra-entry, type, or symlink failures', (t) => {
+    const cases = [
+        {
+            name: 'count mismatch',
+            setup(fx) { writeBundle(fx.dstRoot, { metadata: { image_count: 2 } }); },
+        },
+        {
+            name: 'sequence gap',
+            setup(fx) {
+                writeBundle(fx.dstRoot, { images: [
+                    { name: 'image_01.png', buffer: pngFixture('one') },
+                    { name: 'image_03.png', buffer: pngFixture('three') },
+                ] });
+            },
+        },
+        {
+            name: 'extra hidden entry',
+            setup(fx) { fs.writeFileSync(path.join(fx.bundle.bundleRoot, 'images', '.DS_Store'), 'extra'); },
+        },
+        {
+            name: 'unsupported extension',
+            setup(fx) { writeBundle(fx.dstRoot, { images: [{ name: 'image_01.gif', buffer: pngFixture('gif-spoof') }] }); },
+        },
+        {
+            name: 'secondary symlink',
+            setup(fx) {
+                const outside = path.join(fx.base, 'outside.png');
+                fs.writeFileSync(outside, pngFixture('outside'));
+                writeBundle(fx.dstRoot, { images: [
+                    { name: 'image_01.png', buffer: pngFixture('one') },
+                    { name: 'image_02.png', buffer: pngFixture('placeholder') },
+                ] });
+                const linked = path.join(fx.bundle.bundleRoot, 'images', 'image_02.png');
+                fs.unlinkSync(linked);
+                fs.symlinkSync(outside, linked);
+            },
+        },
+    ];
+    for (const item of cases) {
+        const fx = fixture(t);
+        item.setup(fx);
+        const workspace = provider.getDstBundleImportWorkspace(fx.context);
+        assert.equal(workspace.candidates.length, 0, item.name);
+        assert.equal(workspace.rejected_count, 1, item.name);
+    }
+});
+
+test('multi-image identity includes the canonical image name while single-image media ids remain compatible', (t) => {
+    const fx = fixture(t);
+    const duplicate = pngFixture('same-pixels');
+    writeBundle(fx.dstRoot, { images: [
+        { name: 'image_01.png', buffer: duplicate },
+        { name: 'image_02.png', buffer: duplicate },
+    ] });
+    const candidate = selectedCandidate(fx.context);
+    const plan = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, retryMediaId: fx.source.media_id }, fx.context);
+    const result = provider.confirmDstBundleImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.equal(result.imported_count, 2);
+    assert.equal(result.copy_count, 1, 'content-addressed storage writes duplicate pixels once');
+    assert.equal(result.ledger_appended_count, 2);
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(new Set(records.slice(1).map((record) => record.media_id)).size, 2);
+    assert.deepEqual(records.slice(1).map((record) => record.source_image_name), ['image_01.png', 'image_02.png']);
+});
+
+test('multi-image ledger publication is one atomic rename and repairs after copy-only partial failure', (t) => {
+    const fx = fixture(t);
+    writeBundle(fx.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('atomic-one') },
+        { name: 'image_02.png', buffer: pngFixture('atomic-two') },
+        { name: 'image_03.png', buffer: pngFixture('atomic-three') },
+    ] });
+    const candidate = selectedCandidate(fx.context);
+    const plan = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, retryMediaId: fx.source.media_id }, fx.context);
+    let renameCount = 0;
+    assert.throws(
+        () => provider.confirmDstBundleImport({ planToken: plan.plan_token, confirmed: true }, {
+            ...fx.context,
+            ledgerRenameFile() {
+                renameCount += 1;
+                throw Object.assign(new Error('injected ledger rename failure'), { code: 'EIO' });
+            },
+        }),
+        { code: 'EIO' },
+    );
+    assert.equal(renameCount, 1);
+    assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 1);
+    assert.equal(fs.readdirSync(path.join(fx.productionRoot, 'media', 'imports', 'dst')).length, 3);
+
+    const repair = provider.planDstBundleImport({
+        candidateToken: selectedCandidate(fx.context).candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, fx.context);
+    const repaired = provider.confirmDstBundleImport({ planToken: repair.plan_token, confirmed: true }, fx.context);
+    assert.deepEqual({
+        imported: repaired.imported_count,
+        copied: repaired.copy_count,
+        ledger: repaired.ledger_appended_count,
+    }, { imported: 3, copied: 0, ledger: 3 });
+    assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 4);
 });
 
 test('blocked or mismatched retry plans cannot be used as import write authority', (t) => {

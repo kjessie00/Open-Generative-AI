@@ -77,7 +77,7 @@ export function MediaAttemptCard(attempt, actions) {
                 variant: attempt.review_status === 'needs_changes' ? 'primary' : 'muted',
                 onClick: () => actions.onReview(attempt.media_id, 'needs_changes'),
             }),
-            actionButton(attempt.selected_for_retry ? '다시 만들기 해제' : '다시 만들기 선택', {
+            actionButton(attempt.selected_for_retry ? '선택 해제' : '다시 만들기', {
                 variant: attempt.selected_for_retry ? 'primary' : 'muted',
                 onClick: () => actions.onRetry(attempt.media_id),
             }),

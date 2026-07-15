@@ -11,7 +11,7 @@ import {
 } from '../../lib/pipeline/mediaReviewBoard.js';
 import { ReferenceRail, SceneReviewRow } from './MediaReviewBoardParts.js';
 import { MediaRetryPlanBand } from './MediaRetryPlanBand.js';
-import { actionButton, el, emptyState, panelShell, statusBadge } from './ui.js';
+import { actionButton, el, emptyState, panelShell } from './ui.js';
 import { p } from './copy.js';
 
 const FILTER_LABELS = Object.freeze({
@@ -129,8 +129,7 @@ export function StoryboardPanel({
         ]);
 
         const queueBand = el('div', { className: 'media-review-queue-status' }, [
-            statusBadge('실행 안 함', 'BLOCK'),
-            el('strong', { text: queued.length ? `순차 대기열 초안 ${queued.length}개` : '대기열 초안' }),
+            el('strong', { text: queued.length ? `실행 안 함 · 순차 대기열 ${queued.length}개` : '대기열 초안' }),
             el('span', { text: queued.length
                 ? queued.map((item) => `${item.sequence}. ${item.target_id} (${item.provider || '제공자 미상'})`).join(' · ')
                 : '선택 항목을 담아도 실제 이미지·영상 생성은 시작되지 않습니다.' }),

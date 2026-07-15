@@ -1,4 +1,4 @@
-import { actionButton, card, el, emptyState, statusBadge } from './ui.js';
+import { actionButton, el, emptyState } from './ui.js';
 
 const SAFE_PREVIEW_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
@@ -61,7 +61,7 @@ export function DstBundleImportBand({
     let activePreview = preview?.candidate_token === selectedCandidateToken ? preview : null;
     let busy = false;
     let feedback = activePlan?.imported || activePlan?.already_current
-        ? '선택한 결과를 작업대 기록에 반영했습니다.'
+        ? '이미지 묶음을 작업대에 연결했습니다.'
         : '';
 
     const root = el('section', {
@@ -73,7 +73,6 @@ export function DstBundleImportBand({
         const candidate = candidates.find((item) => item.candidate_token === selectedCandidateToken);
         const retryItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
         const previewUrl = previewSource(activePreview);
-        const blockers = Array.isArray(activePlan?.blockers) ? activePlan.blockers : [];
         const workspaceBlocked = workspace?.status === 'blocked';
         const planReady = activePlan?.ready === true && Boolean(activePlan?.plan_token);
         const imported = activePlan?.imported === true || activePlan?.already_current === true;
@@ -82,8 +81,8 @@ export function DstBundleImportBand({
         root.replaceChildren(...[
             el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
                 el('div', {}, [
-                    el('h4', { text: 'DST 생성 결과 가져오기', className: 'text-sm font-bold text-white', attrs: { id: 'dst-bundle-import-title' } }),
-                    el('p', { text: '완료된 이미지 묶음에서 한 장을 골라 선택한 다시 만들기 항목에 연결합니다.', className: 'mt-1 text-xs text-secondary' }),
+                    el('h4', { text: 'DST 이미지 연결', className: 'text-sm font-bold text-white', attrs: { id: 'dst-bundle-import-title' } }),
+                    el('p', { text: '완료된 이미지 묶음을 선택한 항목에 한 번에 연결합니다.', className: 'mt-1 text-xs text-secondary' }),
                 ]),
                 actionButton(workspace?.status === 'loading' ? '확인 중…' : '결과 목록 새로고침', {
                     variant: 'muted',
@@ -95,7 +94,7 @@ export function DstBundleImportBand({
                 ? el('div', { className: 'mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_12rem]' }, [
                     labeledSelect(
                         'dst-import-retry-target',
-                        '다시 만들기 항목',
+                        '연결할 항목',
                         retryItems.map((item) => ({
                             value: item.media_id,
                             label: `${item.sequence}. ${item.target_id || item.media_id} · ${item.kind}`,
@@ -110,10 +109,10 @@ export function DstBundleImportBand({
                     ),
                     labeledSelect(
                         'dst-import-candidate',
-                        '완료된 이미지',
+                        '완료된 이미지 묶음',
                         candidates.map((item) => ({
                             value: item.candidate_token,
-                            label: [formatCreatedAt(item.created_at), item.prompt_excerpt || 'DST 완료 이미지', formatBytes(item.size_bytes)]
+                            label: [formatCreatedAt(item.created_at), `${item.image_count || 1}장`, item.prompt_excerpt || 'DST 완료 이미지', formatBytes(item.total_size_bytes || item.size_bytes)]
                                 .filter(Boolean).join(' · '),
                         })),
                         selectedCandidateToken,
@@ -151,7 +150,7 @@ export function DstBundleImportBand({
                 className: 'mt-3 line-clamp-2 text-xs leading-5 text-secondary',
             }) : null,
             retryItems.length && candidates.length ? el('div', { className: 'mt-4 flex flex-wrap items-center gap-3' }, [
-                actionButton(busy ? '확인 중…' : '가져오기 계획', {
+                actionButton(busy ? '확인 중…' : '묶음 확인', {
                     disabled: busy || !canPlan,
                     onClick: async () => {
                         busy = true;
@@ -169,20 +168,16 @@ export function DstBundleImportBand({
                         render();
                     },
                 }),
-                activePlan ? statusBadge(
-                    imported ? '가져오기 완료' : planReady ? '가져오기 준비' : '계획 차단',
-                    imported ? 'PASS' : planReady ? 'PREVIEW' : 'BLOCK',
-                ) : null,
                 activePlan ? el('span', {
                     text: imported
-                        ? `${activePlan.target_id || retryItem?.target_id || '선택 항목'}에 결과가 연결되었습니다.`
+                        ? `${activePlan.imported_count || activePlan.image_count || 1}장을 ${activePlan.target_id || retryItem?.target_id || '선택 장면'}에 연결했습니다.`
                         : planReady
-                            ? `${activePlan.source_bundle_id || candidate?.bundle_id} → ${activePlan.target_id || retryItem?.target_id}`
-                            : blockers.join(' · ') || '가져오기 계획을 만들지 못했습니다.',
+                            ? `${activePlan.new_image_count ?? activePlan.image_count ?? candidate?.image_count ?? 1}장을 ${activePlan.target_id || retryItem?.target_id || '선택 장면'}에 연결합니다.`
+                            : '이미지 묶음을 확인하지 못했습니다.',
                     className: 'min-w-0 flex-1 break-words text-xs text-secondary',
                     attrs: { role: planReady || imported ? 'status' : 'alert' },
                 }) : null,
-                planReady && !imported ? actionButton('선택한 결과 가져오기', {
+                planReady && !imported ? actionButton(`${activePlan.new_image_count || activePlan.image_count || candidate?.image_count || 1}장 연결`, {
                     disabled: busy || typeof onConfirm !== 'function',
                     onClick: async () => {
                         busy = true;
@@ -192,11 +187,11 @@ export function DstBundleImportBand({
                             const result = await onConfirm({ planToken: activePlan.plan_token, confirmed: true });
                             activePlan = { ...activePlan, ...result, ready: false, status: result?.imported || result?.already_current ? 'imported' : 'blocked' };
                             feedback = result?.imported || result?.already_current
-                                ? '선택한 결과를 작업대 기록에 반영했습니다.'
-                                : '가져오기가 차단되었습니다.';
+                                ? '이미지 묶음을 작업대에 연결했습니다.'
+                                : '이미지 연결이 차단되었습니다.';
                         } catch {
                             activePlan = { ...activePlan, ready: false, status: 'blocked', blockers: ['DST_BUNDLE_IMPORT_CONFIRM_FAILED'] };
-                            feedback = '가져오기가 차단되었습니다.';
+                            feedback = '이미지 연결이 차단되었습니다.';
                         }
                         busy = false;
                         render();
