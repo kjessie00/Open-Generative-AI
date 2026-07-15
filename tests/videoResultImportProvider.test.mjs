@@ -16,6 +16,7 @@ const MP4 = Buffer.concat([
     Buffer.from('isomiso2', 'ascii'),
     Buffer.alloc(4096, 0x5a),
 ]);
+const MP4_ALT = Buffer.concat([MP4, Buffer.from('canonical-result')]);
 
 function mockFfprobe(options = {}) {
     const calls = [];
@@ -55,6 +56,27 @@ function writeReplicate(replicateRoot, number = 1, bytes = MP4) {
     const filePath = path.join(replicateRoot, `seedance_${number}.mp4`);
     fs.writeFileSync(filePath, bytes);
     return filePath;
+}
+
+function writeProviderReceipt(resultsRoot, providerName, resultId, bytes = MP4, overrides = {}) {
+    const directory = path.join(resultsRoot, resultId);
+    fs.mkdirSync(directory, { recursive: true });
+    const videoPath = path.join(directory, 'result.mp4');
+    fs.writeFileSync(videoPath, bytes);
+    const receipt = {
+        schema_version: provider.EXTERNAL_RESULT_SCHEMA,
+        provider: providerName,
+        result_id: resultId,
+        status: 'succeeded',
+        output_file: 'result.mp4',
+        output_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+        output_size_bytes: bytes.length,
+        completed_at: '2026-07-15T09:00:00.000Z',
+        ...overrides,
+    };
+    const receiptPath = path.join(directory, 'receipt.json');
+    fs.writeFileSync(receiptPath, `${JSON.stringify(receipt)}\n`);
+    return { directory, videoPath, receiptPath, receipt };
 }
 
 function writeRetrySources(productionRoot, options = {}) {
@@ -108,10 +130,14 @@ function fixture(t, options = {}) {
     const grokResultsRoot = path.join(base, 'grok-results');
     const replicateRunRoot = path.join(base, 'replicate-run');
     const replicateResultsRoot = path.join(replicateRunRoot, 'replicate_seedance_clips');
+    const replicateReceiptResultsRoot = path.join(base, 'replicate-receipts');
+    const bytedanceReceiptResultsRoot = path.join(base, 'bytedance-receipts');
     const productionRoot = path.join(base, 'production');
     fs.mkdirSync(flowResultsRoot);
     fs.mkdirSync(grokResultsRoot);
     fs.mkdirSync(replicateResultsRoot, { recursive: true });
+    fs.mkdirSync(replicateReceiptResultsRoot);
+    fs.mkdirSync(bytedanceReceiptResultsRoot);
     fs.writeFileSync(path.join(replicateRunRoot, 'run_status.md'), '# MOCK run\nReplicate Seedance fallback\n');
     fs.mkdirSync(productionRoot);
     fs.writeFileSync(path.join(productionRoot, 'brief.md'), '# video import fixture\n');
@@ -121,6 +147,8 @@ function fixture(t, options = {}) {
         flowResultsRoot,
         grokResultsRoot,
         replicateResultsRoot,
+        replicateReceiptResultsRoot,
+        bytedanceReceiptResultsRoot,
         replicateShaAllowlist: {
             seedance_1: crypto.createHash('sha256').update(MP4).digest('hex'),
             seedance_2: crypto.createHash('sha256').update(MP4).digest('hex'),
@@ -135,6 +163,7 @@ function fixture(t, options = {}) {
     t.after(() => fs.rmSync(base, { recursive: true, force: true }));
     return {
         base, flowResultsRoot, grokResultsRoot, replicateRunRoot, replicateResultsRoot,
+        replicateReceiptResultsRoot, bytedanceReceiptResultsRoot,
         productionRoot, source, probe, context,
     };
 }
@@ -222,6 +251,107 @@ test('MOCK ffprobe: Replicate accepts only the three fixed Seedance names, appro
     const blocked = provider.getVideoResultImportWorkspace(fx.context);
     assert.equal(blocked.candidates.some((item) => item.provider === 'replicate'), false);
     assert.ok(blocked.blockers.includes('VIDEO_IMPORT_REPLICATE_PROVENANCE_INVALID'), JSON.stringify(blocked));
+});
+
+test('MOCK ffprobe: canonical Replicate and ByteDance receipts stay pathless, prefer receipt evidence, and import provenance', (t) => {
+    const fx = fixture(t, { provider: 'replicate' });
+    writeReplicate(fx.replicateResultsRoot, 1, MP4);
+    writeReplicate(fx.replicateResultsRoot, 2, MP4_ALT);
+    fx.context.replicateShaAllowlist.seedance_2 = crypto.createHash('sha256').update(MP4_ALT).digest('hex');
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'seedance_1', MP4_ALT);
+    writeProviderReceipt(fx.bytedanceReceiptResultsRoot, 'bytedance', 'byte_job_001', MP4);
+
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    assert.deepEqual(workspace.candidates.map((item) => [item.provider, item.result_id]).sort(), [
+        ['bytedance', 'byte_job_001'],
+        ['replicate', 'seedance_1'],
+    ]);
+    for (const candidate of workspace.candidates) {
+        assert.deepEqual(Object.keys(candidate).sort(), [
+            'candidate_token', 'duration_seconds', 'height', 'preview_allowed', 'provider', 'result_id', 'size_bytes', 'width',
+        ]);
+    }
+    const serialized = JSON.stringify(workspace);
+    assert.equal(serialized.includes(fx.base), false);
+    assert.equal(serialized.includes('receipt.json'), false);
+    assert.equal(serialized.includes('result.mp4'), false);
+    assert.equal(serialized.includes(crypto.createHash('sha256').update(MP4_ALT).digest('hex')), false);
+
+    const candidate = candidateFor(workspace, 'replicate');
+    assert.equal(candidate.size_bytes, MP4_ALT.length, 'canonical receipt wins over the historical result with the same provider/result id');
+    const plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, fx.context);
+    assert.equal(plan.ready, true, JSON.stringify(plan));
+    const result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context);
+    assert.equal(result.imported, true);
+    assert.deepEqual(fs.readFileSync(contentTarget(fx.productionRoot, 'replicate', MP4_ALT)), MP4_ALT);
+    const imported = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(imported.source_provenance, 'provider_result_receipt_v1');
+});
+
+test('MOCK ffprobe: malformed canonical receipts, mismatched evidence, symlinks, and extra files are rejected', (t) => {
+    const fx = fixture(t, { provider: 'replicate' });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'bad_json');
+    fs.writeFileSync(path.join(fx.replicateReceiptResultsRoot, 'bad_json', 'receipt.json'), '{');
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'bad_hash', MP4, { output_sha256: 'a'.repeat(64) });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'bad_size', MP4, { output_size_bytes: MP4.length + 1 });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'bad_provider', MP4, { provider: 'bytedance' });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'bad_result_id', MP4, { result_id: 'different' });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'bad_time', MP4, { completed_at: 'yesterday' });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'extra_key', MP4, { unexpected: true });
+    const oversized = writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'oversized_receipt');
+    fs.writeFileSync(oversized.receiptPath, Buffer.alloc(64 * 1024 + 1, 0x20));
+    const extra = writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'extra_file');
+    fs.writeFileSync(path.join(extra.directory, 'extra.txt'), 'not allowed');
+
+    const outsideVideo = path.join(fx.base, 'outside-video.mp4');
+    fs.writeFileSync(outsideVideo, MP4);
+    const linkedVideo = writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'linked_video');
+    fs.unlinkSync(linkedVideo.videoPath);
+    fs.symlinkSync(outsideVideo, linkedVideo.videoPath);
+    const outsideReceipt = path.join(fx.base, 'outside-receipt.json');
+    fs.writeFileSync(outsideReceipt, `${JSON.stringify(linkedVideo.receipt)}\n`);
+    const linkedReceipt = writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'linked_receipt');
+    fs.unlinkSync(linkedReceipt.receiptPath);
+    fs.symlinkSync(outsideReceipt, linkedReceipt.receiptPath);
+
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    assert.equal(workspace.candidates.length, 0, JSON.stringify(workspace));
+    assert.ok(workspace.rejected_count >= 11, JSON.stringify(workspace));
+    assert.equal(fx.probe.calls.length, 0, 'declared hash and size mismatches stop before MOCK ffprobe');
+});
+
+test('MOCK ffprobe: absent receipt roots are non-blocking while an existing unsafe root is blocked', (t) => {
+    const fx = fixture(t);
+    fs.rmSync(fx.replicateReceiptResultsRoot, { recursive: true });
+    fs.rmSync(fx.bytedanceReceiptResultsRoot, { recursive: true });
+    writeFlow(fx.flowResultsRoot);
+    const missing = provider.getVideoResultImportWorkspace(fx.context);
+    assert.ok(candidateFor(missing, 'flow'));
+    assert.equal(missing.blockers.some((code) => code.includes('RECEIPT_ROOT')), false, JSON.stringify(missing));
+
+    const outside = path.join(fx.base, 'outside-receipts');
+    fs.mkdirSync(outside);
+    const linkedRoot = path.join(fx.base, 'linked-receipts');
+    fs.symlinkSync(outside, linkedRoot);
+    const unsafe = provider.getVideoResultImportWorkspace({ ...fx.context, replicateReceiptResultsRoot: linkedRoot });
+    assert.ok(unsafe.blockers.includes('VIDEO_IMPORT_REPLICATE_RECEIPT_ROOT_UNSAFE'), JSON.stringify(unsafe));
+});
+
+test('MOCK ffprobe: changing a canonical receipt after planning invalidates the one-shot import', (t) => {
+    const fx = fixture(t, { provider: 'replicate' });
+    const written = writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'receipt_drift');
+    const candidate = candidateFor(provider.getVideoResultImportWorkspace(fx.context), 'replicate');
+    const plan = provider.planVideoResultImport({ candidateToken: candidate.candidate_token, retryMediaId: fx.source.media_id }, fx.context);
+    const changed = { ...written.receipt, completed_at: '2026-07-15T09:01:00.000Z' };
+    fs.writeFileSync(written.receiptPath, `${JSON.stringify(changed)}\n`);
+    assert.throws(
+        () => provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, fx.context),
+        { code: 'VIDEO_IMPORT_SOURCE_CHANGED' },
+    );
 });
 
 test('MOCK ffprobe: Replicate provenance change or deletion makes an issued plan stale', (t) => {
@@ -576,4 +706,33 @@ test('REAL local smoke: allowlisted Replicate Seedance 1 passes ffprobe and impo
         crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'),
         provider.DEFAULT_REPLICATE_SHA_ALLOWLIST.seedance_1,
     );
+});
+
+test('REAL local smoke: canonical Replicate receipt passes ffprobe and imports into a temporary production', {
+    skip: !fs.existsSync(REAL_REPLICATE_VIDEO) || !fs.existsSync(REAL_FFPROBE),
+}, (t) => {
+    const fx = fixture(t, { provider: 'replicate' });
+    const bytes = fs.readFileSync(REAL_REPLICATE_VIDEO);
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'real_seedance_receipt', bytes);
+    const realContext = { ...fx.context };
+    delete realContext.runProcessFn;
+
+    const workspace = provider.getVideoResultImportWorkspace(realContext);
+    const candidate = candidateFor(workspace, 'replicate');
+    assert.equal(candidate.result_id, 'real_seedance_receipt');
+    assert.ok(candidate.duration_seconds > 0);
+    assert.ok(candidate.width > 0 && candidate.height > 0);
+    const plan = provider.planVideoResultImport({
+        candidateToken: candidate.candidate_token,
+        retryMediaId: fx.source.media_id,
+    }, realContext);
+    assert.equal(plan.ready, true, JSON.stringify(plan));
+    const result = provider.confirmVideoResultImport({ planToken: plan.plan_token, confirmed: true }, realContext);
+    assert.equal(result.imported, true);
+    const imported = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8')
+        .trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(imported.source_provenance, 'provider_result_receipt_v1');
+    const target = path.join(fx.productionRoot, ...imported.relative_path.split('/'));
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'),
+        crypto.createHash('sha256').update(bytes).digest('hex'));
 });

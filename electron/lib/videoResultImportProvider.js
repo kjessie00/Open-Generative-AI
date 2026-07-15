@@ -5,9 +5,12 @@ const path = require('path');
 
 const WORKSPACE_SCHEMA = 'film_pipeline.video_result_import_workspace.v1';
 const PLAN_SCHEMA = 'film_pipeline.video_result_import_plan.v1';
+const EXTERNAL_RESULT_SCHEMA = 'film_pipeline.external_video_result.v1';
 const DEFAULT_FLOW_RESULTS_ROOT = '/Users/jessiek/StudioProjects/google_labs_flow_auto/outputs/generated';
 const DEFAULT_GROK_RESULTS_ROOT = '/Users/jessiek/StudioProjects/grok-auto/grok-browser/outputs';
 const DEFAULT_REPLICATE_RESULTS_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory/docs/xhs_ad_tests/20260515_smart_doorbell_ai_reversal/replicate_seedance_clips';
+const DEFAULT_REPLICATE_RECEIPT_RESULTS_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory/outputs/provider_results/replicate';
+const DEFAULT_BYTEDANCE_RECEIPT_RESULTS_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory/outputs/provider_results/bytedance';
 const DEFAULT_FFPROBE_PATH = '/opt/homebrew/bin/ffprobe';
 const IMPORT_RELATIVE_ROOT = 'media/imports';
 const MAX_CANDIDATES = 24;
@@ -18,6 +21,7 @@ const MAX_PREVIEW_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_LEDGER_BYTES = 2 * 1024 * 1024;
 const MAX_PROVENANCE_BYTES = 128 * 1024;
+const MAX_RECEIPT_BYTES = 64 * 1024;
 const DEFAULT_PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_TTL_MS = 10 * 60 * 1000;
 const MAX_FFPROBE_OUTPUT_BYTES = 1024 * 1024;
@@ -26,6 +30,7 @@ const SESSION_PLAN_STORE = new Map();
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 const DEFAULT_REPLICATE_SHA_ALLOWLIST = Object.freeze({
     seedance_1: 'a685206f1e318fe12611c210ff411b3160b02608cf967c81233ba1e81db451ee',
     seedance_2: '300693afb1854374e28476afd8254763b28076e779b41487cd60da52f7f97c36',
@@ -99,6 +104,16 @@ function assertRealDirectory(directoryPath, code, options = {}) {
     if (realPath !== directoryPath) throw failure(code);
     if (options.parentRoot && path.dirname(realPath) !== options.parentRoot) throw failure(code);
     return { path: realPath, realPath, stats, identity: identity(stats) };
+}
+
+function optionalRealDirectory(directoryPath, code) {
+    try {
+        fs.lstatSync(directoryPath);
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw failure(code);
+    }
+    return assertRealDirectory(directoryPath, code);
 }
 
 function assertStableDirectory(info, code) {
@@ -288,6 +303,9 @@ function inspectCandidate(provider, resultId, filePath, rootInfo, context = {}, 
     if (options.expectedSha256 && before.sha256 !== options.expectedSha256) {
         throw failure('VIDEO_IMPORT_SOURCE_HASH_UNAPPROVED');
     }
+    if (options.expectedSize && before.size !== options.expectedSize) {
+        throw failure('VIDEO_IMPORT_SOURCE_SIZE_MISMATCH');
+    }
     const probe = ffprobe(filePath, context);
     const after = hashStableFile(filePath, context.maxVideoBytes || MAX_VIDEO_BYTES);
     if (!sameSnapshot(before, after)) throw failure('VIDEO_IMPORT_SOURCE_CHANGED');
@@ -311,6 +329,84 @@ function boundedEntries(rootInfo, context = {}) {
     const limit = Math.min(MAX_SCAN_ENTRIES, context.maxScanEntries || MAX_SCAN_ENTRIES);
     if (!Number.isSafeInteger(limit) || limit <= 0) throw failure('VIDEO_IMPORT_SCAN_LIMIT_INVALID');
     return fs.readdirSync(rootInfo.path, { withFileTypes: true }).slice(0, limit);
+}
+
+function receiptRoot(context, provider) {
+    if (provider === 'replicate') {
+        return context.replicateReceiptResultsRoot || DEFAULT_REPLICATE_RECEIPT_RESULTS_ROOT;
+    }
+    if (provider === 'bytedance') {
+        return context.bytedanceReceiptResultsRoot || DEFAULT_BYTEDANCE_RECEIPT_RESULTS_ROOT;
+    }
+    throw failure('VIDEO_IMPORT_RECEIPT_PROVIDER_INVALID');
+}
+
+function validateReceipt(value, provider, resultId) {
+    exactKeys(value, [
+        'schema_version', 'provider', 'result_id', 'status', 'output_file',
+        'output_sha256', 'output_size_bytes', 'completed_at',
+    ], 'VIDEO_IMPORT_RECEIPT_CONTRACT_INVALID');
+    if (value.schema_version !== EXTERNAL_RESULT_SCHEMA || value.provider !== provider
+        || value.result_id !== resultId || value.status !== 'succeeded' || value.output_file !== 'result.mp4'
+        || !SHA256_PATTERN.test(value.output_sha256 || '')
+        || !Number.isSafeInteger(value.output_size_bytes) || value.output_size_bytes <= 0
+        || value.output_size_bytes > MAX_VIDEO_BYTES
+        || typeof value.completed_at !== 'string' || Buffer.byteLength(value.completed_at, 'utf8') > 64
+        || !ISO_TIME_PATTERN.test(value.completed_at) || !Number.isFinite(Date.parse(value.completed_at))) {
+        throw failure('VIDEO_IMPORT_RECEIPT_CONTRACT_INVALID');
+    }
+    return value;
+}
+
+function scanCanonicalProvider(provider, context = {}) {
+    const codePrefix = `VIDEO_IMPORT_${provider.toUpperCase()}_RECEIPT`;
+    const rootInfo = optionalRealDirectory(receiptRoot(context, provider), `${codePrefix}_ROOT_UNSAFE`);
+    if (!rootInfo) return { candidates: [], rejected: 0 };
+    const candidates = [];
+    let rejected = 0;
+    const entries = boundedEntries(rootInfo, context)
+        .filter((entry) => !entry.name.startsWith('.'))
+        .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+        if (candidates.length >= MAX_CANDIDATES) break;
+        if (!entry.isDirectory() || entry.isSymbolicLink() || !SAFE_ID_PATTERN.test(entry.name)) {
+            rejected += 1;
+            continue;
+        }
+        try {
+            const directory = assertRealDirectory(path.join(rootInfo.path, entry.name), `${codePrefix}_RESULT_UNSAFE`, {
+                parentRoot: rootInfo.realPath,
+            });
+            const resultEntries = fs.readdirSync(directory.path, { withFileTypes: true })
+                .sort((left, right) => left.name.localeCompare(right.name));
+            if (resultEntries.length !== 2
+                || resultEntries[0].name !== 'receipt.json' || !resultEntries[0].isFile() || resultEntries[0].isSymbolicLink()
+                || resultEntries[1].name !== 'result.mp4' || !resultEntries[1].isFile() || resultEntries[1].isSymbolicLink()) {
+                throw failure(`${codePrefix}_RESULT_UNSAFE`);
+            }
+            const receiptPath = path.join(directory.path, 'receipt.json');
+            const videoPath = path.join(directory.path, 'result.mp4');
+            assertAncestors(rootInfo, receiptPath, `${codePrefix}_RECEIPT_UNSAFE`);
+            assertAncestors(rootInfo, videoPath, `${codePrefix}_VIDEO_UNSAFE`);
+            const receipt = smallFile(receiptPath, MAX_RECEIPT_BYTES, `${codePrefix}_RECEIPT_UNSAFE`);
+            const value = validateReceipt(parseJson(receipt, `${codePrefix}_RECEIPT_INVALID`), provider, entry.name);
+            const candidate = inspectCandidate(provider, entry.name, videoPath, rootInfo, context, {
+                expectedSha256: value.output_sha256,
+                expectedSize: value.output_size_bytes,
+                provenance: receipt,
+                provenanceKind: 'provider_result_receipt_v1',
+            });
+            const receiptAfter = smallFile(receiptPath, MAX_RECEIPT_BYTES, `${codePrefix}_RECEIPT_UNSAFE`);
+            if (!sameSnapshot(receipt, receiptAfter)) throw failure(`${codePrefix}_RECEIPT_CHANGED`);
+            assertStableDirectory(directory, `${codePrefix}_RESULT_CHANGED`);
+            candidate.canonicalReceipt = true;
+            candidates.push(candidate);
+        } catch {
+            rejected += 1;
+        }
+    }
+    assertStableDirectory(rootInfo, `${codePrefix}_ROOT_CHANGED`);
+    return { candidates, rejected };
 }
 
 function scanFlow(context = {}) {
@@ -376,7 +472,7 @@ function replicateAllowlist(context = {}) {
     return value;
 }
 
-function scanReplicate(context = {}) {
+function scanHistoricalReplicate(context = {}) {
     const rootInfo = assertRealDirectory(
         context.replicateResultsRoot || DEFAULT_REPLICATE_RESULTS_ROOT,
         'VIDEO_IMPORT_REPLICATE_ROOT_UNSAFE',
@@ -431,7 +527,13 @@ function scanInventory(context = {}) {
     const candidates = [];
     const blockers = [];
     let rejectedCount = 0;
-    for (const [provider, scan] of [['flow', scanFlow], ['grok', scanGrok], ['replicate', scanReplicate]]) {
+    for (const [provider, scan] of [
+        ['replicate_receipt', (scanContext) => scanCanonicalProvider('replicate', scanContext)],
+        ['bytedance_receipt', (scanContext) => scanCanonicalProvider('bytedance', scanContext)],
+        ['flow', scanFlow],
+        ['grok', scanGrok],
+        ['replicate_history', scanHistoricalReplicate],
+    ]) {
         try {
             const result = scan(context);
             candidates.push(...result.candidates);
@@ -440,11 +542,25 @@ function scanInventory(context = {}) {
             blockers.push(error.code || `VIDEO_IMPORT_${provider.toUpperCase()}_SCAN_BLOCKED`);
         }
     }
-    candidates.sort((left, right) => right.mtimeMs - left.mtimeMs
+    const preferred = candidates.sort((left, right) => Number(right.canonicalReceipt === true) - Number(left.canonicalReceipt === true)
+        || right.mtimeMs - left.mtimeMs || left.provider.localeCompare(right.provider) || left.resultId.localeCompare(right.resultId));
+    const unique = [];
+    const resultKeys = new Set();
+    const canonicalHashKeys = new Set(preferred.filter((candidate) => candidate.canonicalReceipt === true)
+        .map((candidate) => `${candidate.provider}\0${candidate.source.sha256}`));
+    for (const candidate of preferred) {
+        const resultKey = `${candidate.provider}\0${candidate.resultId}`;
+        const hashKey = `${candidate.provider}\0${candidate.source.sha256}`;
+        if (resultKeys.has(resultKey)
+            || (candidate.canonicalReceipt !== true && canonicalHashKeys.has(hashKey))) continue;
+        resultKeys.add(resultKey);
+        unique.push(candidate);
+    }
+    unique.sort((left, right) => right.mtimeMs - left.mtimeMs
         || left.provider.localeCompare(right.provider) || left.resultId.localeCompare(right.resultId));
     const selected = [];
     let totalBytes = 0;
-    for (const candidate of candidates) {
+    for (const candidate of unique) {
         if (selected.length >= MAX_CANDIDATES) break;
         totalBytes += candidate.source.size;
         if (totalBytes > (context.maxInventoryBytes || MAX_INVENTORY_BYTES)) {
@@ -1113,9 +1229,12 @@ function confirmVideoResultImport(payload, context = {}) {
 module.exports = {
     WORKSPACE_SCHEMA,
     PLAN_SCHEMA,
+    EXTERNAL_RESULT_SCHEMA,
     DEFAULT_FLOW_RESULTS_ROOT,
     DEFAULT_GROK_RESULTS_ROOT,
     DEFAULT_REPLICATE_RESULTS_ROOT,
+    DEFAULT_REPLICATE_RECEIPT_RESULTS_ROOT,
+    DEFAULT_BYTEDANCE_RECEIPT_RESULTS_ROOT,
     DEFAULT_REPLICATE_SHA_ALLOWLIST,
     DEFAULT_FFPROBE_PATH,
     MAX_CANDIDATES,
