@@ -314,7 +314,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     const stages = [
         ['1 기획·대본', [['기획·대본', '기획·대본']]],
         ['2 설계', [['스토리보드', '스토리보드'], ['샷 설계', '샷 설계'], ['모션 보드', '모션 보드']]],
-        ['3 생성 준비', [['참조 이미지', '첫 프레임·참조 이미지'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트'], ['생성 대기열', '생성 대기열']]],
+        ['3 생성 준비', [['이미지 작업', '이미지 작업'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트'], ['생성 대기열', '생성 대기열']]],
         ['4 클립 선택', [['클립 QA', '클립 QA·채택 구간']]],
         ['5 마무리', [['최종 편집', '최종 편집·보고서']]],
     ];
@@ -353,8 +353,8 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
         .filter((span) => span.className.includes('text-[11px]'))
         .map((span) => span.textContent.trim());
 
-    await byText(studio, 'button', '참조 이미지').dispatchEvent({ type: 'click' });
-    assert.match(studio.textContent, /하네스 이미지 대시보드를 읽기 전용으로 보여 줍니다/);
+    await byText(studio, 'button', '이미지 작업').dispatchEvent({ type: 'click' });
+    assert.match(studio.textContent, /기존 제작 폴더의 검토 수만 보여 줍니다/);
     assert.deepEqual(visibleBadgeLabels(), []);
 
     await byText(studio, 'button', '프롬프트 팩').dispatchEvent({ type: 'click' });
@@ -2598,4 +2598,207 @@ test('PipelineStudio queues the first design request from a clean empty board wi
         expected_design_revision_sha256: designRevision,
     });
     assert.match(studio.textContent, /요청 저장됨 · 아직 실행 전/);
+});
+
+test('image preparation workbench keeps the ordered DST flow compact and editable without exposing internal metadata', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { GenerationPreparationPanel } = await import('../src/components/pipeline/GenerationPreparationPanel.js');
+    const tasks = [
+        {
+            task_token: 'opaque-scene', kind: 'scene_image', source_id: 'scene-secret', sequence: 3,
+            label: '문의 32통, 사장 몱 0원', prompt: '장면 프롬프트', reference_task_ids: ['opaque-character', 'opaque-location'],
+            status: '준비', result_token: '',
+        },
+        {
+            task_token: 'opaque-character', kind: 'character_sheet', source_id: 'owner-secret', sequence: 1,
+            label: '포장이사 사장', prompt: '인물 프롬프트', reference_task_ids: [],
+            status: '결과연결', result_token: 'opaque-result',
+        },
+        {
+            task_token: 'opaque-location', kind: 'location_sheet', source_id: 'location-secret', sequence: 2,
+            label: '비 오는 고층 아파트', prompt: '장소 프롬프트', reference_task_ids: [],
+            status: '재제작', result_token: 'opaque-location-result',
+        },
+    ];
+    const panel = GenerationPreparationPanel({
+        state: { imageDashboard: { assets: [], parsed: true } },
+        config: { productionRoot: '' },
+        imagePlanState: { status: 'ready', tasks },
+        imagePlanTasks: tasks,
+        imagePlanDirty: true,
+        imageResultWorkspace: {
+            candidates: [{
+                candidate_token: 'opaque-candidate', created_at: '2026-07-16T05:30:00.000Z', image_count: 2,
+                source_path: '/private/hidden/candidate',
+            }],
+        },
+        imageResultPreviews: {
+            'opaque-result': { preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=' } },
+        },
+        onImagePromptChange: (...args) => calls.push(['prompt', ...args]),
+        onSaveImagePlan: (...args) => calls.push(['save', ...args]),
+        onPrepareImagePlan: (...args) => calls.push(['prepare', ...args]),
+        onToggleImageRetry: (...args) => calls.push(['retry', ...args]),
+        onRefreshImageResults: (...args) => calls.push(['refresh', ...args]),
+        onLoadImageCandidatePreview: async (payload) => {
+            calls.push(['preview', payload]);
+            return {
+                ready: true, candidate_token: payload.candidateToken, image_index: payload.imageIndex,
+                preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=' },
+            };
+        },
+        onConnectImageResult: async (payload) => {
+            calls.push(['connect', payload]);
+            return { ok: true };
+        },
+        onOpenImageResultReview: () => calls.push(['openReview']),
+    });
+
+    assert.ok(byText(panel, 'h2', '이미지 작업'));
+    assert.match(panel.textContent, /완료 1\/3 · 다시 만들기 1 · 다음: 2\. 비 오는 고층 아파트/);
+    assert.deepEqual(findAll(panel, 'article').map((card) => byText(card, 'h3', card.textContent.includes('포장이사 사장') ? '포장이사 사장' : card.textContent.includes('비 오는') ? '비 오는 고층 아파트' : '문의 32통, 사장 몱 0원').textContent), [
+        '포장이사 사장', '비 오는 고층 아파트', '문의 32통, 사장 몱 0원',
+    ]);
+    assert.match(panel.textContent, /DST 작업 준비는 .* 이미지 생성은 시작하지 않습니다/);
+    assert.ok(findAll(panel, 'details').some((details) => byText(details, 'summary', '기존 제작 자료')));
+    assert.match(panel.textContent, /연결된 기존 제작 폴더가 없습니다/);
+    assert.doesNotMatch(panel.textContent, /기존 이미지 현황/);
+    assert.deepEqual(findAll(panel, 'span').filter((node) => node.className.includes('text-[11px]')), [], 'new workbench must not use badges');
+    assert.doesNotMatch(panel.textContent, /opaque-|scene-secret|owner-secret|location-secret|\/private\/hidden/);
+
+    const prompt = byAttribute(panel, 'textarea', 'aria-label', '문의 32통, 사장 몱 0원 프롬프트');
+    prompt.value = '수정한 장면 프롬프트';
+    await prompt.dispatchEvent({ type: 'input' });
+    assert.deepEqual(calls.at(-1), ['prompt', 'opaque-scene', '수정한 장면 프롬프트']);
+
+    await byText(panel, 'button', '프롬프트 저장').dispatchEvent({ type: 'click' });
+    await byText(panel, 'button', 'DST 작업 준비').dispatchEvent({ type: 'click' });
+    assert.ok(calls.some(([method]) => method === 'save'));
+    assert.ok(calls.some(([method]) => method === 'prepare'));
+
+    const retry = byAttribute(panel, 'input', 'aria-label', '포장이사 사장 다시 만들기');
+    retry.checked = true;
+    await retry.dispatchEvent({ type: 'change' });
+    assert.ok(calls.some((call) => call[0] === 'retry' && call[1] === 'opaque-character' && call[2] === true));
+
+    await byText(panel, 'button', 'DST 결과 연결').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.match(panel.textContent, /\d{2}\/\d{2} \d{2}:\d{2} · 이미지 2장/);
+    assert.ok(calls.some(([method, payload]) => method === 'preview' && payload.candidateToken === 'opaque-candidate'));
+    const imageChoice = byAttribute(panel, 'select', 'aria-label', '문의 32통, 사장 몱 0원 이미지 선택');
+    imageChoice.value = '2';
+    await imageChoice.dispatchEvent({ type: 'change' });
+    await flushRenderer();
+    assert.ok(calls.some(([method, payload]) => method === 'preview' && payload.imageIndex === 2));
+    await byText(panel, 'button', '이 결과 연결').dispatchEvent({ type: 'click' });
+    assert.ok(calls.some(([method, payload]) => method === 'connect' && payload.taskToken === 'opaque-scene' && payload.imageIndex === 2));
+    await byText(panel, 'button', '결과 검토로 이동').dispatchEvent({ type: 'click' });
+    assert.ok(calls.some(([method]) => method === 'openReview'));
+});
+
+test('PipelineStudio saves, prepares, connects, and retries image tasks with exact revision-bound payloads', async (t) => {
+    const calls = [];
+    const designRevision = 'd'.repeat(64);
+    let planRevision = '1'.repeat(64);
+    let tasks = [{
+        task_token: 'task_'.concat('a'.repeat(64)), kind: 'scene_image', source_id: 'scene_01', sequence: 1,
+        label: '첫 장면', prompt: '초기 프롬프트', reference_task_ids: [], status: '준비', result_token: '',
+    }];
+    const state = (status = 'restored') => ({
+        ok: true, status, design_revision_sha256: designRevision, revision_sha256: planRevision,
+        tasks: structuredClone(tasks), preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
+        blockers: [], executed: false, generation_executed: false, model_called: false,
+    });
+    const bridge = {
+        async getConfig() { return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getHarnessContractStatus() { return { ok: true, ready: true, readiness: 'available', entries: [] }; },
+        async getNewProjectDraftState() { return { status: 'restored', draft: {}, collaboration: { recent_requests: [] }, blockers: [] }; },
+        async getNewProjectDesignState() {
+            return { ok: true, status: 'restored', board: { characters: [], locations: [], scenes: [] }, revision_sha256: designRevision, planning_revision_sha256: 'p'.repeat(64), collaboration: { recent_requests: [] }, blockers: [] };
+        },
+        async getNewProjectImagePlan() { calls.push(['getPlan']); return state(); },
+        async getNewProjectImageResultWorkspace() {
+            calls.push(['getResults']);
+            return { ok: true, status: 'ready', candidates: [{ candidate_token: 'candidate-safe', created_at: '2026-07-16T06:00:00.000Z', image_count: 1 }], blockers: [] };
+        },
+        async getVideoResultImportWorkspace() { return { status: 'empty', candidates: [], initial_targets: [], blockers: [] }; },
+        async saveNewProjectImagePlan(payload) {
+            calls.push(['save', structuredClone(payload)]);
+            tasks = structuredClone(payload.tasks);
+            planRevision = '2'.repeat(64);
+            return state('saved');
+        },
+        async prepareNewProjectImagePlan(payload) {
+            calls.push(['prepare', structuredClone(payload)]);
+            return { ok: true, queued: true, executed: false, model_called: false, generation_executed: false, state: state('restored') };
+        },
+        async loadDstBundleImportPreview(payload) {
+            calls.push(['candidatePreview', structuredClone(payload)]);
+            return { ready: true, candidate_token: payload.candidateToken, image_index: payload.imageIndex, preview: { mime_type: 'image/png', byte_length: 8, base64: 'iVBORw0KGgo=' } };
+        },
+        async connectNewProjectImageResult(payload) {
+            calls.push(['connect', structuredClone(payload)]);
+            tasks = tasks.map((task) => ({ ...task, status: '결과연결', result_token: 'result_'.concat('b'.repeat(64)) }));
+            planRevision = '3'.repeat(64);
+            return { ok: true, connected: true, result_token: tasks[0].result_token, state: state('restored') };
+        },
+        async getNewProjectImageResultPreview(payload) {
+            calls.push(['resultPreview', structuredClone(payload)]);
+            return { ok: true, ready: true, result_token: payload.result_token, preview: { mime_type: 'image/png', byte_length: 8, base64: 'iVBORw0KGgo=' }, blockers: [] };
+        },
+        async saveNewProjectImageRetrySelection(payload) {
+            calls.push(['retry', structuredClone(payload)]);
+            tasks = tasks.map((task) => ({ ...task, status: payload.task_tokens.includes(task.task_token) ? '재제작' : '결과연결' }));
+            planRevision = '4'.repeat(64);
+            return state('saved');
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'assets' } });
+
+    const prompt = byAttribute(studio, 'textarea', 'aria-label', '첫 장면 프롬프트');
+    prompt.value = '직접 수정한 프롬프트';
+    await prompt.dispatchEvent({ type: 'input' });
+    await byText(studio, 'button', '프롬프트 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const savePayload = calls.find(([method]) => method === 'save')[1];
+    assert.equal(savePayload.tasks[0].prompt, '직접 수정한 프롬프트');
+    assert.equal(savePayload.expected_design_revision_sha256, designRevision);
+    assert.equal(savePayload.expected_image_plan_revision_sha256, '1'.repeat(64));
+
+    await byText(studio, 'button', 'DST 작업 준비').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'prepare')[1], {
+        expected_design_revision_sha256: designRevision,
+        expected_image_plan_revision_sha256: '2'.repeat(64),
+    });
+    assert.match(studio.textContent, /생성은 시작하지 않았습니다/);
+
+    await byText(studio, 'button', 'DST 결과 연결').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    await byText(studio, 'button', '이 결과 연결').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'connect')[1], {
+        task_token: 'task_'.concat('a'.repeat(64)), candidate_token: 'candidate-safe', image_index: 1,
+        expected_design_revision_sha256: designRevision,
+        expected_image_plan_revision_sha256: '2'.repeat(64),
+    });
+    assert.ok(byAttribute(studio, 'img', 'alt', '첫 장면 연결 결과'));
+
+    const retry = byAttribute(studio, 'input', 'aria-label', '첫 장면 다시 만들기');
+    retry.checked = true;
+    await retry.dispatchEvent({ type: 'change' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'retry')[1], {
+        task_tokens: ['task_'.concat('a'.repeat(64))],
+        expected_design_revision_sha256: designRevision,
+        expected_image_plan_revision_sha256: '3'.repeat(64),
+    });
+    assert.match(studio.textContent, /다시 만들기로 선택했습니다/);
 });

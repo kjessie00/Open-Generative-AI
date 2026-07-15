@@ -12,7 +12,7 @@ function assetSubmitBlocked(asset) {
     return ['RETRY', 'BLOCK', 'UNREVIEWED'].includes(asset.review_verdict || 'UNREVIEWED') && !hasAssetException(asset);
 }
 
-export function AssetDashboardPanel({ state }) {
+export function AssetDashboardPanel({ state, compact = false }) {
     const dashboardResult = validateImageDashboard(state);
     const assets = state.imageDashboard?.assets || state.assets || [];
     const submitBlockingAssets = assets.filter(assetSubmitBlocked);
@@ -23,14 +23,29 @@ export function AssetDashboardPanel({ state }) {
     const dashboard = state.imageDashboard || {};
     const reviewPassed = assets.filter((asset) => asset.review_verdict === 'PASS' || hasAssetException(asset)).length;
 
-    return panelShell(p('First Frames And References'), p('Harness image dashboard mirror. Video submission remains blocked when required assets are RETRY, BLOCK, or UNREVIEWED without an explicit exception.'), [
-        card([
+    const summary = card([
             el('strong', { text: dashboardResult.ok ? '이미지 현황이 최신입니다' : '이미지 현황을 확인하세요', className: 'text-sm text-white' }),
             el('p', {
                 text: `검토 완료 ${reviewPassed}/${assets.length} · ${dashboard.parsed === false ? '파일을 읽지 못함' : '파일 읽음'}`,
                 className: 'mt-1 text-sm text-secondary',
             }),
-        ], dashboardResult.ok ? 'border-emerald-400/20' : 'border-amber-400/20'),
+        ], dashboardResult.ok ? 'border-emerald-400/20' : 'border-amber-400/20');
+    if (compact) {
+        return el('section', { className: 'flex flex-col gap-3', attrs: { 'aria-labelledby': 'existing-image-summary-title' } }, [
+            el('div', {}, [
+                el('h3', { text: '기존 이미지 현황', className: 'text-sm font-semibold text-white', attrs: { id: 'existing-image-summary-title' } }),
+                el('p', { text: '기존 제작 폴더의 검토 수만 보여 줍니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
+            ]),
+            summary,
+            blockers.length ? card([
+                el('strong', { text: `먼저 확인할 자료 ${new Set(blockers).size}개`, className: 'text-sm text-white' }),
+                el('p', { text: '자세한 검토는 결과 검토 화면에서 진행하세요.', className: 'mt-1 text-xs leading-5 text-secondary' }),
+            ]) : null,
+        ].filter(Boolean));
+    }
+
+    return panelShell(p('First Frames And References'), p('Harness image dashboard mirror. Video submission remains blocked when required assets are RETRY, BLOCK, or UNREVIEWED without an explicit exception.'), [
+        summary,
         issueList(blockers),
         infoGrid([
             { label: p('Dashboard path'), value: dashboard.path || p('No dashboard path recorded') },

@@ -24,7 +24,7 @@ import { IntakePanel } from './IntakePanel.js';
 import { StoryboardPanel } from './StoryboardPanel.js';
 import { ShotDesignerPanel } from './ShotDesignerPanel.js';
 import { MotionBoardPanel } from './MotionBoardPanel.js';
-import { AssetDashboardPanel } from './AssetDashboardPanel.js';
+import { GenerationPreparationPanel } from './GenerationPreparationPanel.js';
 import { PromptPackPanel } from './PromptPackPanel.js';
 import { ReviewGatesPanel } from './ReviewGatesPanel.js';
 import { QueuePanel } from './QueuePanel.js';
@@ -141,13 +141,29 @@ function emptyNewProjectDesignState(status = 'empty', blocker = '') {
     };
 }
 
+function emptyNewProjectImagePlanState(status = 'empty', blocker = '') {
+    return {
+        ok: false,
+        status,
+        design_revision_sha256: '',
+        revision_sha256: '',
+        tasks: [],
+        preparation: { status: 'empty', items: [], executed: false, model_called: false },
+        blockers: blocker ? [blocker] : [],
+    };
+}
+
+function emptyNewProjectImageResultWorkspace(status = 'empty', blocker = '') {
+    return { status, candidates: [], blockers: blocker ? [blocker] : [] };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
     if (tabId === 'storyboard') return StoryboardPanel(props);
     if (tabId === 'shot-designer') return ShotDesignerPanel(props);
     if (tabId === 'motion') return MotionBoardPanel(props);
-    if (tabId === 'assets') return AssetDashboardPanel(props);
+    if (tabId === 'assets') return GenerationPreparationPanel(props);
     if (tabId === 'prompts') return PromptPackPanel(props);
     if (tabId === 'gates') return ReviewGatesPanel(props);
     if (tabId === 'queue') return QueuePanel(props);
@@ -193,6 +209,12 @@ export function PipelineStudio() {
     let newProjectDesignBoard = { characters: [], locations: [], scenes: [] };
     let newProjectDesignDirty = false;
     let newProjectDesignNotice = '';
+    let newProjectImagePlanState = emptyNewProjectImagePlanState('loading');
+    let newProjectImagePlanTasks = [];
+    let newProjectImagePlanDirty = false;
+    let newProjectImagePlanNotice = '';
+    let newProjectImageResultWorkspace = emptyNewProjectImageResultWorkspace('loading');
+    let newProjectImageResultPreviews = {};
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
     let g3PromotionPlan = emptyG3PromotionPlan();
@@ -209,8 +231,9 @@ export function PipelineStudio() {
     const render = () => {
         container.innerHTML = '';
         if (typeof CustomEvent === 'function') {
+            const draftTitle = String(newProjectDraftValue.production_id || '').trim();
             window.dispatchEvent(new CustomEvent('pipeline:project-title', {
-                detail: { title: state.project?.title || '' },
+                detail: { title: config.productionRoot ? state.project?.title || '' : draftTitle },
             }));
         }
 
@@ -263,6 +286,46 @@ export function PipelineStudio() {
                 newProjectDesignState = emptyNewProjectDesignState('error', 'DESIGN_STATE_READ_FAILED');
                 newProjectDesignNotice = '설계를 불러오지 못했습니다.';
             }
+        };
+
+        const refreshNewProjectImagePreviews = async (tasks = newProjectImagePlanTasks) => {
+            const tokens = Array.from(new Set((tasks || []).map((task) => task.result_token).filter(Boolean)));
+            const loaded = await Promise.all(tokens.map(async (resultToken) => {
+                try {
+                    return [resultToken, await pipelineClient.getNewProjectImageResultPreview({ result_token: resultToken })];
+                } catch {
+                    return [resultToken, null];
+                }
+            }));
+            newProjectImageResultPreviews = Object.fromEntries(loaded.filter(([, value]) => value?.ready));
+        };
+
+        const refreshNewProjectImagePlan = async ({ preserveLocalEdits = false } = {}) => {
+            const localTasks = newProjectImagePlanTasks;
+            try {
+                const result = await pipelineClient.getNewProjectImagePlan();
+                newProjectImagePlanState = result;
+                if (!(preserveLocalEdits && newProjectImagePlanDirty)) {
+                    newProjectImagePlanTasks = structuredClone(result?.tasks || []);
+                    newProjectImagePlanDirty = false;
+                    await refreshNewProjectImagePreviews(newProjectImagePlanTasks);
+                } else {
+                    newProjectImagePlanTasks = localTasks;
+                }
+            } catch {
+                newProjectImagePlanState = emptyNewProjectImagePlanState('error', 'IMAGE_PLAN_READ_FAILED');
+                newProjectImagePlanNotice = '이미지 작업을 불러오지 못했습니다.';
+            }
+        };
+
+        const refreshNewProjectImageResults = async () => {
+            try {
+                newProjectImageResultWorkspace = await pipelineClient.getNewProjectImageResultWorkspace();
+            } catch {
+                newProjectImageResultWorkspace = emptyNewProjectImageResultWorkspace('error', 'IMAGE_RESULT_WORKSPACE_READ_FAILED');
+            }
+            render();
+            return newProjectImageResultWorkspace;
         };
 
         const openProductionFolder = async () => {
@@ -415,6 +478,13 @@ export function PipelineStudio() {
                 newProjectDesignBoard,
                 newProjectDesignDirty,
                 newProjectDesignNotice,
+                imagePlanState: newProjectImagePlanState,
+                imagePlanTasks: newProjectImagePlanTasks,
+                imagePlanDirty: newProjectImagePlanDirty,
+                imagePlanNotice: newProjectImagePlanNotice,
+                imageResultWorkspace: newProjectImageResultWorkspace,
+                imageResultPreviews: newProjectImageResultPreviews,
+                onOpenImageResultReview: () => switchTab('storyboard'),
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
                     if (field === 'brief' || field === 'script') newProjectDraftDirty[field] = true;
@@ -576,6 +646,7 @@ export function PipelineStudio() {
                         newProjectDesignBoard = structuredClone(nextState.board);
                         newProjectDesignDirty = false;
                         newProjectDesignNotice = '직접 저장됨';
+                        await refreshNewProjectImagePlan();
                         render();
                         return result;
                     } catch {
@@ -651,6 +722,7 @@ export function PipelineStudio() {
                         if (action === 'apply') {
                             newProjectDesignBoard = structuredClone(result.state.board);
                             newProjectDesignDirty = false;
+                            await refreshNewProjectImagePlan();
                         }
                         newProjectDesignNotice = action === 'apply' ? '수정안을 적용했습니다' : '보류함 · 현재 설계는 그대로';
                         render();
@@ -660,6 +732,136 @@ export function PipelineStudio() {
                         newProjectDesignNotice = '수정안을 처리하지 못했습니다.';
                         render();
                         return { ok: false, status: 'error' };
+                    }
+                },
+                onImagePromptChange: (taskToken, prompt) => {
+                    newProjectImagePlanTasks = newProjectImagePlanTasks.map((task) => (
+                        task.task_token === taskToken ? { ...task, prompt } : task
+                    ));
+                    newProjectImagePlanDirty = true;
+                    newProjectImagePlanNotice = '저장하지 않은 프롬프트가 있습니다.';
+                },
+                onSaveImagePlan: async (tasks) => {
+                    newProjectImagePlanState = { ...newProjectImagePlanState, status: 'saving' };
+                    newProjectImagePlanNotice = '저장 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectImagePlan({
+                            tasks,
+                            expected_design_revision_sha256: newProjectImagePlanState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectImagePlanState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!nextState?.ok || !Array.isArray(nextState.tasks)) throw new Error('IMAGE_PLAN_SAVE_FAILED');
+                        newProjectImagePlanState = nextState;
+                        newProjectImagePlanTasks = structuredClone(nextState.tasks);
+                        newProjectImagePlanDirty = false;
+                        newProjectImagePlanNotice = '프롬프트를 저장했습니다.';
+                        render();
+                        return nextState;
+                    } catch {
+                        newProjectImagePlanState = { ...newProjectImagePlanState, status: 'error' };
+                        newProjectImagePlanNotice = '프롬프트를 저장하지 못했습니다.';
+                        render();
+                        return { ok: false, executed: false, model_called: false };
+                    }
+                },
+                onPrepareImagePlan: async (tasks) => {
+                    const needsSave = newProjectImagePlanDirty
+                        || ['derived', 'design_changed'].includes(newProjectImagePlanState.status);
+                    newProjectImagePlanState = { ...newProjectImagePlanState, status: 'preparing' };
+                    newProjectImagePlanNotice = 'DST 작업 순서를 준비하는 중…';
+                    render();
+                    try {
+                        let current = newProjectImagePlanState;
+                        if (needsSave) {
+                            const saved = await pipelineClient.saveNewProjectImagePlan({
+                                tasks,
+                                expected_design_revision_sha256: current.design_revision_sha256,
+                                expected_image_plan_revision_sha256: current.revision_sha256,
+                            });
+                            current = saved?.state || saved;
+                            if (!current?.ok) throw new Error('IMAGE_PLAN_SAVE_FAILED');
+                        }
+                        const prepared = await pipelineClient.prepareNewProjectImagePlan({
+                            expected_design_revision_sha256: current.design_revision_sha256,
+                            expected_image_plan_revision_sha256: current.revision_sha256,
+                        });
+                        const nextState = prepared?.state || prepared;
+                        if (!nextState?.ok) throw new Error('IMAGE_PLAN_PREPARE_FAILED');
+                        newProjectImagePlanState = nextState;
+                        newProjectImagePlanTasks = structuredClone(nextState.tasks || current.tasks || tasks);
+                        newProjectImagePlanDirty = false;
+                        newProjectImagePlanNotice = 'DST 작업 순서를 준비했습니다. 생성은 시작하지 않았습니다.';
+                        render();
+                        return prepared;
+                    } catch {
+                        newProjectImagePlanState = { ...newProjectImagePlanState, status: 'error' };
+                        newProjectImagePlanNotice = 'DST 작업 준비를 저장하지 못했습니다.';
+                        render();
+                        return { ok: false, executed: false, model_called: false };
+                    }
+                },
+                onToggleImageRetry: async (taskToken, selected) => {
+                    const previous = newProjectImagePlanTasks;
+                    const nextTasks = previous.map((task) => task.task_token === taskToken
+                        ? { ...task, status: selected ? '재제작' : task.result_token ? '결과연결' : '준비' }
+                        : task);
+                    newProjectImagePlanTasks = nextTasks;
+                    newProjectImagePlanNotice = '다시 만들 항목을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectImageRetrySelection({
+                            task_tokens: nextTasks.filter((task) => task.status === '재제작').map((task) => task.task_token),
+                            expected_design_revision_sha256: newProjectImagePlanState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectImagePlanState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!nextState?.ok) throw new Error('IMAGE_RETRY_SAVE_FAILED');
+                        newProjectImagePlanState = nextState;
+                        newProjectImagePlanTasks = structuredClone(nextState.tasks);
+                        newProjectImagePlanNotice = selected ? '다시 만들기로 선택했습니다.' : '다시 만들기 선택을 해제했습니다.';
+                    } catch {
+                        newProjectImagePlanTasks = previous;
+                        newProjectImagePlanNotice = '다시 만들 선택을 저장하지 못했습니다.';
+                    }
+                    render();
+                },
+                onRefreshImageResults: refreshNewProjectImageResults,
+                onLoadImageCandidatePreview: (payload) => pipelineClient.loadDstBundleImportPreview(payload),
+                onConnectImageResult: async ({ taskToken, candidateToken, imageIndex }) => {
+                    newProjectImagePlanNotice = 'DST 결과를 연결하는 중…';
+                    render();
+                    try {
+                        let current = newProjectImagePlanState;
+                        if (newProjectImagePlanDirty || ['derived', 'design_changed'].includes(current.status)) {
+                            const saved = await pipelineClient.saveNewProjectImagePlan({
+                                tasks: newProjectImagePlanTasks,
+                                expected_design_revision_sha256: current.design_revision_sha256,
+                                expected_image_plan_revision_sha256: current.revision_sha256,
+                            });
+                            current = saved?.state || saved;
+                            if (!current?.ok) throw new Error('IMAGE_PLAN_SAVE_FAILED');
+                        }
+                        const result = await pipelineClient.connectNewProjectImageResult({
+                            task_token: taskToken,
+                            candidate_token: candidateToken,
+                            image_index: imageIndex,
+                            expected_design_revision_sha256: current.design_revision_sha256,
+                            expected_image_plan_revision_sha256: current.revision_sha256,
+                        });
+                        if (!result?.connected || !result?.state) throw new Error('IMAGE_RESULT_CONNECT_FAILED');
+                        newProjectImagePlanState = result.state;
+                        newProjectImagePlanTasks = structuredClone(result.state.tasks);
+                        newProjectImagePlanDirty = false;
+                        await refreshNewProjectImagePreviews(newProjectImagePlanTasks);
+                        newProjectImagePlanNotice = 'DST 결과를 연결했습니다.';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectImagePlanNotice = 'DST 결과를 연결하지 못했습니다.';
+                        render();
+                        return { ok: false, connected: false, executed: false };
                     }
                 },
                 onSavePlanningFile: async (payload) => {
@@ -970,11 +1172,13 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, videoImportResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoImportResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
             pipelineClient.getNewProjectDesignState(),
+            pipelineClient.getNewProjectImagePlan(),
+            pipelineClient.getNewProjectImageResultWorkspace(),
             pipelineClient.getVideoResultImportWorkspace(),
         ]);
         if (configResult.status === 'fulfilled') {
@@ -1001,6 +1205,27 @@ export function PipelineStudio() {
             newProjectDesignDirty = false;
         } else {
             newProjectDesignState = emptyNewProjectDesignState('error', 'DESIGN_STATE_READ_FAILED');
+        }
+        if (imagePlanResult.status === 'fulfilled' && imagePlanResult.value) {
+            newProjectImagePlanState = imagePlanResult.value;
+            newProjectImagePlanTasks = structuredClone(imagePlanResult.value.tasks || []);
+            newProjectImagePlanDirty = false;
+            const resultTokens = Array.from(new Set(newProjectImagePlanTasks.map((task) => task.result_token).filter(Boolean)));
+            const loadedPreviews = await Promise.all(resultTokens.map(async (resultToken) => {
+                try {
+                    return [resultToken, await pipelineClient.getNewProjectImageResultPreview({ result_token: resultToken })];
+                } catch {
+                    return [resultToken, null];
+                }
+            }));
+            newProjectImageResultPreviews = Object.fromEntries(loadedPreviews.filter(([, value]) => value?.ready));
+        } else {
+            newProjectImagePlanState = emptyNewProjectImagePlanState('error', 'IMAGE_PLAN_READ_FAILED');
+        }
+        if (imageWorkspaceResult.status === 'fulfilled' && imageWorkspaceResult.value) {
+            newProjectImageResultWorkspace = imageWorkspaceResult.value;
+        } else {
+            newProjectImageResultWorkspace = emptyNewProjectImageResultWorkspace('error', 'IMAGE_RESULT_WORKSPACE_READ_FAILED');
         }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;

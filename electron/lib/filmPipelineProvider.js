@@ -5,6 +5,7 @@ const path = require('path');
 const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
+const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
@@ -1018,6 +1019,51 @@ function decideDesignAgentSuggestion(payload, options = {}) {
     return result;
 }
 
+function newProjectImagePlanContext(options = {}) {
+    return {
+        ...options,
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+    };
+}
+
+function getNewProjectImagePlan(options = {}) {
+    return newProjectImagePlanProvider.getNewProjectImagePlan(newProjectImagePlanContext(options));
+}
+
+function saveNewProjectImagePlan(payload, options = {}) {
+    return newProjectImagePlanProvider.saveNewProjectImagePlan(payload, newProjectImagePlanContext(options));
+}
+
+function prepareNewProjectImagePlan(payload, options = {}) {
+    const result = newProjectImagePlanProvider.prepareNewProjectImagePlan(payload, newProjectImagePlanContext(options));
+    sendProgress({
+        phase: 'new-project-image-plan-prepared', status: result.status,
+        taskCount: result.task_count, executed: false, modelCalled: false, generationExecuted: false,
+    });
+    return result;
+}
+
+function getNewProjectImageResultWorkspace(options = {}) {
+    return newProjectImagePlanProvider.getNewProjectImageResultWorkspace(newProjectImagePlanContext(options));
+}
+
+function connectNewProjectImageResult(payload, options = {}) {
+    const result = newProjectImagePlanProvider.connectNewProjectImageResult(payload, newProjectImagePlanContext(options));
+    sendProgress({
+        phase: 'new-project-image-result-connected', status: result.status,
+        executed: false, generationExecuted: false,
+    });
+    return result;
+}
+
+function getNewProjectImageResultPreview(payload, options = {}) {
+    return newProjectImagePlanProvider.getNewProjectImageResultPreview(payload, newProjectImagePlanContext(options));
+}
+
+function saveNewProjectImageRetrySelection(payload, options = {}) {
+    return newProjectImagePlanProvider.saveNewProjectImageRetrySelection(payload, newProjectImagePlanContext(options));
+}
+
 function saveNewProjectDraft(payload, options = {}) {
     const result = newProjectDraftProvider.saveNewProjectDraft(payload, newProjectContext(options));
     sendProgress({
@@ -1406,6 +1452,19 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:save-new-project-design-board', (_, payload) => saveNewProjectDesignBoard(payload, options));
     ipcApi.handle('film-pipeline:enqueue-design-agent-request', (_, payload) => enqueueDesignAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-design-agent-suggestion', (_, payload) => decideDesignAgentSuggestion(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-image-plan', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectImagePlan(options);
+    });
+    ipcApi.handle('film-pipeline:save-new-project-image-plan', (_, payload) => saveNewProjectImagePlan(payload, options));
+    ipcApi.handle('film-pipeline:prepare-new-project-image-plan', (_, payload) => prepareNewProjectImagePlan(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-image-result-workspace', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectImageResultWorkspace(options);
+    });
+    ipcApi.handle('film-pipeline:connect-new-project-image-result', (_, payload) => connectNewProjectImageResult(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-image-result-preview', (_, payload) => getNewProjectImageResultPreview(payload, options));
+    ipcApi.handle('film-pipeline:save-new-project-image-retry-selection', (_, payload) => saveNewProjectImageRetrySelection(payload, options));
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1503,6 +1562,13 @@ module.exports = {
     saveNewProjectDesignBoard,
     enqueueDesignAgentRequest,
     decideDesignAgentSuggestion,
+    getNewProjectImagePlan,
+    saveNewProjectImagePlan,
+    prepareNewProjectImagePlan,
+    getNewProjectImageResultWorkspace,
+    connectNewProjectImageResult,
+    getNewProjectImageResultPreview,
+    saveNewProjectImageRetrySelection,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

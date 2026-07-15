@@ -210,6 +210,56 @@ export async function decideDesignAgentSuggestion(payload) {
     };
 }
 
+function unavailableImagePlanState(method) {
+    return {
+        ...unavailable(method), status: 'blocked', design_revision_sha256: '', revision_sha256: '',
+        tasks: [], preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false, model_called: false,
+    };
+}
+
+export async function getNewProjectImagePlan() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectImagePlan === 'function') return bridge.getNewProjectImagePlan();
+    return unavailableImagePlanState('getNewProjectImagePlan');
+}
+
+export async function saveNewProjectImagePlan(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectImagePlan === 'function') return bridge.saveNewProjectImagePlan(payload);
+    return unavailableImagePlanState('saveNewProjectImagePlan');
+}
+
+export async function prepareNewProjectImagePlan(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.prepareNewProjectImagePlan === 'function') return bridge.prepareNewProjectImagePlan(payload);
+    return { ...unavailableImagePlanState('prepareNewProjectImagePlan'), queued: false, task_count: 0, generation_executed: false };
+}
+
+export async function getNewProjectImageResultWorkspace() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectImageResultWorkspace === 'function') return bridge.getNewProjectImageResultWorkspace();
+    return { ...unavailable('getNewProjectImageResultWorkspace'), status: 'blocked', candidates: [], blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false };
+}
+
+export async function connectNewProjectImageResult(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.connectNewProjectImageResult === 'function') return bridge.connectNewProjectImageResult(payload);
+    return { ...unavailableImagePlanState('connectNewProjectImageResult'), connected: false, result_token: '' };
+}
+
+export async function getNewProjectImageResultPreview(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectImageResultPreview === 'function') return bridge.getNewProjectImageResultPreview(payload);
+    return { ...unavailable('getNewProjectImageResultPreview'), status: 'blocked', ready: false, result_token: '', preview: null, blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false };
+}
+
+export async function saveNewProjectImageRetrySelection(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectImageRetrySelection === 'function') return bridge.saveNewProjectImageRetrySelection(payload);
+    return unavailableImagePlanState('saveNewProjectImageRetrySelection');
+}
+
 export async function copyNewProjectBuildCommand() {
     const bridge = getBridge();
     if (typeof bridge?.copyNewProjectBuildCommand === 'function') return bridge.copyNewProjectBuildCommand();
@@ -550,6 +600,13 @@ export const pipelineClient = Object.freeze({
     saveNewProjectDesignBoard,
     enqueueDesignAgentRequest,
     decideDesignAgentSuggestion,
+    getNewProjectImagePlan,
+    saveNewProjectImagePlan,
+    prepareNewProjectImagePlan,
+    getNewProjectImageResultWorkspace,
+    connectNewProjectImageResult,
+    getNewProjectImageResultPreview,
+    saveNewProjectImageRetrySelection,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

@@ -183,6 +183,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(Object.keys(bridge).sort(), [
         'confirmDstBundleImport',
         'confirmVideoResultImport',
+        'connectNewProjectImageResult',
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
         'decideDesignAgentSuggestion',
@@ -199,6 +200,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getMediaRetryPlan',
         'getNewProjectDesignState',
         'getNewProjectDraftState',
+        'getNewProjectImagePlan',
+        'getNewProjectImageResultPreview',
+        'getNewProjectImageResultWorkspace',
         'getVideoResultImportWorkspace',
         'listAssets',
         'listProductionChildren',
@@ -210,6 +214,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'planFinishingRun',
         'planG3ProductionPromotion',
         'planVideoResultImport',
+        'prepareNewProjectImagePlan',
         'previewCommand',
         'promoteG3ProductionSelection',
         'readJsonl',
@@ -218,6 +223,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'saveG3ReviewDraft',
         'saveNewProjectDesignBoard',
         'saveNewProjectDraft',
+        'saveNewProjectImagePlan',
+        'saveNewProjectImageRetrySelection',
         'selectProductionRoot',
         'writePlanningFile',
     ]);
@@ -249,6 +256,13 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.decideDesignAgentSuggestion({
         suggestion_token: `suggestion_${'a'.repeat(64)}`, action: 'hold', expected_design_revision_sha256: 'a'.repeat(64),
     });
+    await bridge.getNewProjectImagePlan();
+    await bridge.saveNewProjectImagePlan({ tasks: [] });
+    await bridge.prepareNewProjectImagePlan({ expected_image_plan_revision_sha256: 'a'.repeat(64) });
+    await bridge.getNewProjectImageResultWorkspace();
+    await bridge.connectNewProjectImageResult({ task_token: `task_${'a'.repeat(64)}` });
+    await bridge.getNewProjectImageResultPreview({ result_token: `result_${'a'.repeat(64)}` });
+    await bridge.saveNewProjectImageRetrySelection({ task_tokens: [] });
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
     await bridge.selectProductionRoot({ mode: 'production' });
@@ -291,6 +305,13 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:save-new-project-design-board',
             'film-pipeline:enqueue-design-agent-request',
             'film-pipeline:decide-design-agent-suggestion',
+            'film-pipeline:get-new-project-image-plan',
+            'film-pipeline:save-new-project-image-plan',
+            'film-pipeline:prepare-new-project-image-plan',
+            'film-pipeline:get-new-project-image-result-workspace',
+            'film-pipeline:connect-new-project-image-result',
+            'film-pipeline:get-new-project-image-result-preview',
+            'film-pipeline:save-new-project-image-retry-selection',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
@@ -323,6 +344,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-video-result-import-workspace',
         'film-pipeline:get-new-project-draft-state',
         'film-pipeline:get-new-project-design-state',
+        'film-pipeline:get-new-project-image-plan',
+        'film-pipeline:get-new-project-image-result-workspace',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',
