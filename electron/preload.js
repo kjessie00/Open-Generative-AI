@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     getNewProjectDraftState: () => ipcRenderer.invoke('film-pipeline:get-new-project-draft-state'),
     saveNewProjectDraft: (draft) => ipcRenderer.invoke('film-pipeline:save-new-project-draft', draft),
     enqueuePlanningAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:enqueue-planning-agent-request', payload),
+    decidePlanningAgentSuggestion: (payload) => ipcRenderer.invoke('film-pipeline:decide-planning-agent-suggestion', payload),
     copyNewProjectBuildCommand: () => ipcRenderer.invoke('film-pipeline:copy-new-project-build-command'),
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),

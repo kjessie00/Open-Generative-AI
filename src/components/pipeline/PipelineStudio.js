@@ -174,6 +174,7 @@ export function PipelineStudio() {
         preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
     };
     let newProjectDraftValue = { ...newProjectDraftState.draft };
+    let newProjectDraftDirty = { brief: false, script: false, settings: false };
     let newProjectNotice = '';
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
@@ -198,12 +199,26 @@ export function PipelineStudio() {
 
         const showPathSelectionBlocked = () => window.alert(p('Folder selection blocked by the local path safety policy.'));
 
-        const refreshNewProjectDraft = async () => {
+        const refreshNewProjectDraft = async ({ preserveLocalEdits = false } = {}) => {
             try {
                 const result = await pipelineClient.getNewProjectDraftState();
+                const localValue = { ...newProjectDraftValue };
                 newProjectDraftState = result;
-                if (result?.draft) newProjectDraftValue = { ...result.draft };
-                newProjectNotice = '';
+                if (result?.draft) {
+                    newProjectDraftValue = { ...result.draft };
+                    if (preserveLocalEdits) {
+                        if (newProjectDraftDirty.brief) newProjectDraftValue.brief = localValue.brief;
+                        if (newProjectDraftDirty.script) newProjectDraftValue.script = localValue.script;
+                        if (newProjectDraftDirty.settings) {
+                            for (const field of ['production_id', 'route', 'aspect_ratio', 'scene_duration', 'max_scenes']) {
+                                newProjectDraftValue[field] = localValue[field];
+                            }
+                        }
+                    } else {
+                        newProjectDraftDirty = { brief: false, script: false, settings: false };
+                    }
+                }
+                newProjectNotice = preserveLocalEdits ? '최신 수정안 상태를 확인했습니다.' : '';
             } catch {
                 newProjectDraftState = {
                     ...newProjectDraftState,
@@ -360,8 +375,11 @@ export function PipelineStudio() {
                 newProjectDraftState,
                 newProjectDraftValue,
                 newProjectNotice,
+                newProjectDraftDirty,
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
+                    if (field === 'brief' || field === 'script') newProjectDraftDirty[field] = true;
+                    else newProjectDraftDirty.settings = true;
                 },
                 onSaveNewProjectDraft: async (draft) => {
                     newProjectNotice = '저장 중…';
@@ -372,6 +390,7 @@ export function PipelineStudio() {
                         newProjectDraftState = result;
                         if (result?.draft) newProjectDraftValue = { ...result.draft };
                         newProjectNotice = result?.ok ? '직접 저장됨' : '저장하지 못했습니다.';
+                        if (result?.ok) newProjectDraftDirty = { brief: false, script: false, settings: false };
                         render();
                         return result;
                     } catch {
@@ -396,6 +415,7 @@ export function PipelineStudio() {
                         if (!saved?.ok || !saved.revision_sha256) throw new Error('DRAFT_SAVE_FAILED');
                         newProjectDraftState = saved;
                         if (saved.draft) newProjectDraftValue = { ...saved.draft };
+                        newProjectDraftDirty = { brief: false, script: false, settings: false };
                         const result = await pipelineClient.enqueuePlanningAgentRequest({
                             stage,
                             instruction,
@@ -412,6 +432,62 @@ export function PipelineStudio() {
                         newProjectNotice = '요청을 저장하지 못했습니다.';
                         render();
                         return { ok: false, queued: false, executed: false, model_called: false };
+                    }
+                },
+                onRefreshNewProjectDraft: async () => {
+                    newProjectNotice = '수정안 확인 중…';
+                    newProjectDraftState = { ...newProjectDraftState, status: 'loading' };
+                    render();
+                    await refreshNewProjectDraft({ preserveLocalEdits: true });
+                    render();
+                },
+                onDecidePlanningAgentSuggestion: async ({ stage, suggestion_token, action }) => {
+                    const stageDirty = newProjectDraftDirty.settings || newProjectDraftDirty[stage];
+                    if (action === 'apply' && stageDirty) {
+                        newProjectNotice = '원문이 바뀌어 바로 적용할 수 없습니다.';
+                        render();
+                        return { ok: false, status: 'stale' };
+                    }
+                    const localValue = { ...newProjectDraftValue };
+                    const localDirty = { ...newProjectDraftDirty };
+                    newProjectNotice = action === 'apply' ? '수정안 적용 중…' : '보류 중…';
+                    newProjectDraftState = { ...newProjectDraftState, status: 'saving' };
+                    render();
+                    try {
+                        const result = await pipelineClient.decidePlanningAgentSuggestion({
+                            suggestion_token,
+                            action,
+                            expected_revision_sha256: newProjectDraftState.revision_sha256,
+                        });
+                        if (!result?.ok || !result?.state) throw new Error('SUGGESTION_DECISION_FAILED');
+                        newProjectDraftState = result.state;
+                        if (result.state.draft) {
+                            newProjectDraftValue = { ...result.state.draft };
+                            if (localDirty.brief && !(action === 'apply' && stage === 'brief')) {
+                                newProjectDraftValue.brief = localValue.brief;
+                            }
+                            if (localDirty.script && !(action === 'apply' && stage === 'script')) {
+                                newProjectDraftValue.script = localValue.script;
+                            }
+                            if (localDirty.settings) {
+                                for (const field of ['production_id', 'route', 'aspect_ratio', 'scene_duration', 'max_scenes']) {
+                                    newProjectDraftValue[field] = localValue[field];
+                                }
+                            }
+                        }
+                        newProjectDraftDirty = {
+                            brief: localDirty.brief && !(action === 'apply' && stage === 'brief'),
+                            script: localDirty.script && !(action === 'apply' && stage === 'script'),
+                            settings: localDirty.settings,
+                        };
+                        newProjectNotice = action === 'apply' ? '수정안을 적용했습니다.' : '보류함 · 원문은 그대로';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectDraftState = { ...newProjectDraftState, status: 'error' };
+                        newProjectNotice = '수정안을 처리하지 못했습니다.';
+                        render();
+                        return { ok: false, status: 'error' };
                     }
                 },
                 onCopyNewProjectBuildCommand: async () => {
@@ -763,6 +839,7 @@ export function PipelineStudio() {
         if (newProjectResult.status === 'fulfilled' && newProjectResult.value) {
             newProjectDraftState = newProjectResult.value;
             if (newProjectResult.value.draft) newProjectDraftValue = { ...newProjectResult.value.draft };
+            newProjectDraftDirty = { brief: false, script: false, settings: false };
         } else {
             newProjectDraftState = {
                 ...newProjectDraftState,

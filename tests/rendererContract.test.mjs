@@ -2233,3 +2233,90 @@ test('G3 review workspace is Korean-first, keyboard-native, responsive, and sepa
     assert.match(empty.textContent, /shot_manifest\.json/);
     assert.match(error.textContent, /안전하게 불러오지 못했습니다/);
 });
+
+test('planning suggestions compare each stage independently and keep decisions explicit', async (t) => {
+    const decisions = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectDraftForm } = await import('../src/components/pipeline/NewProjectDraftForm.js');
+    const draftValue = {
+        production_id: 'planning-compare', brief: '현재 기획 원문', script: '현재 스크립트 원문',
+        route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 3,
+    };
+    const request = (stage, reviewStatus, token, proposedText, applyAllowed = true) => ({
+        stage,
+        status: 'suggestion_ready',
+        suggestion: {
+            suggestion_token: token,
+            review_status: reviewStatus,
+            summary: stage === 'brief' ? '핵심 갈등을 선명하게 정리했습니다.' : '첫 문장을 짧게 다듬었습니다.',
+            proposed_text: proposedText,
+            published_at: '2026-07-16T00:00:00.000Z',
+            apply_allowed: applyAllowed,
+        },
+    });
+    const form = NewProjectDraftForm({
+        draftState: {
+            status: 'restored', revision_sha256: 'a'.repeat(64), blockers: [],
+            collaboration: {
+                status: 'suggestion_ready', blockers: [], truncated: false, total_request_count: 3,
+                recent_requests: [
+                    request('brief', 'ready', 'private-brief-token', '새 기획 수정안'),
+                    request('script', 'held', 'private-script-token', '새 스크립트 수정안'),
+                    request('brief', 'ready', 'old-private-token', '오래된 수정안'),
+                ],
+            },
+            preview: { copyAllowed: false, shellSafeCommand: '' },
+        },
+        draftValue,
+        draftDirty: { brief: false, script: false, settings: false },
+        onDraftChange() {},
+        onDecidePlanningAgentSuggestion: (payload) => decisions.push(payload),
+    });
+
+    assert.equal(byAttribute(form, 'label', 'for', 'new-project-brief').textContent.trim(), '현재 내용');
+    assert.equal(byAttribute(form, 'label', 'for', 'new-project-script').textContent.trim(), '스크립트');
+    const briefSuggestion = byAttribute(form, 'textarea', 'id', 'planning-brief-agent-suggestion');
+    const scriptSuggestion = byAttribute(form, 'textarea', 'id', 'planning-script-agent-suggestion');
+    assert.equal(briefSuggestion.value, '새 기획 수정안', 'newest-first projection must select the first stage request');
+    assert.equal(briefSuggestion.readOnly, true);
+    assert.equal(scriptSuggestion.value, '새 스크립트 수정안');
+    assert.match(form.textContent, /수정안이 도착했습니다/);
+    assert.match(form.textContent, /보류함 · 원문은 그대로/);
+    assert.match(form.textContent, /다른 요청 남기기/);
+    assert.match(form.textContent, /지난 수정안 보기/);
+    assert.doesNotMatch(form.textContent, /private-brief-token|private-script-token|suggestion_ready|review_status/);
+
+    const sections = findAll(form, 'section');
+    assert.match(sections.find((section) => section.attributes.get('aria-labelledby') === 'planning-brief-title').className, /lg:grid-cols-2/);
+    const applyButtons = findAll(form, 'button').filter((button) => button.textContent.trim() === '수정안 적용');
+    assert.equal(applyButtons.length, 2, 'ready and held suggestions both expose an apply action');
+    assert.ok(applyButtons.every((button) => button.className.includes('min-h-11')));
+    await applyButtons[0].dispatchEvent({ type: 'click' });
+    await applyButtons[1].dispatchEvent({ type: 'click' });
+    assert.deepEqual(decisions, [
+        { stage: 'brief', suggestion_token: 'private-brief-token', action: 'apply' },
+        { stage: 'script', suggestion_token: 'private-script-token', action: 'apply' },
+    ]);
+
+    const dirtyForm = NewProjectDraftForm({
+        draftState: {
+            status: 'restored', blockers: [],
+            collaboration: {
+                status: 'suggestion_ready', blockers: [], truncated: false, total_request_count: 2,
+                recent_requests: [
+                    request('brief', 'ready', 'brief-dirty-token', '기획 수정안'),
+                    request('script', 'held', 'script-clean-token', '스크립트 수정안'),
+                ],
+            },
+            preview: { copyAllowed: false, shellSafeCommand: '' },
+        },
+        draftValue,
+        draftDirty: { brief: true, script: false, settings: false },
+        onDraftChange() {},
+    });
+    assert.match(dirtyForm.textContent, /원문이 바뀌어 바로 적용할 수 없습니다/);
+    const dirtyApplyButtons = findAll(dirtyForm, 'button').filter((button) => button.textContent.trim() === '수정안 적용');
+    assert.equal(dirtyApplyButtons[0].disabled, true, 'brief edit must stale only the brief suggestion');
+    assert.equal(dirtyApplyButtons[1].disabled, false, 'brief edit must not stale a held script suggestion');
+});

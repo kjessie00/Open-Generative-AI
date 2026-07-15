@@ -1,5 +1,10 @@
 import { actionButton, card, codeBlock, el } from './ui.js';
 import { p } from './copy.js';
+import {
+    PlanningSuggestionHistory,
+    PlanningSuggestionPanel,
+    planningSuggestionView,
+} from './PlanningSuggestionPanel.js';
 
 function fieldShell(label, id, control, help = '') {
     return el('div', { className: 'flex min-w-0 flex-col gap-2' }, [
@@ -13,7 +18,7 @@ function controlAttrs(id, name, help, extra = {}) {
     return { id, name, required: true, ...(help ? { 'aria-describedby': `${id}-help` } : {}), ...extra };
 }
 
-function textControl({ id, name, value, multiline = false, disabled, maxLength, help, onDraftChange }) {
+function textControl({ id, name, value, label, multiline = false, disabled, maxLength, help, onDraftChange, parts = false }) {
     const control = el(multiline ? 'textarea' : 'input', {
         value,
         disabled,
@@ -24,7 +29,8 @@ function textControl({ id, name, value, multiline = false, disabled, maxLength, 
         }),
     });
     control.addEventListener('input', (event) => onDraftChange?.(name, event.target.value));
-    return fieldShell(p(name), id, control, help);
+    const shell = fieldShell(label || p(name), id, control, help);
+    return parts ? { shell, control } : shell;
 }
 
 function selectControl({ id, name, value, options, disabled, onDraftChange }) {
@@ -59,17 +65,17 @@ function statusText(status) {
     return '아직 저장된 내용이 없습니다.';
 }
 
-function latestRequest(collaboration, stage) {
-    return (collaboration?.recent_requests || []).filter((request) => request.stage === stage).at(-1) || null;
-}
-
 function collaborationSection({
-    number, title, stage, draftControl, draftValue, disabled, collaboration, onSave, onEnqueue,
+    number, title, stage, createDraftControl, draftValue, disabled, draftDirty, collaboration,
+    onSave, onEnqueue, onRefresh, onDecide,
 }) {
+    const stageDirty = draftDirty?.settings === true || draftDirty?.[stage] === true;
+    const view = planningSuggestionView(collaboration, stage, stageDirty);
+    const draftField = createDraftControl(view.compareOpen ? '현재 내용' : '');
     const requestId = `planning-${stage}-agent-request`;
     const requestStatus = el('p', {
-        text: latestRequest(collaboration, stage)?.status === 'queued_local_handoff'
-            ? '요청 저장됨 · 아직 실행 전'
+        text: view.queued
+            ? '요청 대기 · 아직 실행 전'
             : '요청 대기',
         className: 'text-xs leading-5 text-secondary',
         attrs: { role: 'status', 'aria-live': 'polite' },
@@ -95,33 +101,69 @@ function collaborationSection({
             await onEnqueue?.({ stage, instruction });
         },
     });
+    const requestComposer = el('div', { className: 'flex min-w-0 flex-col gap-3 rounded-md border border-white/10 bg-black/20 p-3' }, [
+        el('div', {}, [
+            el('h5', { text: '에이전트에게 요청', className: 'text-sm font-semibold text-white' }),
+            el('p', { text: '요청은 로컬에 저장되며 아직 실행되지 않습니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
+        ]),
+        fieldShell('무엇을 바꿀까요?', requestId, requestInput),
+        el('div', { className: 'flex flex-wrap gap-2' }, [
+            requestButton,
+            view.queued ? actionButton('수정안 확인', { disabled, variant: 'muted', onClick: () => onRefresh?.() }) : null,
+        ].filter(Boolean)),
+        requestStatus,
+    ]);
+
+    let agentColumn = requestComposer;
+    if (view.compareOpen) {
+        const comparison = PlanningSuggestionPanel({
+            stage,
+            suggestion: view.suggestion,
+            reviewStatus: view.reviewStatus,
+            disabled,
+            currentControl: draftField.control,
+            onDecide,
+        });
+        const composer = view.reviewStatus === 'ready'
+            ? el('details', { className: 'rounded-md border border-white/10 bg-black/10 px-3' }, [
+                el('summary', { text: '다른 요청 남기기', className: 'min-h-11 cursor-pointer py-3 text-xs font-semibold text-white' }),
+                el('div', { className: 'pb-3' }, [requestComposer]),
+            ])
+            : requestComposer;
+        agentColumn = el('div', { className: 'flex min-w-0 flex-col gap-3' }, [comparison, composer]);
+    } else if (view.history) {
+        agentColumn = el('div', { className: 'flex min-w-0 flex-col gap-3' }, [
+            PlanningSuggestionHistory({
+                stage,
+                suggestion: view.suggestion,
+                reviewStatus: view.reviewStatus,
+                disabled,
+                draftDirty: stageDirty,
+                onDecide,
+            }),
+            requestComposer,
+        ]);
+    }
 
     return el('section', {
-        className: 'grid min-w-0 grid-cols-1 gap-4 border-t border-white/10 pt-5 lg:grid-cols-[minmax(0,3fr)_minmax(16rem,2fr)]',
+        className: `grid min-w-0 grid-cols-1 gap-4 border-t border-white/10 pt-5 ${view.compareOpen ? 'lg:grid-cols-2' : 'lg:grid-cols-[minmax(0,3fr)_minmax(16rem,2fr)]'}`,
         attrs: { 'aria-labelledby': `planning-${stage}-title` },
     }, [
         el('div', { className: 'flex min-w-0 flex-col gap-3' }, [
             el('h4', { text: `${number}. ${title}`, className: 'text-base font-bold text-white', attrs: { id: `planning-${stage}-title` } }),
-            draftControl,
+            draftField.shell,
             el('div', { className: 'flex flex-wrap gap-2' }, [
                 actionButton('직접 저장', { disabled, onClick: () => onSave?.({ ...draftValue }) }),
             ]),
         ]),
-        el('div', { className: 'flex min-w-0 flex-col gap-3 rounded-md border border-white/10 bg-black/20 p-3' }, [
-            el('div', {}, [
-                el('h5', { text: '에이전트에게 요청', className: 'text-sm font-semibold text-white' }),
-                el('p', { text: '요청은 로컬에 저장되며 아직 실행되지 않습니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
-            ]),
-            fieldShell('무엇을 바꿀까요?', requestId, requestInput),
-            requestButton,
-            requestStatus,
-        ]),
+        agentColumn,
     ]);
 }
 
 export function NewProjectDraftForm({
     draftState, draftValue, notice = '', onDraftChange, onSaveNewProjectDraft,
-    onEnqueuePlanningAgentRequest, onCopyNewProjectBuildCommand,
+    onEnqueuePlanningAgentRequest, onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
+    onCopyNewProjectBuildCommand, draftDirty = false,
 }) {
     const loading = ['loading', 'saving', 'requesting', 'copying'].includes(draftState?.status);
     const readyToCopy = draftState?.preview?.copyAllowed === true;
@@ -129,13 +171,13 @@ export function NewProjectDraftForm({
         ...(draftState?.blockers || []),
         ...(draftState?.collaboration?.blockers || []),
     ].map((code) => p(code)).filter((message) => message && !/^[A-Z0-9_]+$/.test(message)))];
-    const briefControl = textControl({
-        id: 'new-project-brief', name: 'brief', value: draftValue.brief, multiline: true,
-        disabled: loading, maxLength: 65536, help: '콘셉트, 대상 시청자, 톤, 반드시 지킬 내용을 적으세요.', onDraftChange,
+    const createBriefControl = (label) => textControl({
+        id: 'new-project-brief', name: 'brief', value: draftValue.brief, label, multiline: true,
+        disabled: loading, maxLength: 65536, help: '콘셉트, 대상 시청자, 톤, 반드시 지킬 내용을 적으세요.', onDraftChange, parts: true,
     });
-    const scriptControl = textControl({
-        id: 'new-project-script', name: 'script', value: draftValue.script, multiline: true,
-        disabled: loading, maxLength: 262144, help: '내레이션이나 대사를 직접 작성하고 계속 고칠 수 있습니다.', onDraftChange,
+    const createScriptControl = (label) => textControl({
+        id: 'new-project-script', name: 'script', value: draftValue.script, label, multiline: true,
+        disabled: loading, maxLength: 262144, help: '내레이션이나 대사를 직접 작성하고 계속 고칠 수 있습니다.', onDraftChange, parts: true,
     });
 
     return card([
@@ -184,14 +226,16 @@ export function NewProjectDraftForm({
                 ]),
             ]),
             collaborationSection({
-                number: 1, title: '기획', stage: 'brief', draftControl: briefControl, draftValue,
-                disabled: loading, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
-                onEnqueue: onEnqueuePlanningAgentRequest,
+                number: 1, title: '기획', stage: 'brief', createDraftControl: createBriefControl, draftValue,
+                disabled: loading, draftDirty, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
+                onEnqueue: onEnqueuePlanningAgentRequest, onRefresh: onRefreshNewProjectDraft,
+                onDecide: onDecidePlanningAgentSuggestion,
             }),
             collaborationSection({
-                number: 2, title: '스크립트', stage: 'script', draftControl: scriptControl, draftValue,
-                disabled: loading, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
-                onEnqueue: onEnqueuePlanningAgentRequest,
+                number: 2, title: '스크립트', stage: 'script', createDraftControl: createScriptControl, draftValue,
+                disabled: loading, draftDirty, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,
+                onEnqueue: onEnqueuePlanningAgentRequest, onRefresh: onRefreshNewProjectDraft,
+                onDecide: onDecidePlanningAgentSuggestion,
             }),
         ]),
         el('div', { className: 'border-t border-white/10 pt-4' }, [

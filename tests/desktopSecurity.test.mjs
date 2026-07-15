@@ -185,6 +185,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'confirmVideoResultImport',
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
+        'decidePlanningAgentSuggestion',
         'enqueuePlanningAgentRequest',
         'executeFinishingRun',
         'exportG3ReviewPacket',
@@ -233,6 +234,11 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.enqueuePlanningAgentRequest({
         stage: 'brief', instruction: '기획을 검토해 주세요.', expected_revision_sha256: 'a'.repeat(64),
     });
+    await bridge.decidePlanningAgentSuggestion({
+        suggestion_token: `suggestion_${'a'.repeat(64)}`,
+        action: 'hold',
+        expected_revision_sha256: 'a'.repeat(64),
+    });
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
     await bridge.selectProductionRoot({ mode: 'production' });
@@ -270,6 +276,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:get-new-project-draft-state',
             'film-pipeline:save-new-project-draft',
             'film-pipeline:enqueue-planning-agent-request',
+            'film-pipeline:decide-planning-agent-suggestion',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',

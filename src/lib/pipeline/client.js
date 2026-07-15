@@ -108,7 +108,9 @@ export async function getNewProjectDraftState() {
         savedAt: '',
         revision_sha256: '',
         collaboration: {
-            status: 'empty', total_request_count: 0, recent_requests: [], truncated: false, blockers: [],
+            status: 'empty', total_request_count: 0, ready_suggestion_count: 0,
+            stale_suggestion_count: 0, applied_suggestion_count: 0,
+            recent_requests: [], truncated: false, blockers: [],
         },
         readiness: 'blocked',
         blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
@@ -141,6 +143,23 @@ export async function enqueuePlanningAgentRequest(payload) {
         request_id: '',
         status: 'blocked',
         model_called: false,
+        state: await getNewProjectDraftState(),
+    };
+}
+
+export async function decidePlanningAgentSuggestion(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.decidePlanningAgentSuggestion === 'function') {
+        return bridge.decidePlanningAgentSuggestion(payload);
+    }
+    return {
+        ...unavailable('decidePlanningAgentSuggestion'),
+        applied: false,
+        held: false,
+        already_decided: false,
+        receipt_recovered: false,
+        status: 'blocked',
+        reapply_allowed: false,
         state: await getNewProjectDraftState(),
     };
 }
@@ -480,6 +499,7 @@ export const pipelineClient = Object.freeze({
     getNewProjectDraftState,
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
+    decidePlanningAgentSuggestion,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

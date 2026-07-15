@@ -958,6 +958,8 @@ function newProjectContext(options = {}) {
         harnessStatus: getHarnessContractStatus(options),
         clipboardApi: options.clipboardApi || clipboard,
         renameFile: options.renameFile,
+        renameDirectory: options.renameDirectory,
+        linkFile: options.linkFile,
         randomBytes: options.randomBytes,
     };
 }
@@ -984,6 +986,20 @@ function enqueuePlanningAgentRequest(payload, options = {}) {
         phase: 'planning-agent-request-queued',
         status: result.status,
         alreadyQueued: result.already_queued,
+        executed: false,
+        modelCalled: false,
+    });
+    return result;
+}
+
+function decidePlanningAgentSuggestion(payload, options = {}) {
+    const result = newProjectDraftProvider.decidePlanningAgentSuggestion(payload, newProjectContext(options));
+    sendProgress({
+        phase: 'planning-agent-suggestion-decided',
+        status: result.status,
+        applied: result.applied === true,
+        held: result.held === true,
+        receiptRecovered: result.receipt_recovered === true,
         executed: false,
         modelCalled: false,
     });
@@ -1332,6 +1348,7 @@ function register(ipcApi = ipcMain, options = {}) {
     });
     ipcApi.handle('film-pipeline:save-new-project-draft', (_, payload) => saveNewProjectDraft(payload, options));
     ipcApi.handle('film-pipeline:enqueue-planning-agent-request', (_, payload) => enqueuePlanningAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:decide-planning-agent-suggestion', (_, payload) => decidePlanningAgentSuggestion(payload, options));
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1424,6 +1441,7 @@ module.exports = {
     getNewProjectDraftState,
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
+    decidePlanningAgentSuggestion,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

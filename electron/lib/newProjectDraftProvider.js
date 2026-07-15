@@ -8,12 +8,26 @@ const DRAFT_METADATA_FILE = 'draft.json';
 const DRAFT_BRIEF_FILE = 'brief.md';
 const DRAFT_SCRIPT_FILE = 'script.txt';
 const DRAFT_TEMP_PREFIX = '.new-project-draft-';
-const PLANNING_AGENT_REQUEST_SCHEMA = 'film_pipeline.planning_agent_request.v1';
+const LEGACY_PLANNING_AGENT_REQUEST_SCHEMA = 'film_pipeline.planning_agent_request.v1';
+const PLANNING_AGENT_REQUEST_SCHEMA = 'film_pipeline.planning_agent_request.v2';
+const PLANNING_DRAFT_SNAPSHOT_SCHEMA = 'film_pipeline.planning_draft_snapshot.v1';
+const PLANNING_AGENT_SUGGESTION_SCHEMA = 'film_pipeline.planning_agent_suggestion.v1';
+const PLANNING_AGENT_DECISION_RECEIPT_SCHEMA = 'film_pipeline.planning_agent_decision_receipt.v1';
 const PLANNING_AGENT_COLLABORATION_DIRECTORY = 'collaboration';
 const PLANNING_AGENT_QUEUE_DIRECTORY = 'queue';
+const PLANNING_AGENT_SNAPSHOT_DIRECTORY = 'snapshots';
+const PLANNING_AGENT_SUGGESTION_DIRECTORY = 'suggestions';
+const PLANNING_AGENT_RECEIPT_DIRECTORY = 'receipts';
 const PLANNING_AGENT_REQUEST_PREFIX = 'request_';
+const PLANNING_AGENT_SNAPSHOT_PREFIX = 'revision_';
+const PLANNING_AGENT_SUGGESTION_PREFIX = 'suggestion_';
+const PLANNING_AGENT_DECISION_PREFIX = 'decision_';
 const MAX_PLANNING_AGENT_INSTRUCTION_BYTES = 16 * 1024;
 const MAX_PLANNING_AGENT_REQUEST_BYTES = 32 * 1024;
+const MAX_PLANNING_AGENT_SUMMARY_BYTES = 2 * 1024;
+const MAX_PLANNING_AGENT_SUGGESTION_BYTES = 320 * 1024;
+const MAX_PLANNING_AGENT_RECEIPT_BYTES = 16 * 1024;
+const MAX_PLANNING_AGENT_SNAPSHOT_MANIFEST_BYTES = 16 * 1024;
 const MAX_PLANNING_AGENT_REQUEST_FILES = 200;
 const MAX_RECENT_PLANNING_AGENT_REQUESTS = 20;
 const MAX_DRAFT_JSON_BYTES = 8 * 1024;
@@ -128,6 +142,9 @@ function exactDraftPaths(userDataPath) {
     const draftRoot = path.join(userDataPath, 'film-pipeline', 'drafts', DRAFT_DIRECTORY);
     const collaborationRoot = path.join(draftRoot, PLANNING_AGENT_COLLABORATION_DIRECTORY);
     const planningAgentQueueRoot = path.join(collaborationRoot, PLANNING_AGENT_QUEUE_DIRECTORY);
+    const planningAgentSnapshotsRoot = path.join(collaborationRoot, PLANNING_AGENT_SNAPSHOT_DIRECTORY);
+    const planningAgentSuggestionsRoot = path.join(collaborationRoot, PLANNING_AGENT_SUGGESTION_DIRECTORY);
+    const planningAgentReceiptsRoot = path.join(collaborationRoot, PLANNING_AGENT_RECEIPT_DIRECTORY);
     return {
         userDataPath,
         draftRoot,
@@ -136,6 +153,9 @@ function exactDraftPaths(userDataPath) {
         scriptPath: path.join(draftRoot, DRAFT_SCRIPT_FILE),
         collaborationRoot,
         planningAgentQueueRoot,
+        planningAgentSnapshotsRoot,
+        planningAgentSuggestionsRoot,
+        planningAgentReceiptsRoot,
     };
 }
 
@@ -186,19 +206,17 @@ function ensurePrivateDraftDirectory(paths) {
     }
 }
 
-function ensurePrivatePlanningAgentQueue(paths) {
+function ensurePrivatePlanningAgentDirectories(paths, childNames = [PLANNING_AGENT_QUEUE_DIRECTORY]) {
     ensurePrivateDraftDirectory(paths);
     const draftStats = assertDirectory(
         paths.draftRoot,
         'PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE',
         { privateMode: true },
     );
-    let current = paths.draftRoot;
-    for (const [index, component] of [
-        PLANNING_AGENT_COLLABORATION_DIRECTORY,
-        PLANNING_AGENT_QUEUE_DIRECTORY,
-    ].entries()) {
-        current = path.join(current, component);
+    for (const [index, component] of [PLANNING_AGENT_COLLABORATION_DIRECTORY, ...childNames].entries()) {
+        const current = index === 0
+            ? paths.collaborationRoot
+            : path.join(paths.collaborationRoot, component);
         try {
             fs.mkdirSync(current, { mode: 0o700 });
         } catch (error) {
@@ -209,11 +227,25 @@ function ensurePrivatePlanningAgentQueue(paths) {
             'PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE',
             { privateMode: true },
         );
-        const expected = index === 0 ? paths.collaborationRoot : paths.planningAgentQueueRoot;
+        const expectedByName = {
+            [PLANNING_AGENT_QUEUE_DIRECTORY]: paths.planningAgentQueueRoot,
+            [PLANNING_AGENT_SNAPSHOT_DIRECTORY]: paths.planningAgentSnapshotsRoot,
+            [PLANNING_AGENT_SUGGESTION_DIRECTORY]: paths.planningAgentSuggestionsRoot,
+            [PLANNING_AGENT_RECEIPT_DIRECTORY]: paths.planningAgentReceiptsRoot,
+        };
+        const expected = index === 0 ? paths.collaborationRoot : expectedByName[component];
+        if (!expected) throw bootstrapError('PLANNING_AGENT_DIRECTORY_UNSAFE', 'Planning agent directory is unknown');
         if (fs.realpathSync.native(current) !== expected || stats.dev !== draftStats.dev) {
             throw bootstrapError('PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE', 'Planning agent queue escapes the draft root');
         }
     }
+}
+
+function ensurePrivatePlanningAgentQueue(paths) {
+    ensurePrivatePlanningAgentDirectories(paths, [
+        PLANNING_AGENT_QUEUE_DIRECTORY,
+        PLANNING_AGENT_SNAPSHOT_DIRECTORY,
+    ]);
 }
 
 function assertRegularOrMissing(filePath) {
@@ -265,6 +297,64 @@ function atomicWritePrivateFile(filePath, content, options = {}) {
         }
         if (!renamed) {
             try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+    }
+}
+
+function fsyncDirectory(directoryPath) {
+    let descriptor;
+    try {
+        descriptor = fs.openSync(directoryPath, fs.constants.O_RDONLY);
+        fs.fsyncSync(descriptor);
+    } finally {
+        if (descriptor !== undefined) fs.closeSync(descriptor);
+    }
+}
+
+function atomicPublishPrivateFile(filePath, content, options = {}) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+    const parentPath = path.dirname(filePath);
+    const parentBefore = assertDirectory(parentPath, 'PLANNING_AGENT_DIRECTORY_UNSAFE', { privateMode: true });
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+        throw bootstrapError('NEW_PROJECT_DRAFT_NOFOLLOW_UNAVAILABLE', 'No-follow private publish is unavailable');
+    }
+    const randomBytes = options.randomBytes || crypto.randomBytes;
+    const tempPath = path.join(parentPath, `${DRAFT_TEMP_PREFIX}${process.pid}-${randomBytes(12).toString('hex')}`);
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+    let descriptor;
+    let published = false;
+    try {
+        descriptor = fs.openSync(tempPath, flags, 0o600);
+        fs.fchmodSync(descriptor, 0o600);
+        fs.writeFileSync(descriptor, buffer);
+        fs.fsyncSync(descriptor);
+        fs.closeSync(descriptor);
+        descriptor = undefined;
+        const parentAfter = assertDirectory(parentPath, 'PLANNING_AGENT_DIRECTORY_UNSAFE', { privateMode: true });
+        if (parentBefore.dev !== parentAfter.dev || parentBefore.ino !== parentAfter.ino) {
+            throw bootstrapError('NEW_PROJECT_DRAFT_PARENT_CHANGED', 'Private publish parent changed');
+        }
+        const tempStats = fs.lstatSync(tempPath);
+        if (tempStats.isSymbolicLink() || !tempStats.isFile() || (tempStats.mode & 0o777) !== 0o600) {
+            throw bootstrapError('NEW_PROJECT_DRAFT_TEMP_UNSAFE', 'Private publish temporary file is unsafe');
+        }
+        const linkFile = options.linkFile || fs.linkSync;
+        linkFile(tempPath, filePath);
+        published = true;
+        const finalStats = fs.lstatSync(filePath);
+        if (!finalStats.isFile() || finalStats.isSymbolicLink()
+            || finalStats.dev !== tempStats.dev || finalStats.ino !== tempStats.ino
+            || (finalStats.mode & 0o777) !== 0o600) {
+            throw bootstrapError('PLANNING_AGENT_PUBLISH_UNSAFE', 'Published private file identity is unsafe');
+        }
+        fsyncDirectory(parentPath);
+    } finally {
+        if (descriptor !== undefined) {
+            try { fs.closeSync(descriptor); } catch { /* already closed */ }
+        }
+        try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (!published) {
+            // The final path is never removed here: another publisher may have won an EEXIST race.
         }
     }
 }
@@ -347,17 +437,182 @@ function draftRevisionEvidence(draft) {
 }
 
 function planningAgentRequestId({
+    schemaVersion = PLANNING_AGENT_REQUEST_SCHEMA,
     stage, instruction, productionId, revisionSha256, briefSha256, scriptSha256,
+    snapshotRevisionSha256 = '',
 }) {
     return `${PLANNING_AGENT_REQUEST_PREFIX}${sha256(JSON.stringify({
-        schema_version: PLANNING_AGENT_REQUEST_SCHEMA,
+        schema_version: schemaVersion,
         production_id: productionId,
         draft_revision_sha256: revisionSha256,
         brief_sha256: briefSha256,
         script_sha256: scriptSha256,
+        ...(schemaVersion === PLANNING_AGENT_REQUEST_SCHEMA
+            ? { snapshot_revision_sha256: snapshotRevisionSha256 }
+            : {}),
         stage,
         instruction,
     }))}`;
+}
+
+function snapshotPaths(paths, revisionSha256) {
+    const snapshotRoot = path.join(
+        paths.planningAgentSnapshotsRoot,
+        `${PLANNING_AGENT_SNAPSHOT_PREFIX}${revisionSha256}`,
+    );
+    return {
+        snapshotRoot,
+        manifestPath: path.join(snapshotRoot, 'manifest.json'),
+        briefPath: path.join(snapshotRoot, DRAFT_BRIEF_FILE),
+        scriptPath: path.join(snapshotRoot, DRAFT_SCRIPT_FILE),
+    };
+}
+
+function validateSnapshotManifest(manifest, revision) {
+    assertExactKeys(manifest, [
+        'schema_version', 'draft_revision_sha256', 'production_id', 'route', 'aspect_ratio',
+        'scene_duration', 'max_scenes', 'brief_sha256', 'script_sha256', 'created_at',
+    ], 'PLANNING_AGENT_SNAPSHOT_INVALID');
+    if (manifest.schema_version !== PLANNING_DRAFT_SNAPSHOT_SCHEMA
+        || manifest.draft_revision_sha256 !== revision
+        || !/^[a-f0-9]{64}$/.test(manifest.brief_sha256)
+        || !/^[a-f0-9]{64}$/.test(manifest.script_sha256)
+        || !Number.isFinite(Date.parse(manifest.created_at))) {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_INVALID', 'Planning draft snapshot manifest is invalid');
+    }
+    return manifest;
+}
+
+function readPlanningDraftSnapshot(paths, revisionSha256) {
+    if (!/^[a-f0-9]{64}$/.test(revisionSha256)) {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_INVALID', 'Planning draft snapshot revision is invalid');
+    }
+    const snapshot = snapshotPaths(paths, revisionSha256);
+    const rootStats = assertDirectory(
+        snapshot.snapshotRoot,
+        'PLANNING_AGENT_SNAPSHOT_UNSAFE',
+        { privateMode: true },
+    );
+    const snapshotsStats = assertDirectory(
+        paths.planningAgentSnapshotsRoot,
+        'PLANNING_AGENT_SNAPSHOT_UNSAFE',
+        { privateMode: true },
+    );
+    if (rootStats.dev !== snapshotsStats.dev
+        || fs.realpathSync.native(snapshot.snapshotRoot) !== snapshot.snapshotRoot) {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_UNSAFE', 'Planning draft snapshot escapes its root');
+    }
+    const names = fs.readdirSync(snapshot.snapshotRoot).sort();
+    if (names.join(',') !== [DRAFT_BRIEF_FILE, DRAFT_SCRIPT_FILE, 'manifest.json'].sort().join(',')) {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_UNSAFE', 'Planning draft snapshot content is not exact');
+    }
+    const manifestBuffer = readPrivateFile(snapshot.manifestPath, MAX_PLANNING_AGENT_SNAPSHOT_MANIFEST_BYTES);
+    const briefBuffer = readPrivateFile(snapshot.briefPath, MAX_BRIEF_BYTES + 1);
+    const scriptBuffer = readPrivateFile(snapshot.scriptPath, MAX_SCRIPT_BYTES + 1);
+    let manifest;
+    try { manifest = JSON.parse(manifestBuffer.toString('utf8')); } catch {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_INVALID', 'Planning draft snapshot manifest is malformed');
+    }
+    validateSnapshotManifest(manifest, revisionSha256);
+    if (sha256(briefBuffer) !== manifest.brief_sha256 || sha256(scriptBuffer) !== manifest.script_sha256) {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_INVALID', 'Planning draft snapshot hashes do not match');
+    }
+    const draft = validateNewProjectDraft({
+        production_id: manifest.production_id,
+        brief: briefBuffer.toString('utf8'),
+        script: scriptBuffer.toString('utf8'),
+        route: manifest.route,
+        aspect_ratio: manifest.aspect_ratio,
+        scene_duration: manifest.scene_duration,
+        max_scenes: manifest.max_scenes,
+    });
+    const evidence = draftRevisionEvidence(draft);
+    if (evidence.revisionSha256 !== revisionSha256
+        || evidence.briefSha256 !== manifest.brief_sha256
+        || evidence.scriptSha256 !== manifest.script_sha256) {
+        throw bootstrapError('PLANNING_AGENT_SNAPSHOT_INVALID', 'Planning draft snapshot revision does not match');
+    }
+    return { manifest, draft };
+}
+
+function publishPlanningDraftSnapshot(paths, draft, context = {}) {
+    const evidence = draftRevisionEvidence(draft);
+    ensurePrivatePlanningAgentDirectories(paths, [PLANNING_AGENT_SNAPSHOT_DIRECTORY]);
+    try {
+        return readPlanningDraftSnapshot(paths, evidence.revisionSha256);
+    } catch (error) {
+        if (error.code !== 'PLANNING_AGENT_SNAPSHOT_UNSAFE') throw error;
+        try {
+            fs.lstatSync(snapshotPaths(paths, evidence.revisionSha256).snapshotRoot);
+            throw error;
+        } catch (missingError) {
+            if (missingError.code !== 'ENOENT') throw error;
+        }
+    }
+
+    const snapshotsParent = paths.planningAgentSnapshotsRoot;
+    const parentBefore = assertDirectory(snapshotsParent, 'PLANNING_AGENT_SNAPSHOT_UNSAFE', { privateMode: true });
+    const randomBytes = context.randomBytes || crypto.randomBytes;
+    const stagingRoot = path.join(
+        snapshotsParent,
+        `.snapshot-${process.pid}-${randomBytes(12).toString('hex')}`,
+    );
+    let published = false;
+    try {
+        fs.mkdirSync(stagingRoot, { mode: 0o700 });
+        fs.chmodSync(stagingRoot, 0o700);
+        const briefBuffer = Buffer.from(`${draft.brief}\n`, 'utf8');
+        const scriptBuffer = Buffer.from(`${draft.script}\n`, 'utf8');
+        const manifest = {
+            schema_version: PLANNING_DRAFT_SNAPSHOT_SCHEMA,
+            draft_revision_sha256: evidence.revisionSha256,
+            production_id: draft.production_id,
+            route: draft.route,
+            aspect_ratio: draft.aspect_ratio,
+            scene_duration: draft.scene_duration,
+            max_scenes: draft.max_scenes,
+            brief_sha256: evidence.briefSha256,
+            script_sha256: evidence.scriptSha256,
+            created_at: new Date().toISOString(),
+        };
+        for (const [name, buffer] of [
+            [DRAFT_BRIEF_FILE, briefBuffer],
+            [DRAFT_SCRIPT_FILE, scriptBuffer],
+            ['manifest.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8')],
+        ]) {
+            const descriptor = fs.openSync(
+                path.join(stagingRoot, name),
+                fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+                0o600,
+            );
+            try {
+                fs.fchmodSync(descriptor, 0o600);
+                fs.writeFileSync(descriptor, buffer);
+                fs.fsyncSync(descriptor);
+            } finally { fs.closeSync(descriptor); }
+        }
+        fsyncDirectory(stagingRoot);
+        const parentAfter = assertDirectory(snapshotsParent, 'PLANNING_AGENT_SNAPSHOT_UNSAFE', { privateMode: true });
+        if (parentBefore.dev !== parentAfter.dev || parentBefore.ino !== parentAfter.ino) {
+            throw bootstrapError('NEW_PROJECT_DRAFT_PARENT_CHANGED', 'Snapshot parent changed during publish');
+        }
+        const target = snapshotPaths(paths, evidence.revisionSha256).snapshotRoot;
+        const renameDirectory = context.renameDirectory || fs.renameSync;
+        renameDirectory(stagingRoot, target);
+        published = true;
+        fsyncDirectory(snapshotsParent);
+    } catch (error) {
+        if (!published && ['EEXIST', 'ENOTEMPTY'].includes(error.code)) {
+            // A concurrent publisher won. Its immutable snapshot is validated below.
+        } else {
+            throw error;
+        }
+    } finally {
+        if (!published) {
+            try { fs.rmSync(stagingRoot, { recursive: true, force: true }); } catch { /* best effort own staging cleanup */ }
+        }
+    }
+    return readPlanningDraftSnapshot(paths, evidence.revisionSha256);
 }
 
 function validatePlanningAgentRequestPayload(payload) {
@@ -386,12 +641,14 @@ function validatePlanningAgentRequestPayload(payload) {
 }
 
 function validatePlanningAgentRequestRecord(record, currentDraft = null) {
+    const isLegacy = record?.schema_version === LEGACY_PLANNING_AGENT_REQUEST_SCHEMA;
     assertExactKeys(record, [
         'schema_version', 'request_id', 'stage', 'instruction', 'production_id',
         'draft_revision_sha256', 'brief_sha256', 'script_sha256', 'status',
         'requested_at', 'executed', 'model_called',
+        ...(!isLegacy ? ['snapshot_revision_sha256'] : []),
     ], 'PLANNING_AGENT_QUEUE_RECORD_INVALID');
-    if (record.schema_version !== PLANNING_AGENT_REQUEST_SCHEMA
+    if (![LEGACY_PLANNING_AGENT_REQUEST_SCHEMA, PLANNING_AGENT_REQUEST_SCHEMA].includes(record.schema_version)
         || !['brief', 'script'].includes(record.stage)
         || typeof record.instruction !== 'string'
         || !record.instruction
@@ -403,6 +660,7 @@ function validatePlanningAgentRequestRecord(record, currentDraft = null) {
         || !/^[a-f0-9]{64}$/.test(record.draft_revision_sha256)
         || !/^[a-f0-9]{64}$/.test(record.brief_sha256)
         || !/^[a-f0-9]{64}$/.test(record.script_sha256)
+        || (!isLegacy && record.snapshot_revision_sha256 !== record.draft_revision_sha256)
         || record.status !== 'queued_local_handoff'
         || !Number.isFinite(Date.parse(record.requested_at))
         || record.executed !== false
@@ -410,12 +668,14 @@ function validatePlanningAgentRequestRecord(record, currentDraft = null) {
         throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue record is invalid');
     }
     const expectedId = planningAgentRequestId({
+        schemaVersion: record.schema_version,
         stage: record.stage,
         instruction: record.instruction,
         productionId: record.production_id,
         revisionSha256: record.draft_revision_sha256,
         briefSha256: record.brief_sha256,
         scriptSha256: record.script_sha256,
+        snapshotRevisionSha256: isLegacy ? '' : record.snapshot_revision_sha256,
     });
     if (record.request_id !== expectedId) {
         throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue record identity is invalid');
@@ -431,14 +691,223 @@ function validatePlanningAgentRequestRecord(record, currentDraft = null) {
     return record;
 }
 
+function requestFilePath(paths, requestId) {
+    if (typeof requestId !== 'string' || !/^request_[a-f0-9]{64}$/.test(requestId)) {
+        throw bootstrapError('PLANNING_AGENT_REQUEST_ID_INVALID', 'Planning agent request id is invalid');
+    }
+    return path.join(paths.planningAgentQueueRoot, `${requestId}.json`);
+}
+
+function readPlanningAgentRequest(paths, requestId, currentDraft = null) {
+    const filePath = requestFilePath(paths, requestId);
+    let record;
+    try { record = JSON.parse(readPrivateFile(filePath, MAX_PLANNING_AGENT_REQUEST_BYTES).toString('utf8')); } catch (error) {
+        if (error.code) throw error;
+        throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent request is malformed');
+    }
+    validatePlanningAgentRequestRecord(record, currentDraft);
+    if (record.request_id !== requestId) {
+        throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent request filename does not match');
+    }
+    return record;
+}
+
+function snapshotForRequest(paths, request, currentDraft = null) {
+    if (request.schema_version === PLANNING_AGENT_REQUEST_SCHEMA) {
+        const snapshot = readPlanningDraftSnapshot(paths, request.snapshot_revision_sha256);
+        if (snapshot.manifest.draft_revision_sha256 !== request.draft_revision_sha256
+            || snapshot.manifest.production_id !== request.production_id
+            || snapshot.manifest.brief_sha256 !== request.brief_sha256
+            || snapshot.manifest.script_sha256 !== request.script_sha256) {
+            throw bootstrapError('PLANNING_AGENT_SNAPSHOT_INVALID', 'Planning request and snapshot do not match');
+        }
+        return { ...snapshot, legacyFallback: false };
+    }
+    if (!currentDraft) {
+        throw bootstrapError('PLANNING_AGENT_LEGACY_SOURCE_UNAVAILABLE', 'Legacy planning request source is unavailable');
+    }
+    const evidence = draftRevisionEvidence(currentDraft);
+    if (evidence.revisionSha256 !== request.draft_revision_sha256
+        || evidence.briefSha256 !== request.brief_sha256
+        || evidence.scriptSha256 !== request.script_sha256
+        || currentDraft.production_id !== request.production_id) {
+        throw bootstrapError('PLANNING_AGENT_LEGACY_SOURCE_UNAVAILABLE', 'Legacy planning request no longer matches the draft');
+    }
+    return {
+        manifest: {
+            schema_version: PLANNING_DRAFT_SNAPSHOT_SCHEMA,
+            draft_revision_sha256: evidence.revisionSha256,
+            production_id: currentDraft.production_id,
+            route: currentDraft.route,
+            aspect_ratio: currentDraft.aspect_ratio,
+            scene_duration: currentDraft.scene_duration,
+            max_scenes: currentDraft.max_scenes,
+            brief_sha256: evidence.briefSha256,
+            script_sha256: evidence.scriptSha256,
+            created_at: request.requested_at,
+        },
+        draft: currentDraft,
+        legacyFallback: true,
+    };
+}
+
+function planningAgentSuggestionToken({ request, proposedTextSha256, summary }) {
+    return `${PLANNING_AGENT_SUGGESTION_PREFIX}${sha256(JSON.stringify({
+        schema_version: PLANNING_AGENT_SUGGESTION_SCHEMA,
+        request_id: request.request_id,
+        stage: request.stage,
+        base_revision_sha256: request.draft_revision_sha256,
+        target_source_sha256: request.stage === 'brief' ? request.brief_sha256 : request.script_sha256,
+        proposed_text_sha256: proposedTextSha256,
+        summary,
+        produced_by_agent: true,
+        app_model_called: false,
+    }))}`;
+}
+
+function validatePlanningAgentSuggestion(record, request) {
+    assertExactKeys(record, [
+        'schema_version', 'suggestion_token', 'request_id', 'stage', 'base_revision_sha256',
+        'target_source_sha256', 'proposed_text_sha256', 'proposed_text', 'summary',
+        'published_at', 'produced_by_agent', 'app_model_called', 'status',
+    ], 'PLANNING_AGENT_SUGGESTION_INVALID');
+    const maxTextBytes = request.stage === 'brief' ? MAX_BRIEF_BYTES : MAX_SCRIPT_BYTES;
+    const proposedText = safeString(
+        record.proposed_text,
+        'PLANNING_AGENT_SUGGESTION_INVALID',
+        maxTextBytes,
+    );
+    const proposedHash = sha256(Buffer.from(`${proposedText}\n`, 'utf8'));
+    const summary = safeString(
+        record.summary,
+        'PLANNING_AGENT_SUGGESTION_INVALID',
+        MAX_PLANNING_AGENT_SUMMARY_BYTES,
+    );
+    const sourceHash = request.stage === 'brief' ? request.brief_sha256 : request.script_sha256;
+    const expectedToken = planningAgentSuggestionToken({ request, proposedTextSha256: proposedHash, summary });
+    if (record.schema_version !== PLANNING_AGENT_SUGGESTION_SCHEMA
+        || record.suggestion_token !== expectedToken
+        || record.request_id !== request.request_id
+        || record.stage !== request.stage
+        || record.base_revision_sha256 !== request.draft_revision_sha256
+        || record.target_source_sha256 !== sourceHash
+        || record.proposed_text_sha256 !== proposedHash
+        || record.proposed_text !== proposedText
+        || record.summary !== summary
+        || !Number.isFinite(Date.parse(record.published_at))
+        || record.produced_by_agent !== true
+        || record.app_model_called !== false
+        || record.status !== 'ready_for_review') {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_INVALID', 'Planning agent suggestion is invalid');
+    }
+    if (proposedHash === sourceHash) {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_NOOP', 'Planning agent suggestion does not change the target text');
+    }
+    return record;
+}
+
+function suggestionPath(paths, requestId) {
+    return path.join(paths.planningAgentSuggestionsRoot, `${requestId}.json`);
+}
+
+function readPlanningAgentSuggestion(paths, request) {
+    let buffer;
+    try { buffer = readPrivateFile(suggestionPath(paths, request.request_id), MAX_PLANNING_AGENT_SUGGESTION_BYTES); } catch (error) {
+        if (error.code === 'NEW_PROJECT_DRAFT_INCOMPLETE') return null;
+        throw error;
+    }
+    let record;
+    try { record = JSON.parse(buffer.toString('utf8')); } catch {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_INVALID', 'Planning agent suggestion is malformed');
+    }
+    return validatePlanningAgentSuggestion(record, request);
+}
+
+function decisionReceiptId(action, suggestionToken) {
+    return `${PLANNING_AGENT_DECISION_PREFIX}${sha256(JSON.stringify({
+        schema_version: PLANNING_AGENT_DECISION_RECEIPT_SCHEMA,
+        action,
+        suggestion_token: suggestionToken,
+    }))}`;
+}
+
+function decisionReceiptPath(paths, action, suggestionToken) {
+    return path.join(paths.planningAgentReceiptsRoot, `${action}_${suggestionToken}.json`);
+}
+
+function validateDecisionReceipt(record, action, suggestion, request) {
+    assertExactKeys(record, [
+        'schema_version', 'receipt_id', 'suggestion_token', 'request_id', 'stage', 'action',
+        'source_revision_sha256', 'source_target_sha256', 'proposed_text_sha256',
+        'result_revision_sha256', 'decided_at', 'draft_written', 'one_shot',
+    ], 'PLANNING_AGENT_DECISION_RECEIPT_INVALID');
+    if (record.schema_version !== PLANNING_AGENT_DECISION_RECEIPT_SCHEMA
+        || record.receipt_id !== decisionReceiptId(action, suggestion.suggestion_token)
+        || record.suggestion_token !== suggestion.suggestion_token
+        || record.request_id !== request.request_id
+        || record.stage !== request.stage
+        || record.action !== action
+        || record.source_revision_sha256 !== request.draft_revision_sha256
+        || record.source_target_sha256 !== suggestion.target_source_sha256
+        || record.proposed_text_sha256 !== suggestion.proposed_text_sha256
+        || !/^[a-f0-9]{64}$/.test(record.result_revision_sha256)
+        || !Number.isFinite(Date.parse(record.decided_at))
+        || record.draft_written !== (action === 'apply')
+        || record.one_shot !== true) {
+        throw bootstrapError('PLANNING_AGENT_DECISION_RECEIPT_INVALID', 'Planning agent decision receipt is invalid');
+    }
+    return record;
+}
+
+function readDecisionReceipt(paths, action, suggestion, request) {
+    let buffer;
+    try {
+        buffer = readPrivateFile(
+            decisionReceiptPath(paths, action, suggestion.suggestion_token),
+            MAX_PLANNING_AGENT_RECEIPT_BYTES,
+        );
+    } catch (error) {
+        if (error.code === 'NEW_PROJECT_DRAFT_INCOMPLETE') return null;
+        throw error;
+    }
+    let record;
+    try { record = JSON.parse(buffer.toString('utf8')); } catch {
+        throw bootstrapError('PLANNING_AGENT_DECISION_RECEIPT_INVALID', 'Planning agent decision receipt is malformed');
+    }
+    return validateDecisionReceipt(record, action, suggestion, request);
+}
+
 function emptyPlanningCollaboration() {
     return {
         status: 'empty',
         total_request_count: 0,
+        ready_suggestion_count: 0,
+        stale_suggestion_count: 0,
+        applied_suggestion_count: 0,
         recent_requests: [],
         truncated: false,
         blockers: [],
     };
+}
+
+function validateOptionalArtifactDirectory(rootPath, pattern, limit, code) {
+    let stats;
+    try { stats = fs.lstatSync(rootPath); } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory() || (stats.mode & 0o077) !== 0
+        || fs.realpathSync.native(rootPath) !== rootPath) {
+        throw bootstrapError(code, 'Planning collaboration artifact directory is unsafe');
+    }
+    const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    if (entries.length > limit) throw bootstrapError(code, 'Planning collaboration artifact limit was reached');
+    for (const entry of entries) {
+        if (!entry.isFile() || entry.isSymbolicLink() || !pattern.test(entry.name)) {
+            throw bootstrapError(code, 'Planning collaboration artifact entry is unsafe');
+        }
+    }
+    return entries;
 }
 
 function readPlanningCollaboration(paths, draft) {
@@ -489,12 +958,81 @@ function readPlanningCollaboration(paths, draft) {
             if (`${record.request_id}.json` !== entry.name) {
                 throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_INVALID', 'Planning agent queue filename is invalid');
             }
+            snapshotForRequest(paths, record, draft);
             return record;
         }).sort((left, right) => Date.parse(right.requested_at) - Date.parse(left.requested_at));
+
+        validateOptionalArtifactDirectory(
+            paths.planningAgentSuggestionsRoot,
+            /^request_[a-f0-9]{64}\.json$/,
+            MAX_PLANNING_AGENT_REQUEST_FILES,
+            'PLANNING_AGENT_SUGGESTION_DIRECTORY_UNSAFE',
+        );
+        validateOptionalArtifactDirectory(
+            paths.planningAgentReceiptsRoot,
+            /^(?:hold|apply)_suggestion_[a-f0-9]{64}\.json$/,
+            MAX_PLANNING_AGENT_REQUEST_FILES * 2,
+            'PLANNING_AGENT_RECEIPT_DIRECTORY_UNSAFE',
+        );
+        const currentEvidence = draftRevisionEvidence(draft);
+        let readySuggestionCount = 0;
+        let staleSuggestionCount = 0;
+        let appliedSuggestionCount = 0;
+        const projectedRecords = records.map((record) => {
+            const suggestion = readPlanningAgentSuggestion(paths, record);
+            if (!suggestion) return record;
+            const applyReceipt = readDecisionReceipt(paths, 'apply', suggestion, record);
+            const holdReceipt = readDecisionReceipt(paths, 'hold', suggestion, record);
+            const currentTargetHash = record.stage === 'brief'
+                ? currentEvidence.briefSha256
+                : currentEvidence.scriptSha256;
+            let reviewStatus;
+            let applyAllowed = false;
+            if (applyReceipt) {
+                appliedSuggestionCount += 1;
+                reviewStatus = currentTargetHash === suggestion.proposed_text_sha256
+                    ? 'applied'
+                    : 'applied_then_edited';
+            } else if (currentTargetHash === suggestion.target_source_sha256
+                || currentTargetHash === suggestion.proposed_text_sha256) {
+                readySuggestionCount += 1;
+                applyAllowed = true;
+                reviewStatus = holdReceipt ? 'held' : 'ready';
+            } else {
+                staleSuggestionCount += 1;
+                reviewStatus = 'stale';
+            }
+            return {
+                ...record,
+                suggestion: {
+                    suggestion_token: suggestion.suggestion_token,
+                    review_status: reviewStatus,
+                    summary: suggestion.summary,
+                    proposed_text: suggestion.proposed_text,
+                    published_at: suggestion.published_at,
+                    apply_allowed: applyAllowed,
+                    reapply_allowed: false,
+                    applied_at: applyReceipt?.decided_at || '',
+                    held_at: holdReceipt?.decided_at || '',
+                },
+            };
+        });
+        const status = appliedSuggestionCount > 0 && readySuggestionCount === 0 && staleSuggestionCount === 0
+            ? 'applied'
+            : readySuggestionCount > 0
+                ? 'suggestion_ready'
+                : staleSuggestionCount > 0
+                    ? 'stale'
+                    : records.length
+                        ? 'queued'
+                        : 'empty';
         return {
-            status: records.length ? 'queued' : 'empty',
+            status,
             total_request_count: records.length,
-            recent_requests: records.slice(0, MAX_RECENT_PLANNING_AGENT_REQUESTS),
+            ready_suggestion_count: readySuggestionCount,
+            stale_suggestion_count: staleSuggestionCount,
+            applied_suggestion_count: appliedSuggestionCount,
+            recent_requests: projectedRecords.slice(0, MAX_RECENT_PLANNING_AGENT_REQUESTS),
             truncated: records.length > MAX_RECENT_PLANNING_AGENT_REQUESTS,
             blockers: [],
         };
@@ -748,14 +1286,17 @@ function enqueuePlanningAgentRequest(payload, context = {}) {
         throw bootstrapError('PLANNING_AGENT_REQUEST_STALE', 'The saved draft changed before the agent handoff');
     }
     ensurePrivatePlanningAgentQueue(loaded.paths);
+    publishPlanningDraftSnapshot(loaded.paths, loaded.draft, context);
 
     const requestId = planningAgentRequestId({
+        schemaVersion: PLANNING_AGENT_REQUEST_SCHEMA,
         stage: request.stage,
         instruction: request.instruction,
         productionId: loaded.draft.production_id,
         revisionSha256: revision.revisionSha256,
         briefSha256: revision.briefSha256,
         scriptSha256: revision.scriptSha256,
+        snapshotRevisionSha256: revision.revisionSha256,
     });
     const requestPath = path.join(loaded.paths.planningAgentQueueRoot, `${requestId}.json`);
     let alreadyQueued = false;
@@ -793,6 +1334,7 @@ function enqueuePlanningAgentRequest(payload, context = {}) {
             draft_revision_sha256: revision.revisionSha256,
             brief_sha256: revision.briefSha256,
             script_sha256: revision.scriptSha256,
+            snapshot_revision_sha256: revision.revisionSha256,
             status: 'queued_local_handoff',
             requested_at: new Date().toISOString(),
             executed: false,
@@ -803,7 +1345,17 @@ function enqueuePlanningAgentRequest(payload, context = {}) {
         if (buffer.byteLength > MAX_PLANNING_AGENT_REQUEST_BYTES) {
             throw bootstrapError('PLANNING_AGENT_REQUEST_TOO_LARGE', 'Planning agent request is too large');
         }
-        atomicWritePrivateFile(requestPath, buffer, context);
+        try {
+            atomicPublishPrivateFile(requestPath, buffer, context);
+        } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            const existing = JSON.parse(readPrivateFile(requestPath, MAX_PLANNING_AGENT_REQUEST_BYTES).toString('utf8'));
+            validatePlanningAgentRequestRecord(existing, loaded.draft);
+            if (existing.request_id !== requestId) {
+                throw bootstrapError('PLANNING_AGENT_REQUEST_IDEMPOTENCY_CONFLICT', 'Concurrent planning request differs');
+            }
+            alreadyQueued = true;
+        }
     }
 
     return {
@@ -814,6 +1366,315 @@ function enqueuePlanningAgentRequest(payload, context = {}) {
         status: 'queued_local_handoff',
         executed: false,
         model_called: false,
+        state: getNewProjectDraftState(context),
+    };
+}
+
+function preparePlanningAgentHandoff(payload, context = {}) {
+    assertExactKeys(payload, ['request_id'], 'PLANNING_AGENT_PREPARE_SHAPE_INVALID');
+    const loaded = loadDraft(context);
+    if (loaded.status !== 'restored' || !loaded.paths) {
+        throw bootstrapError('PLANNING_AGENT_DRAFT_NOT_SAVED', 'A saved draft is required for agent handoff');
+    }
+    const request = readPlanningAgentRequest(loaded.paths, payload.request_id, loaded.draft);
+    const snapshot = snapshotForRequest(loaded.paths, request, loaded.draft);
+    return {
+        ok: true,
+        request,
+        snapshot: {
+            manifest: snapshot.manifest,
+            brief: snapshot.draft.brief,
+            script: snapshot.draft.script,
+        },
+        legacy_fallback: snapshot.legacyFallback,
+    };
+}
+
+function validateSuggestionPublishPayload(payload) {
+    assertExactKeys(
+        payload,
+        ['request_id', 'proposed_text', 'summary'],
+        'PLANNING_AGENT_SUGGESTION_SHAPE_INVALID',
+    );
+    if (typeof payload.request_id !== 'string' || !/^request_[a-f0-9]{64}$/.test(payload.request_id)) {
+        throw bootstrapError('PLANNING_AGENT_REQUEST_ID_INVALID', 'Planning agent request id is invalid');
+    }
+    return payload;
+}
+
+function publishPlanningAgentSuggestion(payload, context = {}) {
+    const input = validateSuggestionPublishPayload(payload);
+    const handoff = preparePlanningAgentHandoff({ request_id: input.request_id }, context);
+    const request = handoff.request;
+    const maxTextBytes = request.stage === 'brief' ? MAX_BRIEF_BYTES : MAX_SCRIPT_BYTES;
+    const proposedText = safeString(
+        input.proposed_text,
+        'PLANNING_AGENT_SUGGESTION_TEXT_INVALID',
+        maxTextBytes,
+    );
+    const summary = safeString(
+        input.summary,
+        'PLANNING_AGENT_SUGGESTION_SUMMARY_INVALID',
+        MAX_PLANNING_AGENT_SUMMARY_BYTES,
+    );
+    const proposedTextSha256 = sha256(Buffer.from(`${proposedText}\n`, 'utf8'));
+    const sourceHash = request.stage === 'brief' ? request.brief_sha256 : request.script_sha256;
+    if (proposedTextSha256 === sourceHash) {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_NOOP', 'Planning agent suggestion does not change the target text');
+    }
+    const loaded = loadDraft(context);
+    if (loaded.status !== 'restored' || !loaded.paths) {
+        throw bootstrapError('PLANNING_AGENT_DRAFT_NOT_SAVED', 'A saved draft is required for agent suggestion');
+    }
+    ensurePrivatePlanningAgentDirectories(loaded.paths, [PLANNING_AGENT_SUGGESTION_DIRECTORY]);
+    const token = planningAgentSuggestionToken({ request, proposedTextSha256, summary });
+    const filePath = suggestionPath(loaded.paths, request.request_id);
+    let existing;
+    try { existing = readPlanningAgentSuggestion(loaded.paths, request); } catch (error) { throw error; }
+    if (existing) {
+        if (existing.suggestion_token !== token
+            || existing.proposed_text !== proposedText
+            || existing.summary !== summary) {
+            throw bootstrapError('PLANNING_AGENT_SUGGESTION_CONFLICT', 'A different suggestion already exists for this request');
+        }
+        return {
+            ok: true,
+            published: true,
+            already_published: true,
+            suggestion_token: token,
+            request_id: request.request_id,
+            proposed_text_sha256: proposedTextSha256,
+            proposed_text_bytes: Buffer.byteLength(proposedText, 'utf8'),
+            status: 'ready_for_review',
+            app_model_called: false,
+        };
+    }
+    const record = {
+        schema_version: PLANNING_AGENT_SUGGESTION_SCHEMA,
+        suggestion_token: token,
+        request_id: request.request_id,
+        stage: request.stage,
+        base_revision_sha256: request.draft_revision_sha256,
+        target_source_sha256: sourceHash,
+        proposed_text_sha256: proposedTextSha256,
+        proposed_text: proposedText,
+        summary,
+        published_at: new Date().toISOString(),
+        produced_by_agent: true,
+        app_model_called: false,
+        status: 'ready_for_review',
+    };
+    validatePlanningAgentSuggestion(record, request);
+    const buffer = Buffer.from(`${JSON.stringify(record, null, 2)}\n`, 'utf8');
+    if (buffer.byteLength > MAX_PLANNING_AGENT_SUGGESTION_BYTES) {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_TOO_LARGE', 'Planning agent suggestion is too large');
+    }
+    try {
+        atomicPublishPrivateFile(filePath, buffer, context);
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const raced = readPlanningAgentSuggestion(loaded.paths, request);
+        if (!raced || raced.suggestion_token !== token) {
+            throw bootstrapError('PLANNING_AGENT_SUGGESTION_CONFLICT', 'Concurrent planning agent suggestion differs');
+        }
+        return {
+            ok: true, published: true, already_published: true,
+            suggestion_token: token, request_id: request.request_id,
+            proposed_text_sha256: proposedTextSha256,
+            proposed_text_bytes: Buffer.byteLength(proposedText, 'utf8'),
+            status: 'ready_for_review', app_model_called: false,
+        };
+    }
+    return {
+        ok: true,
+        published: true,
+        already_published: false,
+        suggestion_token: token,
+        request_id: request.request_id,
+        proposed_text_sha256: proposedTextSha256,
+        proposed_text_bytes: Buffer.byteLength(proposedText, 'utf8'),
+        status: 'ready_for_review',
+        app_model_called: false,
+    };
+}
+
+function findPlanningSuggestion(paths, suggestionToken, currentDraft) {
+    if (typeof suggestionToken !== 'string' || !/^suggestion_[a-f0-9]{64}$/.test(suggestionToken)) {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_TOKEN_INVALID', 'Planning agent suggestion token is invalid');
+    }
+    const queueStats = assertDirectory(
+        paths.planningAgentQueueRoot,
+        'PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE',
+        { privateMode: true },
+    );
+    if (fs.realpathSync.native(paths.planningAgentQueueRoot) !== paths.planningAgentQueueRoot) {
+        throw bootstrapError('PLANNING_AGENT_QUEUE_DIRECTORY_UNSAFE', 'Planning agent queue is unsafe');
+    }
+    const entries = fs.readdirSync(paths.planningAgentQueueRoot);
+    if (entries.length > MAX_PLANNING_AGENT_REQUEST_FILES || !queueStats.isDirectory()) {
+        throw bootstrapError('PLANNING_AGENT_QUEUE_LIMIT_REACHED', 'Planning agent queue limit was reached');
+    }
+    for (const name of entries) {
+        if (!/^request_[a-f0-9]{64}\.json$/.test(name)) {
+            throw bootstrapError('PLANNING_AGENT_QUEUE_RECORD_UNSAFE', 'Planning agent queue entry is unsafe');
+        }
+        const requestId = name.slice(0, -5);
+        const request = readPlanningAgentRequest(paths, requestId, currentDraft);
+        snapshotForRequest(paths, request, currentDraft);
+        const suggestion = readPlanningAgentSuggestion(paths, request);
+        if (suggestion?.suggestion_token === suggestionToken) return { request, suggestion };
+    }
+    throw bootstrapError('PLANNING_AGENT_SUGGESTION_NOT_FOUND', 'Planning agent suggestion was not found');
+}
+
+function publishDecisionReceipt(paths, action, suggestion, request, resultRevision, context = {}) {
+    ensurePrivatePlanningAgentDirectories(paths, [PLANNING_AGENT_RECEIPT_DIRECTORY]);
+    const record = {
+        schema_version: PLANNING_AGENT_DECISION_RECEIPT_SCHEMA,
+        receipt_id: decisionReceiptId(action, suggestion.suggestion_token),
+        suggestion_token: suggestion.suggestion_token,
+        request_id: request.request_id,
+        stage: request.stage,
+        action,
+        source_revision_sha256: request.draft_revision_sha256,
+        source_target_sha256: suggestion.target_source_sha256,
+        proposed_text_sha256: suggestion.proposed_text_sha256,
+        result_revision_sha256: resultRevision,
+        decided_at: new Date().toISOString(),
+        draft_written: action === 'apply',
+        one_shot: true,
+    };
+    validateDecisionReceipt(record, action, suggestion, request);
+    const filePath = decisionReceiptPath(paths, action, suggestion.suggestion_token);
+    const buffer = Buffer.from(`${JSON.stringify(record, null, 2)}\n`, 'utf8');
+    try {
+        atomicPublishPrivateFile(filePath, buffer, context);
+        return { receipt: record, alreadyPublished: false };
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const existing = readDecisionReceipt(paths, action, suggestion, request);
+        if (!existing) throw bootstrapError('PLANNING_AGENT_DECISION_CONFLICT', 'Decision receipt publish conflicted');
+        return { receipt: existing, alreadyPublished: true };
+    }
+}
+
+function decidePlanningAgentSuggestion(payload, context = {}) {
+    assertExactKeys(
+        payload,
+        ['suggestion_token', 'action', 'expected_revision_sha256'],
+        'PLANNING_AGENT_DECISION_SHAPE_INVALID',
+    );
+    if (!['apply', 'hold'].includes(payload.action)) {
+        throw bootstrapError('PLANNING_AGENT_DECISION_ACTION_INVALID', 'Planning agent decision action is invalid');
+    }
+    if (typeof payload.expected_revision_sha256 !== 'string'
+        || !/^[a-f0-9]{64}$/.test(payload.expected_revision_sha256)) {
+        throw bootstrapError('PLANNING_AGENT_DECISION_REVISION_INVALID', 'Planning agent decision revision is invalid');
+    }
+    const loaded = loadDraft(context);
+    if (loaded.status !== 'restored' || !loaded.paths) {
+        throw bootstrapError('PLANNING_AGENT_DRAFT_NOT_SAVED', 'A saved draft is required for planning decision');
+    }
+    const { request, suggestion } = findPlanningSuggestion(
+        loaded.paths,
+        payload.suggestion_token,
+        loaded.draft,
+    );
+    ensurePrivatePlanningAgentDirectories(loaded.paths, [PLANNING_AGENT_RECEIPT_DIRECTORY]);
+    const existingApply = readDecisionReceipt(loaded.paths, 'apply', suggestion, request);
+    const currentEvidence = draftRevisionEvidence(loaded.draft);
+    const currentTargetHash = request.stage === 'brief'
+        ? currentEvidence.briefSha256
+        : currentEvidence.scriptSha256;
+    if (existingApply) {
+        return {
+            ok: true,
+            applied: false,
+            held: false,
+            already_decided: true,
+            receipt_recovered: false,
+            suggestion_token: suggestion.suggestion_token,
+            request_id: request.request_id,
+            stage: request.stage,
+            status: currentTargetHash === suggestion.proposed_text_sha256
+                ? 'already_applied'
+                : 'applied_then_edited',
+            reapply_allowed: false,
+            result_revision_sha256: existingApply.result_revision_sha256,
+            state: getNewProjectDraftState(context),
+        };
+    }
+    if (payload.action === 'apply' && currentTargetHash === suggestion.proposed_text_sha256) {
+        const recovered = publishDecisionReceipt(
+            loaded.paths,
+            'apply',
+            suggestion,
+            request,
+            currentEvidence.revisionSha256,
+            context,
+        );
+        return {
+            ok: true, applied: false, held: false, already_decided: false,
+            receipt_recovered: !recovered.alreadyPublished,
+            suggestion_token: suggestion.suggestion_token, request_id: request.request_id,
+            stage: request.stage, status: 'applied', reapply_allowed: false,
+            result_revision_sha256: currentEvidence.revisionSha256,
+            state: getNewProjectDraftState(context),
+        };
+    }
+    if (currentEvidence.revisionSha256 !== payload.expected_revision_sha256) {
+        throw bootstrapError('PLANNING_AGENT_DECISION_STALE', 'The draft changed before the planning decision');
+    }
+    if (payload.action === 'hold') {
+        const existingHold = readDecisionReceipt(loaded.paths, 'hold', suggestion, request);
+        if (existingHold) {
+            return {
+                ok: true, applied: false, held: true, already_decided: true,
+                receipt_recovered: false, suggestion_token: suggestion.suggestion_token,
+                request_id: request.request_id, stage: request.stage, status: 'held',
+                reapply_allowed: true, result_revision_sha256: currentEvidence.revisionSha256,
+                state: getNewProjectDraftState(context),
+            };
+        }
+        publishDecisionReceipt(
+            loaded.paths,
+            'hold',
+            suggestion,
+            request,
+            currentEvidence.revisionSha256,
+            context,
+        );
+        return {
+            ok: true, applied: false, held: true, already_decided: false,
+            receipt_recovered: false, suggestion_token: suggestion.suggestion_token,
+            request_id: request.request_id, stage: request.stage, status: 'held',
+            reapply_allowed: true, result_revision_sha256: currentEvidence.revisionSha256,
+            state: getNewProjectDraftState(context),
+        };
+    }
+
+    if (currentTargetHash !== suggestion.target_source_sha256) {
+        throw bootstrapError('PLANNING_AGENT_SUGGESTION_STALE', 'The target text changed before suggestion apply');
+    }
+    const nextDraft = {
+        ...loaded.draft,
+        [request.stage]: suggestion.proposed_text,
+    };
+    const saved = saveNewProjectDraft(nextDraft, context);
+    const resultRevision = saved.revision_sha256;
+    publishDecisionReceipt(
+        loaded.paths,
+        'apply',
+        suggestion,
+        request,
+        resultRevision,
+        context,
+    );
+    return {
+        ok: true, applied: true, held: false, already_decided: false,
+        receipt_recovered: false, suggestion_token: suggestion.suggestion_token,
+        request_id: request.request_id, stage: request.stage, status: 'applied',
+        reapply_allowed: false, result_revision_sha256: resultRevision,
         state: getNewProjectDraftState(context),
     };
 }
@@ -860,11 +1721,18 @@ module.exports = {
     MAX_SCRIPT_BYTES,
     MAX_PLANNING_AGENT_INSTRUCTION_BYTES,
     PLANNING_AGENT_REQUEST_SCHEMA,
+    LEGACY_PLANNING_AGENT_REQUEST_SCHEMA,
+    PLANNING_DRAFT_SNAPSHOT_SCHEMA,
+    PLANNING_AGENT_SUGGESTION_SCHEMA,
+    PLANNING_AGENT_DECISION_RECEIPT_SCHEMA,
     defaultDraft,
     validateNewProjectDraft,
     exactDraftPaths,
     getNewProjectDraftState,
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
+    preparePlanningAgentHandoff,
+    publishPlanningAgentSuggestion,
+    decidePlanningAgentSuggestion,
     copyNewProjectBuildCommand,
 };

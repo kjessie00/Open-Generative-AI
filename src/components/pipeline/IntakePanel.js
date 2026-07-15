@@ -56,7 +56,8 @@ function existingProductionAudit({ state, onSavePlanningFile }) {
 
 export function IntakePanel({
     state, newProjectDraftState, newProjectDraftValue, onNewProjectDraftChange,
-    newProjectNotice, onSaveNewProjectDraft, onEnqueuePlanningAgentRequest,
+    newProjectNotice, newProjectDraftDirty, onSaveNewProjectDraft, onEnqueuePlanningAgentRequest,
+    onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
     onCopyNewProjectBuildCommand, onSavePlanningFile,
 }) {
     return panelShell(
@@ -70,7 +71,10 @@ export function IntakePanel({
                 onDraftChange: onNewProjectDraftChange,
                 onSaveNewProjectDraft,
                 onEnqueuePlanningAgentRequest,
+                onRefreshNewProjectDraft,
+                onDecidePlanningAgentSuggestion,
                 onCopyNewProjectBuildCommand,
+                draftDirty: newProjectDraftDirty,
             }),
             existingProductionAudit({ state, onSavePlanningFile }),
         ],

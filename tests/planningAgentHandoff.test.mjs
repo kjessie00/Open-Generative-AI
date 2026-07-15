@@ -80,7 +80,9 @@ test('private planning request is atomic, restorable, pathless, and idempotent w
     const saved = saveNewProjectDraft(validDraft(), context(parts));
     assert.match(saved.revision_sha256, /^[a-f0-9]{64}$/);
     assert.deepEqual(saved.collaboration, {
-        status: 'empty', total_request_count: 0, recent_requests: [], truncated: false, blockers: [],
+        status: 'empty', total_request_count: 0, ready_suggestion_count: 0,
+        stale_suggestion_count: 0, applied_suggestion_count: 0,
+        recent_requests: [], truncated: false, blockers: [],
     });
 
     const first = enqueuePlanningAgentRequest(request(saved), context(parts));
@@ -102,9 +104,10 @@ test('private planning request is atomic, restorable, pathless, and idempotent w
     const record = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
     assert.deepEqual(Object.keys(record).sort(), [
         'brief_sha256', 'draft_revision_sha256', 'executed', 'instruction', 'model_called',
-        'production_id', 'request_id', 'requested_at', 'schema_version', 'script_sha256', 'stage', 'status',
+        'production_id', 'request_id', 'requested_at', 'schema_version', 'script_sha256',
+        'snapshot_revision_sha256', 'stage', 'status',
     ].sort());
-    assert.equal(record.schema_version, 'film_pipeline.planning_agent_request.v1');
+    assert.equal(record.schema_version, 'film_pipeline.planning_agent_request.v2');
     assert.equal(record.executed, false);
     assert.equal(record.model_called, false);
     assert.equal(Object.hasOwn(record, 'rootPath'), false);
@@ -202,7 +205,7 @@ test('queue symlinks, broad permissions, and rename failure fail closed without 
     const failedPaths = exactDraftPaths(failed.userDataPath);
     assert.throws(
         () => enqueuePlanningAgentRequest(request(failedSaved), context(failed, {
-            renameFile() { throw Object.assign(new Error('injected queue rename failure'), { code: 'EIO' }); },
+            linkFile() { throw Object.assign(new Error('injected queue publish failure'), { code: 'EIO' }); },
         })),
         (error) => error.code === 'EIO',
     );
