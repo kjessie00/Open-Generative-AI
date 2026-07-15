@@ -15,7 +15,7 @@
     "dev": "vite",
     "build": "vite build",
     "start": "npm run build && electron .",
-    "lint": "node --check electron/main.js && node --check electron/preload.js && node --check electron/lib/createMainWindow.js && node --check electron/lib/navigationPolicy.js && node --check electron/lib/filmPipelineProvider.js && node --check electron/lib/localAgentSuggestionRunner.js && node --check electron/lib/newProjectImagePlanProvider.js && node --check electron/lib/newProjectVideoPlanProvider.js && node --check electron/lib/newProjectExecutionProvider.js && node --check electron/lib/dstBundleImportProvider.js && node --check electron/lib/videoResultImportProvider.js && node --check electron/lib/finishingWorkbenchProvider.js",
+    "lint": "node --check electron/main.js && node --check electron/preload.js && node --check electron/lib/createMainWindow.js && node --check electron/lib/navigationPolicy.js && node --check electron/lib/filmPipelineProvider.js && node --check electron/lib/localAgentSuggestionRunner.js && node --check electron/lib/newProjectImagePlanProvider.js && node --check electron/lib/newProjectVideoPlanProvider.js && node --check electron/lib/newProjectExecutionProvider.js && node --check electron/lib/newProjectProviderExecutionPreview.js && node --check electron/lib/dstBundleImportProvider.js && node --check electron/lib/videoResultImportProvider.js && node --check electron/lib/finishingWorkbenchProvider.js",
     "build:studio": "npm run build -w studio",
     "build:workflow": "npm run build -w workflow-builder",
     "build:agent": "npm run build -w ai-agent",

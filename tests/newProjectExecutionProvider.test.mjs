@@ -11,6 +11,7 @@ import designProvider from '../electron/lib/newProjectDesignProvider.js';
 import imagePlanProvider from '../electron/lib/newProjectImagePlanProvider.js';
 import videoPlanProvider from '../electron/lib/newProjectVideoPlanProvider.js';
 import executionProvider from '../electron/lib/newProjectExecutionProvider.js';
+import providerExecutionPreview from '../electron/lib/newProjectProviderExecutionPreview.js';
 import filmProvider from '../electron/lib/filmPipelineProvider.js';
 
 const CLI = path.resolve('scripts/new-project-execution-handoff.cjs');
@@ -114,10 +115,13 @@ test('MOCK: current image and video preparations become lane-private revision-bo
     }, context);
     assert.equal(repeated.already_prepared, true);
     const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
-    assert.equal(handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v2');
+    assert.equal(handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v3');
     assert.deepEqual(handoff.tasks.map((task) => task.aspect_ratio), ['9:16', '9:16']);
     assert.deepEqual(handoff.tasks.map((task) => task.source_id), ['scene_01', 'scene_01']);
     assert.deepEqual(handoff.tasks.map((task) => task.duration_seconds), [null, 5]);
+    assert.equal(handoff.tasks.every((task) => task.provider_execution_preview?.command_spec.preview_only === true), true);
+    assert.equal(handoff.tasks.every((task) => task.provider_execution_preview?.command_spec.live_submit_allowed === false), true);
+    assert.equal(handoff.tasks.every((task) => task.provider_execution_preview?.command_spec.copy_allowed === false), true);
 
     const history = executionProvider.getNewProjectExecutionHistory(context);
     assert.equal(history.runs.length, 2);
@@ -144,6 +148,10 @@ test('MOCK: renderer staging accepts only the current revision and never exposes
     const initial = filmProvider.getNewProjectExecutionState(context);
 
     assert.equal(initial.prepared, false);
+    assert.equal(initial.tasks.every((task) => !Object.hasOwn(task, 'task_token')), true);
+    assert.equal(initial.tasks.every((task) => !Object.hasOwn(task, 'provider_label')), true);
+    assert.equal(initial.tasks.every((task) => !Object.hasOwn(task, 'provider_readiness')), true);
+    assert.doesNotMatch(JSON.stringify(initial), /command_spec|contract_revision_sha256|\/Users\//);
     const staged = filmProvider.stageNewProjectExecutionHandoff({
         expected_revision_sha256: initial.revision_sha256,
     }, context);
@@ -420,6 +428,99 @@ function board() {
     };
 }
 
+test('provider execution previews build only an exact DST sheet command and fail closed for unfinished adapters', (t) => {
+    const parts = fixture(t, 'open-ga-provider-preview-');
+    const runtimeRoot = path.join(parts.base, 'runtime');
+    const dstModule = path.join(runtimeRoot, 'dst');
+    const dstPython = path.join(runtimeRoot, 'python');
+    fs.mkdirSync(dstModule, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(dstPython, '#!/bin/sh\n', { mode: 0o700 });
+    const context = { runtimePaths: { dstPython, dstModule } };
+    const task = {
+        lane: 'image', kind: 'character_sheet', provider: 'dst_image',
+        prompt: '9:16 영화 제작용 인물 시트', aspect_ratio: '9:16',
+        reference_result_tokens: [], duration_seconds: null,
+    };
+
+    const sheet = providerExecutionPreview.buildProviderExecutionPreview(task, context);
+    assert.equal(sheet.schema_version, 'film_pipeline.provider_execution_preview.v1');
+    assert.equal(sheet.provider, 'dst');
+    assert.equal(sheet.readiness, 'preview_ready');
+    assert.deepEqual(sheet.blockers, []);
+    assert.equal(sheet.command_spec.command, dstPython);
+    assert.deepEqual(sheet.command_spec.args, [
+        '-m', 'dst', 'image', task.prompt,
+        '-p', 'goldpure369', '--count', '1', '--set-count', '1', '--aspect', '9:16',
+    ]);
+    assert.equal(sheet.command_spec.cwd, runtimeRoot);
+    assert.equal(sheet.command_spec.shell, false);
+    assert.equal(sheet.command_spec.preview_only, true);
+    assert.equal(sheet.command_spec.live_submit_allowed, false);
+    assert.equal(sheet.command_spec.copy_allowed, false);
+    assert.match(sheet.contract_revision_sha256, /^[a-f0-9]{64}$/);
+
+    const scene = providerExecutionPreview.buildProviderExecutionPreview({
+        ...task, kind: 'scene_image', reference_result_tokens: [`result_${'1'.repeat(64)}`],
+    }, context);
+    assert.deepEqual(scene.blockers, ['DST_REFERENCE_STAGING_REQUIRED']);
+    assert.equal(scene.command_spec.command, '');
+
+    const flow = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'flow', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [`result_${'2'.repeat(64)}`], duration_seconds: 5,
+    }, context);
+    assert.deepEqual(flow.blockers, ['FLOW_REFERENCE_COUNT_MUST_BE_ZERO_OR_TWO']);
+    assert.deepEqual(flow.command_spec.args, []);
+    const flowTwoReferences = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'flow', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [
+            `result_${'4'.repeat(64)}`, `result_${'5'.repeat(64)}`,
+        ], duration_seconds: 5,
+    }, context);
+    assert.deepEqual(flowTwoReferences.blockers, ['FLOW_REFERENCE_STAGING_REQUIRED']);
+
+    const grok = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [`result_${'3'.repeat(64)}`], duration_seconds: 5,
+    }, context);
+    assert.deepEqual(grok.blockers, ['GROK_DURATION_UNSUPPORTED']);
+    assert.equal(grok.command_spec.command, '');
+    const grokReference = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [`result_${'3'.repeat(64)}`], duration_seconds: 6,
+    }, context);
+    assert.deepEqual(grokReference.blockers, ['GROK_REFERENCE_STAGING_REQUIRED']);
+
+    for (const provider of ['replicate', 'bytedance']) {
+        const missing = providerExecutionPreview.buildProviderExecutionPreview({
+            lane: 'video', kind: 'scene_video', provider, prompt: '움직임',
+            aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 6,
+        }, context);
+        assert.deepEqual(missing.blockers, [provider === 'replicate'
+            ? 'MISSING_REPLICATE_GENERATION_ADAPTER' : 'MISSING_BYTEDANCE_GENERATION_ADAPTER']);
+        assert.equal(missing.command_spec.command, '');
+        assert.deepEqual(missing.command_spec.args, []);
+    }
+
+    const changedPrompt = providerExecutionPreview.buildProviderExecutionPreview({
+        ...task, prompt: `${task.prompt} 다른 지시`,
+    }, context);
+    const changedAspect = providerExecutionPreview.buildProviderExecutionPreview({
+        ...task, aspect_ratio: '16:9',
+    }, context);
+    const fourSeconds = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 4,
+    }, context);
+    const fiveSeconds = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'grok', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 5,
+    }, context);
+    assert.notEqual(sheet.contract_revision_sha256, changedPrompt.contract_revision_sha256);
+    assert.notEqual(sheet.contract_revision_sha256, changedAspect.contract_revision_sha256);
+    assert.notEqual(fourSeconds.contract_revision_sha256, fiveSeconds.contract_revision_sha256);
+});
+
 function setupActualPlans(t) {
     const parts = fixture(t, 'open-ga-execution-cli-');
     const empty = designProvider.getNewProjectDesignState(parts);
@@ -481,7 +582,16 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
     assert.equal(inspected.status, 0, inspected.stderr);
     const handoff = JSON.parse(inspected.stdout);
     assert.equal(handoff.ok, true);
+    assert.equal(handoff.handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v3');
     assert.equal(handoff.handoff.tasks.length, 3);
+    const sheetPreviews = handoff.handoff.tasks
+        .filter((task) => task.lane === 'image')
+        .map((task) => task.provider_execution_preview);
+    assert.equal(sheetPreviews.every((preview) => preview.readiness === 'preview_ready'), true);
+    assert.equal(sheetPreviews.every((preview) => preview.command_spec.args.includes('goldpure369')), true);
+    assert.equal(sheetPreviews.every((preview) => preview.command_spec.preview_only === true), true);
+    assert.equal(sheetPreviews.every((preview) => preview.command_spec.live_submit_allowed === false), true);
+    assert.equal(sheetPreviews.every((preview) => preview.command_spec.copy_allowed === false), true);
     const videoTask = handoff.handoff.tasks.find((task) => task.lane === 'video');
     assert.equal(videoTask.provider, 'flow');
     assert.equal(videoTask.aspect_ratio, '9:16');

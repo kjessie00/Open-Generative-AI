@@ -161,8 +161,8 @@ test('new project execution panel shows short Korean progress without private me
     let refreshed = 0;
     let staged = 0;
     const executionPreview = (outputKind) => ({
-        mode: 'result_only', status_label: '결과만 연결', reason: 'waiting_for_result',
-        user_status: '다른 곳에서 완성한 결과를 가져와 연결하세요.',
+        mode: 'preview_ready', status_label: '내용 확인 가능',
+        user_status: '작업 내용이 준비되었습니다.', next_action: '프롬프트를 확인하세요.',
         output_kind: outputKind, output_count: 1, preview_only: true,
     });
     const panel = NewProjectExecutionPanel({
@@ -187,8 +187,9 @@ test('new project execution panel shows short Korean progress without private me
     assert.match(panel.textContent, /이미지를 먼저 완성한 뒤 영상을 만듭니다/);
     assert.match(panel.textContent, /작업 목록 준비는 .* 생성은 시작하지 않습니다/);
     assert.match(panel.textContent, /결과 도착|문제 발생|진행 중 35%/);
-    assert.match(panel.textContent, /결과만 연결 · 이 작업대에서는 생성을 시작하지 않습니다/);
+    assert.match(panel.textContent, /내용 확인 가능 · 작업 내용이 준비되었습니다/);
     assert.match(panel.textContent, /실행 전 확인/);
+    assert.match(panel.textContent, /다음 행동: 프롬프트를 확인하세요/);
     assert.match(panel.textContent, /예상 결과: 이미지 1장|예상 결과: 영상 1개/);
     assert.doesNotMatch(panel.textContent, /DST 이미지|플로우|그록/);
     assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|task_|result_|preparation_|[a-f0-9]{64}/);

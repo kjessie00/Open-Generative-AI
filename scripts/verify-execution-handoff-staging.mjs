@@ -78,6 +78,9 @@ if (mode === 'seed') {
     ], { cwd: path.resolve('.'), encoding: 'utf8' });
     if (cli.status !== 0) throw new Error(`EXECUTION_CLI_FAILED:${cli.stderr.trim()}`);
     const handoff = JSON.parse(cli.stdout).handoff;
+    const sheetPreviews = handoff.tasks
+        .filter((task) => ['character_sheet', 'location_sheet'].includes(task.kind))
+        .map((task) => task.provider_execution_preview);
     const runTokens = [...new Set(handoff.tasks.map((task) => `run_${task.run_revision_sha256}`))];
     const permissions = runTokens.map((runToken) => {
         const paths = executionProvider.exactPaths(userDataPath, runToken);
@@ -94,14 +97,27 @@ if (mode === 'seed') {
         aspect_ratios: [...new Set(handoff.tasks.map((task) => task.aspect_ratio))],
         source_ids: handoff.tasks.map((task) => task.source_id),
         durations: handoff.tasks.map((task) => task.duration_seconds),
+        provider_preview_schema: sheetPreviews[0]?.schema_version || '',
+        dst_sheet_preview_count: sheetPreviews.length,
+        dst_sheet_preview_ready_count: sheetPreviews.filter((preview) => preview?.readiness === 'preview_ready').length,
+        preview_only_count: sheetPreviews.filter((preview) => preview?.command_spec?.preview_only === true).length,
+        live_submit_allowed_count: sheetPreviews.filter((preview) => preview?.command_spec?.live_submit_allowed === true).length,
+        copy_allowed_count: sheetPreviews.filter((preview) => preview?.command_spec?.copy_allowed === true).length,
         permissions, external_call_performed: handoff.external_call_performed,
         model_called: handoff.model_called, generation_executed: handoff.generation_executed,
         provider_generation_calls: 0,
     };
-    if (receipt.handoff_schema !== 'film_pipeline.new_project_execution_handoff.v2'
+    if (receipt.handoff_schema !== 'film_pipeline.new_project_execution_handoff.v3'
         || receipt.aspect_ratios.length !== 1 || receipt.aspect_ratios[0] !== '9:16'
         || receipt.source_ids.some((sourceId) => typeof sourceId !== 'string' || !sourceId)
         || receipt.durations.some((duration) => duration !== null)
+        || receipt.provider_preview_schema !== 'film_pipeline.provider_execution_preview.v1'
+        || receipt.dst_sheet_preview_count < 2
+        || receipt.dst_sheet_preview_ready_count !== receipt.dst_sheet_preview_count
+        || receipt.preview_only_count !== receipt.dst_sheet_preview_count
+        || receipt.live_submit_allowed_count !== 0 || receipt.copy_allowed_count !== 0
+        || sheetPreviews.some((preview) => !preview.command_spec.args.includes('goldpure369')
+            || !preview.command_spec.args.includes('--count') || !preview.command_spec.args.includes('--aspect'))
         || receipt.external_call_performed || receipt.model_called || receipt.generation_executed
         || permissions.some((item) => item.manifest !== 0o600
             || item.run_directory !== 0o700 || item.receipts_directory !== 0o700)) {

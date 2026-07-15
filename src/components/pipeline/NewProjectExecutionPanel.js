@@ -17,6 +17,7 @@ function shortLabel(label) {
 }
 
 const EXECUTION_PREVIEW_TEXT = Object.freeze({
+    preview_ready: '내용 확인 가능 · 작업 내용이 준비되었습니다.',
     runnable: '실행 가능 · 필요한 자료가 준비되었습니다.',
     setup_required: '준비 필요 · 먼저 필요한 자료를 확인하세요.',
     result_only: '결과만 연결 · 이 작업대에서는 생성을 시작하지 않습니다.',
@@ -38,6 +39,7 @@ function executionPreviewDetails(task) {
             }),
             el('div', { className: 'space-y-1 border-l border-white/10 pb-2 pl-3 text-xs leading-5 text-secondary' }, [
                 el('p', { text: preview.user_status }),
+                preview.next_action ? el('p', { text: `다음 행동: ${preview.next_action}` }) : null,
                 el('p', { text: `예상 결과: ${output}` }),
                 el('p', { text: '이 내용을 펼쳐도 실행은 시작되지 않습니다.' }),
             ]),

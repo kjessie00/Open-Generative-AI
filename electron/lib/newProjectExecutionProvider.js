@@ -8,6 +8,7 @@ const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const dstBundleImportProvider = require('./dstBundleImportProvider');
 const videoResultImportProvider = require('./videoResultImportProvider');
+const providerExecutionPreview = require('./newProjectProviderExecutionPreview');
 
 const LEGACY_MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v1';
 const MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v2';
@@ -559,6 +560,9 @@ function publicSelections(selections, context = {}) {
         selection.manifest.tasks.forEach((task, index) => {
             const receipt = receipts[index];
             const status = receipt?.status || 'queued';
+            const providerPreview = providerExecutionPreview.buildProviderExecutionPreview({
+                ...task, aspect_ratio: selection.manifest.aspect_ratio,
+            }, context);
             tasks.push({
                 task_token: task.task_token, lane: task.lane, kind: task.kind, sequence: task.sequence,
                 label: task.label, provider_label: task.provider_label, status, status_label: STATUS_LABELS[status],
@@ -568,6 +572,7 @@ function publicSelections(selections, context = {}) {
                 model_called: receipt?.model_called || false,
                 generation_executed: receipt?.generation_executed || false,
                 result_locator: receipt?.result_locator || '',
+                provider_preview_readiness: providerPreview.readiness,
                 ...providerReadiness(task, context),
             });
         });
@@ -593,6 +598,7 @@ function publicSelections(selections, context = {}) {
         task.result_image_index = !task.workbench_connected && task.lane === 'image' && Number.isSafeInteger(match?.image_index)
             ? match.image_index : 0;
         task.execution_preview = executionPreview(task);
+        delete task.provider_preview_readiness;
         delete task.result_locator;
     }
     const counts = Object.fromEntries(Object.keys(STATUS_LABELS)
@@ -630,6 +636,18 @@ function getNewProjectExecutionState(context = {}) {
 
 function executionPreview(task) {
     const resultAvailable = task.result_match_status === 'ready';
+    if (!resultAvailable && task.provider_preview_readiness === 'preview_ready') {
+        return {
+            mode: 'preview_ready',
+            status_label: '내용 확인 가능',
+            reason: 'private_preview_ready',
+            user_status: '작업 내용이 준비되었습니다.',
+            next_action: '이미지 작업에서 프롬프트를 확인하세요.',
+            output_kind: task.lane === 'image' ? 'image' : 'video',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
     return {
         mode: 'result_only',
         status_label: '결과만 연결',
@@ -637,6 +655,9 @@ function executionPreview(task) {
         user_status: resultAvailable
             ? '연결할 완료 결과가 있습니다.'
             : '다른 곳에서 완성한 결과를 가져와 연결하세요.',
+        next_action: resultAvailable
+            ? `${task.lane === 'image' ? '이미지' : '영상'} 결과를 확인하세요.`
+            : `${task.lane === 'image' ? '이미지' : '영상'} 작업에서 준비 상태를 확인하세요.`,
         output_kind: task.lane === 'image' ? 'image' : 'video',
         output_count: 1,
         preview_only: true,
@@ -795,10 +816,13 @@ function inspectExecutionHandoff(context = {}, options = {}) {
         selections = selectLanes(context);
     }
     return {
-        schema_version: 'film_pipeline.new_project_execution_handoff.v2',
+        schema_version: 'film_pipeline.new_project_execution_handoff.v3',
         tasks: selections.flatMap((selection) => selection.manifest.tasks.map((task) => ({
             ...task, run_revision_sha256: selection.manifest.run_revision_sha256,
             attempt: selection.manifest.attempt, aspect_ratio: selection.manifest.aspect_ratio,
+            provider_execution_preview: providerExecutionPreview.buildProviderExecutionPreview({
+                ...task, aspect_ratio: selection.manifest.aspect_ratio,
+            }, context),
         }))),
         receipts: selections.flatMap((selection) => laneReceipts(selection).filter(Boolean)),
         external_call_performed: false, model_called: false, generation_executed: false,

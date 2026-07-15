@@ -1301,8 +1301,52 @@ function newProjectExecutionContext(options = {}) {
     };
 }
 
+function rendererExecutionState(state = {}) {
+    const safePreview = (preview = {}) => ({
+        mode: preview.mode || 'result_only',
+        status_label: preview.status_label || '',
+        user_status: preview.user_status || '',
+        next_action: preview.next_action || '',
+        output_kind: preview.output_kind === 'video' ? 'video' : 'image',
+        output_count: Number.isSafeInteger(preview.output_count) ? preview.output_count : 1,
+        preview_only: true,
+    });
+    const tasks = Array.isArray(state.tasks) ? state.tasks.map((task) => ({
+        lane: task.lane === 'video' ? 'video' : 'image',
+        kind: task.kind,
+        sequence: task.sequence,
+        label: task.label,
+        status: task.status,
+        status_label: task.status_label,
+        progress: task.progress,
+        failure_label: task.failure_label || '',
+        result_received: task.result_received === true,
+        result_match_status: task.result_match_status || '',
+        result_candidate_token: task.result_candidate_token || '',
+        result_image_index: task.result_image_index || 0,
+        execution_preview: safePreview(task.execution_preview),
+    })) : [];
+    return {
+        ok: state.ok === true,
+        status: state.status || 'blocked',
+        status_label: state.status_label || '',
+        prepared: state.prepared === true,
+        revision_sha256: state.revision_sha256 || '',
+        task_count: tasks.length,
+        tasks,
+        summary: state.summary || { queued: 0, running: 0, succeeded: 0, failed: 0 },
+        external_call_performed: state.external_call_performed === true,
+        model_called: state.model_called === true,
+        generation_executed: state.generation_executed === true,
+        blockers: Array.isArray(state.blockers) ? state.blockers : [],
+        ...(Object.hasOwn(state, 'already_prepared') ? { already_prepared: state.already_prepared === true } : {}),
+    };
+}
+
 function getNewProjectExecutionState(options = {}) {
-    return newProjectExecutionProvider.getNewProjectExecutionState(newProjectExecutionContext(options));
+    return rendererExecutionState(
+        newProjectExecutionProvider.getNewProjectExecutionState(newProjectExecutionContext(options)),
+    );
 }
 
 function stageNewProjectExecutionHandoff(payload, options = {}) {
@@ -1320,7 +1364,7 @@ function stageNewProjectExecutionHandoff(payload, options = {}) {
         modelCalled: false,
         generationExecuted: false,
     });
-    return result;
+    return rendererExecutionState(result);
 }
 
 function saveNewProjectDraft(payload, options = {}) {

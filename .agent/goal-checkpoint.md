@@ -1,6 +1,6 @@
 # Goal Checkpoint
 
-Last updated: 2026-07-16T03:20:00+09:00
+Last updated: 2026-07-16T07:12:30+09:00
 Main executor: Codex Goals
 Supervisor: Pi goal guard / external audit
 
@@ -55,6 +55,8 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 - Security regression evidence: MuAPI active surface scan, renderer shell-execution scan, Electron webPreferences/IPC/external URL allowlist tests, secret-pattern scan
 
 ## Current Evidence
+
+- 2026-07-16T07:10:00+09:00: provider execution contract slice: private handoff v3 now carries a provider execution preview contract while the renderer receives only a strict allowlist projection. DST character/location sheets produce exact private argv with `goldpure369`, `--count 1`, `--set-count 1`, and revision-bound aspect ratio; every command remains `preview_only`, non-copyable and live-submit-disabled. DST scene references, Flow 1-ref, Grok 5-second tasks, and missing Replicate/ByteDance adapters fail closed without guessed conversions. Actual isolated CLI/file verification confirmed two DST sheet previews, 0600/0700 storage, receipt 0, external/model/generation calls 0. Computer Use confirmed the actual Electron workbench showed two Korean `내용 확인 가능` items, one easy next action and expected result, with provider names and internal token/hash 0 in the task surface. Focused final tests passed 41/41, full final Node regression 335/335, lint, 73-module build and diff check passed. Evidence: `docs/ui_integration/63_provider_execution_contract.md` and `/Users/jessiek/.codex/visualizations/2026/07/16/019f6018-5d37-7321-834e-fd5040eb15b1/provider-contract-e2e/`. Live generation and output quality remain unclaimed.
 
 - 2026-07-16T05:35:00+09:00: live local planning/design agent collaboration slice: `1 기획·대본` and `2 설계` now run a main-owned local Codex directly from the existing `에이전트 작업 시작` button while preserving direct editing, compare, apply and keep-current flows. Renderer sends only pathless fixed IPC; Electron main owns an absolute Codex executable, `gpt-5.3-codex-spark` xhigh, approval never, read-only/ephemeral private cwd, strict structured output and disabled shell/apps/plugins/browser/Computer Use/image generation/multi-agent/memory/tool features. Request identity is attached only by trusted main after output validation. Actual Electron E2E made 2 real local model calls, applied a plain-body planning suggestion and a full design suggestion, fully quit/relaunched and restored both exact applied states. 320/768/1024/1440 core workbenches had overflow/clipping/badges 0 and 44px minimum controls; suggestion files were 0600 under a 0700 draft root; external renderer requests/console errors/exceptions/production children were 0. Computer Use then opened the actual macOS Electron window and confirmed editable planning/script fields, direct-save and agent buttons, plus the ordered character/location/scene design surface. It also caught a technically valid but JSON-wrapped planning body; the runner now rejects JSON bundles/internal field names/code fences/no-op outputs and the repeated actual E2E confirmed `plain_body:true`. Focused tests passed 41/41, full sequential Node 325/325, lint, 72-module build and diff check passed. Image/video provider calls, generation, API-key use and upload remained 0. Evidence: `docs/ui_integration/58_live_local_agent_collaboration.md` and `/Users/jessiek/.codex/visualizations/2026/07/16/open-ga-live-agent-e2e/result.json`.
 
@@ -178,7 +180,7 @@ Open-Generative-AI를 production 수준의 로컬 Cinematic Pipeline Studio로 �
 
 ## Pending
 
-- Durable receipt locators, provider-inbox matching, exact result opening and workbench connection are complete. Live executors remain blocked on provider contracts: DST no-submit/reference staging, Flow one-ref vs two-ref mismatch, Grok dry-run and account-rotation-off wrapper, Replicate Predictions adapter, and a real direct ByteDance adapter. Live generation, result quality and Jessie approval remain separate.
+- Durable receipt locators, provider-inbox matching, exact result opening and workbench connection are complete. Exact private command preview is now complete for reference-free DST character/location sheets. Live executors remain blocked on DST typed reference staging/no-submit and multi-result selection, Flow one-ref vs two-ref plus private runtime/result staging, Grok 5-second/i2v/fail-closed aspect constraints, Replicate Predictions adapter, and a real direct ByteDance adapter. Live generation, result quality and Jessie approval remain separate.
 - Re-run the Ep01 native folder selection manually or with a separately proven macOS dialog harness; keep its current sidebar/preload/data PASS separate from the native BLOCK.
 - Resolve or explicitly accept the offline OSV database gap without enabling network access implicitly.
 - Independent planning-write/path-provenance acceptance is BLOCK after the first verifier and exactly one fallback both failed at the pre-code cybersecurity classifier. Do not automatically call another verifier; root cannot final-accept this security patch.
