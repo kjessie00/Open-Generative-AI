@@ -88,6 +88,11 @@ test('MOCK: current image and video preparations become lane-private revision-bo
     assert.deepEqual(initial.tasks.map((task) => task.provider_label), ['DST 이미지', '플로우']);
     assert.deepEqual(initial.tasks.map((task) => task.status_label), ['대기', '대기']);
     assert.equal(initial.tasks.every((task) => task.result_received === false), true);
+    assert.equal(initial.tasks.every((task) => task.execution_preview?.mode === 'result_only'), true);
+    assert.deepEqual(initial.tasks.map((task) => task.execution_preview?.output_kind), ['image', 'video']);
+    assert.equal(initial.tasks.every((task) => task.execution_preview?.preview_only === true), true);
+    assert.doesNotMatch(JSON.stringify(initial.tasks.map((task) => task.execution_preview)),
+        /task_|run_|preparation_|dst|flow|grok|replicate|bytedance|\/Users\/|[a-f0-9]{64}/i);
 
     const prepared = executionProvider.prepareNewProjectExecution({
         expected_revision_sha256: initial.revision_sha256, new_attempt: false,
@@ -189,6 +194,8 @@ test('MOCK: receipts restore progress, expose only safe result arrival, enforce 
     assert.equal(completed.tasks[0].result_match_status, 'ready');
     assert.equal(completed.tasks[0].result_candidate_token, 'candidate-session-token');
     assert.equal(completed.tasks[0].result_image_index, 1);
+    assert.equal(completed.tasks[0].execution_preview.reason, 'result_available');
+    assert.equal(completed.tasks[0].execution_preview.user_status, '연결할 완료 결과가 있습니다.');
     assert.equal(JSON.stringify(completed).includes('fixture-bundle'), false);
     assert.throws(() => executionProvider.publishExecutionReceipt({
         ...succeeded, status: 'failed', result_received: false, result_locator: '',

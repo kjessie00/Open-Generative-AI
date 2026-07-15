@@ -16,6 +16,35 @@ function shortLabel(label) {
     return parts.length > 1 ? parts.slice(1).join(' · ') : String(label || '');
 }
 
+const EXECUTION_PREVIEW_TEXT = Object.freeze({
+    runnable: '실행 가능 · 필요한 자료가 준비되었습니다.',
+    setup_required: '준비 필요 · 먼저 필요한 자료를 확인하세요.',
+    result_only: '결과만 연결 · 이 작업대에서는 생성을 시작하지 않습니다.',
+});
+
+function executionPreviewDetails(task) {
+    const preview = task.execution_preview;
+    if (!preview || !EXECUTION_PREVIEW_TEXT[preview.mode]) return null;
+    const output = preview.output_kind === 'video' ? '영상 1개' : '이미지 1장';
+    return el('div', { className: 'mt-2' }, [
+        el('p', {
+            text: EXECUTION_PREVIEW_TEXT[preview.mode],
+            className: 'text-xs font-semibold leading-5 text-secondary',
+        }),
+        el('details', { className: 'mt-1 max-w-xl' }, [
+            el('summary', {
+                text: '실행 전 확인',
+                className: 'min-h-11 cursor-pointer py-3 text-xs font-semibold text-cyan-100',
+            }),
+            el('div', { className: 'space-y-1 border-l border-white/10 pb-2 pl-3 text-xs leading-5 text-secondary' }, [
+                el('p', { text: preview.user_status }),
+                el('p', { text: `예상 결과: ${output}` }),
+                el('p', { text: '이 내용을 펼쳐도 실행은 시작되지 않습니다.' }),
+            ]),
+        ]),
+    ]);
+}
+
 function taskRow(task, onOpenWorkItem) {
     const lane = task.lane === 'video' ? 'video' : 'image';
     const status = STATUS_TEXT[task.status] || task.status_label || '대기';
@@ -33,14 +62,7 @@ function taskRow(task, onOpenWorkItem) {
         },
     }, [
         el('div', { className: 'min-w-0' }, [
-            el('div', { className: 'flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1' }, [
-                el('strong', { text: `${task.sequence}. ${task.label}`, className: 'break-words text-sm text-white' }),
-                task.provider_label ? el('span', { text: task.provider_label, className: 'text-xs text-secondary' }) : null,
-            ]),
-            task.provider_status_label ? el('p', {
-                text: task.provider_status_label,
-                className: 'mt-1 text-xs leading-5 text-secondary',
-            }) : null,
+            el('strong', { text: `${task.sequence}. ${task.label}`, className: 'break-words text-sm text-white' }),
             el('p', {
                 text: task.status === 'running' ? `${status} ${progress}%`
                     : task.result_match_status === 'connected' ? `${status} · 작업대에 연결됨`
@@ -53,6 +75,7 @@ function taskRow(task, onOpenWorkItem) {
                     attrs: { value: progress, max: 100, 'aria-label': `${task.label} 진행률` },
                 })
                 : null,
+            executionPreviewDetails(task),
         ]),
         actionButton(task.result_match_status === 'ready' ? '결과 확인' : `${laneTitle(lane)} 작업 열기`, {
             variant: task.result_received ? 'primary' : 'muted',

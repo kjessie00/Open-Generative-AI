@@ -514,6 +514,7 @@ function publicSelections(selections, context = {}) {
         task.result_candidate_token = candidateToken;
         task.result_image_index = !task.workbench_connected && task.lane === 'image' && Number.isSafeInteger(match?.image_index)
             ? match.image_index : 0;
+        task.execution_preview = executionPreview(task);
         delete task.result_locator;
     }
     const counts = Object.fromEntries(Object.keys(STATUS_LABELS)
@@ -547,6 +548,21 @@ function getNewProjectExecutionState(context = {}) {
         if (!selections.length) throw failure('EXECUTION_PREPARATION_REQUIRED');
         return publicSelections(selections, context);
     } catch (error) { return blockedState(error.code || 'EXECUTION_STATE_BLOCKED'); }
+}
+
+function executionPreview(task) {
+    const resultAvailable = task.result_match_status === 'ready';
+    return {
+        mode: 'result_only',
+        status_label: '결과만 연결',
+        reason: resultAvailable ? 'result_available' : 'waiting_for_result',
+        user_status: resultAvailable
+            ? '연결할 완료 결과가 있습니다.'
+            : '다른 곳에서 완성한 결과를 가져와 연결하세요.',
+        output_kind: task.lane === 'image' ? 'image' : 'video',
+        output_count: 1,
+        preview_only: true,
+    };
 }
 
 function materialize(selection) {

@@ -160,16 +160,21 @@ test('new project execution panel shows short Korean progress without private me
     const opened = [];
     let refreshed = 0;
     let staged = 0;
+    const executionPreview = (outputKind) => ({
+        mode: 'result_only', status_label: '결과만 연결', reason: 'waiting_for_result',
+        user_status: '다른 곳에서 완성한 결과를 가져와 연결하세요.',
+        output_kind: outputKind, output_count: 1, preview_only: true,
+    });
     const panel = NewProjectExecutionPanel({
         executionState: {
             status: 'running',
             prepared: false,
             summary: { queued: 1, running: 1, succeeded: 1, failed: 1 },
             tasks: [
-                { task_token: 'private-image-token', lane: 'image', sequence: 1, label: '인물 시트 · 주인공', provider_label: 'DST 이미지', status: 'succeeded', progress: 100, result_received: true },
-                { task_token: 'private-scene-token', lane: 'image', sequence: 2, label: '장면 이미지 · 첫 만남', provider_label: 'DST 이미지', status: 'failed', progress: 45, failure_code: 'PROVIDER_UNAVAILABLE', result_received: false },
-                { task_token: 'private-video-token', lane: 'video', sequence: 3, label: '장면 영상 · 첫 만남', provider_label: '플로우', status: 'running', progress: 35, result_received: false },
-                { task_token: 'private-wait-token', lane: 'video', sequence: 4, label: '장면 영상 · 결심', provider_label: '그록', status: 'queued', progress: 0, result_received: false },
+                { task_token: 'private-image-token', lane: 'image', sequence: 1, label: '인물 시트 · 주인공', provider_label: 'DST 이미지', status: 'succeeded', progress: 100, result_received: true, execution_preview: executionPreview('image') },
+                { task_token: 'private-scene-token', lane: 'image', sequence: 2, label: '장면 이미지 · 첫 만남', provider_label: 'DST 이미지', status: 'failed', progress: 45, failure_code: 'PROVIDER_UNAVAILABLE', result_received: false, execution_preview: executionPreview('image') },
+                { task_token: 'private-video-token', lane: 'video', sequence: 3, label: '장면 영상 · 첫 만남', provider_label: '플로우', status: 'running', progress: 35, result_received: false, execution_preview: executionPreview('video') },
+                { task_token: 'private-wait-token', lane: 'video', sequence: 4, label: '장면 영상 · 결심', provider_label: '그록', status: 'queued', progress: 0, result_received: false, execution_preview: executionPreview('video') },
             ],
         },
         onRefreshExecution: () => { refreshed += 1; },
@@ -182,6 +187,10 @@ test('new project execution panel shows short Korean progress without private me
     assert.match(panel.textContent, /이미지를 먼저 완성한 뒤 영상을 만듭니다/);
     assert.match(panel.textContent, /작업 목록 준비는 .* 생성은 시작하지 않습니다/);
     assert.match(panel.textContent, /결과 도착|문제 발생|진행 중 35%/);
+    assert.match(panel.textContent, /결과만 연결 · 이 작업대에서는 생성을 시작하지 않습니다/);
+    assert.match(panel.textContent, /실행 전 확인/);
+    assert.match(panel.textContent, /예상 결과: 이미지 1장|예상 결과: 영상 1개/);
+    assert.doesNotMatch(panel.textContent, /DST 이미지|플로우|그록/);
     assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|task_|result_|preparation_|[a-f0-9]{64}/);
     assert.ok(byAttribute(panel, 'section', 'data-work-progress', ''));
     assert.ok(byAttribute(panel, 'section', 'data-work-lane', 'image'));
