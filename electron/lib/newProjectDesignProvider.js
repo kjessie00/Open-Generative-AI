@@ -623,13 +623,14 @@ function getNewProjectDesignState(context = {}) {
             board: loaded.board,
             revision_sha256: revision,
             planning_revision_sha256: planning.revisionSha256,
+            aspect_ratio: planning.draft.aspect_ratio,
             collaboration,
             blockers,
         };
     } catch (error) {
         return {
             ok: false, status: 'blocked', board: emptyBoard(), revision_sha256: '',
-            planning_revision_sha256: '', collaboration: emptyCollaboration(),
+            planning_revision_sha256: '', aspect_ratio: '', collaboration: emptyCollaboration(),
             blockers: [error.code || 'NEW_PROJECT_DESIGN_READ_FAILED'],
         };
     }

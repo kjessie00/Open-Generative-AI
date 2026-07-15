@@ -187,7 +187,8 @@ function loadUpstream(context) {
     return { design, imagePlan, sceneImages };
 }
 
-function deriveTasks(board, imageTasks) {
+function deriveTasks(board, imageTasks, aspectRatio = '9:16') {
+    const format = aspectRatio === '16:9' ? '16:9 가로형' : '9:16 세로형';
     return board.scenes.map((scene, index) => {
         const reference = imageTasks instanceof Map
             ? imageTasks.get(scene.id)
@@ -202,7 +203,7 @@ function deriveTasks(board, imageTasks) {
             provider: 'flow',
             provider_label: PROVIDER_LABELS.flow,
             prompt: promptParts([
-                `9:16 세로형 시네마틱 영상. ${scene.title}`,
+                `${format} 시네마틱 영상. ${scene.title}`,
                 scene.first_frame && `첫 프레임: ${scene.first_frame}`,
                 `동작: ${scene.action}`,
                 scene.camera && `카메라: ${scene.camera}`,
@@ -356,7 +357,7 @@ function getNewProjectVideoPlan(context = {}) {
     try {
         const upstream = loadUpstream(context);
         const paths = exactPaths(context.userDataPath);
-        const derived = deriveTasks(upstream.design.board, upstream.sceneImages);
+        const derived = deriveTasks(upstream.design.board, upstream.sceneImages, upstream.design.aspect_ratio);
         let tasks = derived;
         let status = 'derived';
         const blockers = [];
@@ -424,7 +425,7 @@ function saveNewProjectVideoPlan(payload, context = {}) {
     assertExpected(payload, state);
     const tasks = validateTasks(payload.tasks);
     const upstream = loadUpstream(context);
-    const derived = deriveTasks(upstream.design.board, upstream.sceneImages);
+    const derived = deriveTasks(upstream.design.board, upstream.sceneImages, upstream.design.aspect_ratio);
     validateIdentity(tasks, derived);
     const current = new Map(state.tasks.map((task) => [task.task_token, task]));
     for (const task of tasks) {

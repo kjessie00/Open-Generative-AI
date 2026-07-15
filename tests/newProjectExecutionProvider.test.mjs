@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,12 +31,13 @@ function fixture(t, prefix = 'open-ga-execution-') {
 function fakeStates() {
     const imageTask = {
         task_token: `task_${'1'.repeat(64)}`, kind: 'scene_image', sequence: 1,
-        label: '장면 이미지 · 첫 장면', prompt: '비 오는 현장의 첫 프레임',
+        source_id: 'scene_01', label: '장면 이미지 · 첫 장면', prompt: '9:16 비 오는 현장의 첫 프레임',
     };
     const videoTask = {
         task_token: `task_${'2'.repeat(64)}`, kind: 'scene_video', sequence: 1,
+        source_id: 'scene_01',
         label: '장면 영상 · 첫 장면', provider: 'flow', provider_label: '플로우',
-        prompt: '주인공이 사다리차를 붙든다.',
+        prompt: '9:16 주인공이 사다리차를 붙든다.',
     };
     return {
         image: {
@@ -59,8 +61,16 @@ function fakeStates() {
 }
 
 function fakeContext(parts, states = fakeStates()) {
+    const draft = draftProvider.getNewProjectDraftState(parts);
+    const designRevision = states.image?.design_revision_sha256 || states.video?.design_revision_sha256;
     return {
         ...parts,
+        getNewProjectDraftState: () => structuredClone(draft),
+        getNewProjectDesignState: () => ({
+            ok: true, status: 'restored', revision_sha256: designRevision,
+            planning_revision_sha256: draft.revision_sha256,
+            board: { scenes: [{ id: 'scene_01', duration: 5 }] }, blockers: [],
+        }),
         getNewProjectImagePlan: () => structuredClone(states.image),
         getNewProjectVideoPlan: () => structuredClone(states.video),
     };
@@ -103,6 +113,11 @@ test('MOCK: current image and video preparations become lane-private revision-bo
         expected_revision_sha256: initial.revision_sha256, new_attempt: false,
     }, context);
     assert.equal(repeated.already_prepared, true);
+    const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    assert.equal(handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v2');
+    assert.deepEqual(handoff.tasks.map((task) => task.aspect_ratio), ['9:16', '9:16']);
+    assert.deepEqual(handoff.tasks.map((task) => task.source_id), ['scene_01', 'scene_01']);
+    assert.deepEqual(handoff.tasks.map((task) => task.duration_seconds), [null, 5]);
 
     const history = executionProvider.getNewProjectExecutionHistory(context);
     assert.equal(history.runs.length, 2);
@@ -343,6 +358,49 @@ test('MOCK: lock conflicts preserve receipts and a failed-only lane starts a fre
     });
 });
 
+test('legacy v1 manifests remain readable history but never become an active execution selection', (t) => {
+    const parts = fixture(t, 'open-ga-execution-v1-');
+    const task = {
+        task_token: `task_${'7'.repeat(64)}`, lane: 'image', kind: 'scene_image', sequence: 1,
+        label: '이전 장면', provider: 'dst_image', provider_label: 'DST 이미지', prompt: '이전 프롬프트',
+        preparation_token: `preparation_${'8'.repeat(64)}`, reference_task_tokens: [], reference_result_tokens: [],
+    };
+    const base = {
+        lane: 'image', design_revision_sha256: 'a'.repeat(64), image_plan_revision_sha256: 'b'.repeat(64),
+        video_plan_revision_sha256: '', preparation_token: task.preparation_token, tasks: [task],
+    };
+    const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const preparationRevision = digest(base);
+    const runRevision = digest({ preparation_revision_sha256: preparationRevision, attempt: 1 });
+    const manifest = {
+        schema_version: executionProvider.LEGACY_MANIFEST_SCHEMA,
+        run_token: `run_${runRevision}`, run_revision_sha256: runRevision,
+        preparation_revision_sha256: preparationRevision, attempt: 1, ...base,
+        external_call_performed: false, model_called: false, generation_executed: false,
+        created_at: '2026-07-15T00:00:00.000Z',
+    };
+    const paths = executionProvider.exactPaths(parts.userDataPath, manifest.run_token);
+    fs.mkdirSync(paths.receiptsRoot, { recursive: true, mode: 0o700 });
+    fs.chmodSync(paths.root, 0o700);
+    fs.chmodSync(paths.runsRoot, 0o700);
+    fs.chmodSync(paths.runRoot, 0o700);
+    fs.writeFileSync(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    const before = fs.readFileSync(paths.manifestPath);
+    const beforeMtime = fs.statSync(paths.manifestPath).mtimeMs;
+
+    const states = fakeStates();
+    states.image.preparation = { status: 'empty', task_count: 0, task_tokens: [] };
+    states.video.preparation = { status: 'empty', task_count: 0, task_tokens: [] };
+    const context = fakeContext(parts, states);
+    const history = executionProvider.getNewProjectExecutionHistory(context);
+    assert.equal(history.ok, true);
+    assert.equal(history.runs.length, 1);
+    assert.equal(history.runs[0].lane, 'image');
+    assert.equal(executionProvider.getNewProjectExecutionState(context).status, 'blocked');
+    assert.equal(fs.readFileSync(paths.manifestPath).equals(before), true);
+    assert.equal(fs.statSync(paths.manifestPath).mtimeMs, beforeMtime);
+});
+
 function board() {
     return {
         characters: [{
@@ -423,9 +481,12 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
     assert.equal(inspected.status, 0, inspected.stderr);
     const handoff = JSON.parse(inspected.stdout);
     assert.equal(handoff.ok, true);
-    assert.equal(handoff.handoff.tasks.length, 4);
+    assert.equal(handoff.handoff.tasks.length, 3);
     const videoTask = handoff.handoff.tasks.find((task) => task.lane === 'video');
     assert.equal(videoTask.provider, 'flow');
+    assert.equal(videoTask.aspect_ratio, '9:16');
+    assert.equal(videoTask.duration_seconds, 5);
+    assert.equal(videoTask.source_id, 'scene_01');
     assert.match(videoTask.prompt, /주인공이 사다리차를 붙든다/);
     assert.equal(executionProvider.getNewProjectExecutionHistory(parts).runs.length, 2,
         'image run remains after image revision drift and video preparation');

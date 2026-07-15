@@ -2,13 +2,15 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const dstBundleImportProvider = require('./dstBundleImportProvider');
 const videoResultImportProvider = require('./videoResultImportProvider');
 
-const MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v1';
+const LEGACY_MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v1';
+const MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v2';
 const RECEIPT_SCHEMA = 'film_pipeline.new_project_execution_receipt.v1';
 const ROOT_DIRECTORY = 'execution';
 const RUNS_DIRECTORY = 'runs';
@@ -170,7 +172,7 @@ function availablePreparation(state) {
         && PREPARATION_TOKEN.test(state.preparation.preparation_token || ''));
 }
 
-function baseFromPlan(state, lane) {
+function baseFromPlan(state, lane, settings) {
     if (!availablePreparation(state)) return null;
     const selected = new Set(state.preparation.task_tokens);
     if (selected.size !== state.preparation.task_count) throw failure('EXECUTION_PREPARATION_INVALID');
@@ -184,16 +186,27 @@ function baseFromPlan(state, lane) {
         const referenceResultTokens = lane === 'image'
             ? referenceTaskTokens.map((token) => resultByTask.get(token)).filter(Boolean)
             : [task.reference_image_result_token].filter(Boolean);
+        const duration = lane === 'video' ? settings.sceneDurations.get(task.source_id) : 0;
+        if (lane === 'video' && (!Number.isFinite(duration) || duration <= 0 || duration > 60)) {
+            throw failure('EXECUTION_DURATION_REQUIRED');
+        }
+        const conflictingAspect = settings.aspectRatio === '9:16' ? '16:9' : '9:16';
+        if (task.prompt.includes(conflictingAspect)) throw failure('EXECUTION_ASPECT_PROMPT_CONFLICT');
         return {
-        task_token: task.task_token, lane, kind: task.kind, sequence: index + 1, label: task.label,
-        provider: lane === 'image' ? 'dst_image' : task.provider,
-        provider_label: lane === 'image' ? 'DST 이미지' : task.provider_label,
-        prompt: task.prompt, preparation_token: state.preparation.preparation_token,
+            task_token: task.task_token, lane, kind: task.kind, source_id: task.source_id,
+            sequence: index + 1, label: task.label,
+            provider: lane === 'image' ? 'dst_image' : task.provider,
+            provider_label: lane === 'image' ? 'DST 이미지' : task.provider_label,
+            prompt: task.prompt, preparation_token: state.preparation.preparation_token,
             reference_task_tokens: referenceTaskTokens,
             reference_result_tokens: referenceResultTokens,
+            duration_seconds: lane === 'video' ? duration : null,
         };
     });
     const base = {
+        schema_version: MANIFEST_SCHEMA,
+        planning_revision_sha256: settings.planningRevision,
+        aspect_ratio: settings.aspectRatio,
         lane,
         design_revision_sha256: state.design_revision_sha256,
         image_plan_revision_sha256: state.revision_sha256,
@@ -206,17 +219,42 @@ function baseFromPlan(state, lane) {
         || (base.video_plan_revision_sha256 && !SHA256.test(base.video_plan_revision_sha256))) {
         throw failure('EXECUTION_REVISION_INVALID');
     }
-    return { ...base, preparation_revision_sha256: sha256(JSON.stringify(base)) };
+    if (base.design_revision_sha256 !== settings.designRevision) throw failure('EXECUTION_DESIGN_STALE');
+    return { ...base, preparation_revision_sha256: sha256(JSON.stringify(preparationBase(base))) };
+}
+
+function preparationBase(value, schema = value.schema_version || MANIFEST_SCHEMA) {
+    const common = {
+        lane: value.lane,
+        design_revision_sha256: value.design_revision_sha256,
+        image_plan_revision_sha256: value.image_plan_revision_sha256,
+        video_plan_revision_sha256: value.video_plan_revision_sha256,
+        preparation_token: value.preparation_token,
+        tasks: value.tasks,
+    };
+    return schema === LEGACY_MANIFEST_SCHEMA
+        ? common
+        : {
+            schema_version: MANIFEST_SCHEMA,
+            planning_revision_sha256: value.planning_revision_sha256,
+            ...common,
+            aspect_ratio: value.aspect_ratio,
+        };
 }
 
 function manifestFor(base, attempt, createdAt = new Date().toISOString()) {
     if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > 1000) throw failure('EXECUTION_ATTEMPT_INVALID');
-    const runRevision = sha256(JSON.stringify({
-        preparation_revision_sha256: base.preparation_revision_sha256, attempt,
-    }));
-    return {
-        schema_version: MANIFEST_SCHEMA, run_token: `run_${runRevision}`,
-        run_revision_sha256: runRevision, preparation_revision_sha256: base.preparation_revision_sha256,
+    const schema = base.schema_version || MANIFEST_SCHEMA;
+    const preparationRevision = sha256(JSON.stringify(preparationBase(base, schema)));
+    if (base.preparation_revision_sha256 && base.preparation_revision_sha256 !== preparationRevision) {
+        throw failure('EXECUTION_PREPARATION_INVALID');
+    }
+    const runRevision = sha256(JSON.stringify(schema === LEGACY_MANIFEST_SCHEMA
+        ? { preparation_revision_sha256: preparationRevision, attempt }
+        : { schema_version: MANIFEST_SCHEMA, preparation_revision_sha256: preparationRevision, attempt }));
+    const manifest = {
+        schema_version: schema, run_token: `run_${runRevision}`,
+        run_revision_sha256: runRevision, preparation_revision_sha256: preparationRevision,
         attempt, lane: base.lane, design_revision_sha256: base.design_revision_sha256,
         image_plan_revision_sha256: base.image_plan_revision_sha256,
         video_plan_revision_sha256: base.video_plan_revision_sha256,
@@ -224,16 +262,24 @@ function manifestFor(base, attempt, createdAt = new Date().toISOString()) {
         external_call_performed: false, model_called: false, generation_executed: false,
         created_at: createdAt,
     };
+    if (schema === MANIFEST_SCHEMA) {
+        manifest.planning_revision_sha256 = base.planning_revision_sha256;
+        manifest.aspect_ratio = base.aspect_ratio;
+    }
+    return manifest;
 }
 
-function validateTask(task, lane, index) {
-    exactKeys(task, [
+function validateTask(task, lane, index, schema) {
+    const expected = [
         'task_token', 'lane', 'kind', 'sequence', 'label', 'provider', 'provider_label',
         'prompt', 'preparation_token', 'reference_task_tokens', 'reference_result_tokens',
-    ], 'EXECUTION_MANIFEST_INVALID');
+    ];
+    if (schema === MANIFEST_SCHEMA) expected.push('source_id', 'duration_seconds');
+    exactKeys(task, expected, 'EXECUTION_MANIFEST_INVALID');
     if (!TASK_TOKEN.test(task.task_token || '') || task.lane !== lane || task.sequence !== index + 1
         || !PREPARATION_TOKEN.test(task.preparation_token || '')) throw failure('EXECUTION_MANIFEST_INVALID');
     text(task.kind, 64, 'EXECUTION_MANIFEST_INVALID');
+    if (schema === MANIFEST_SCHEMA) text(task.source_id, 128, 'EXECUTION_MANIFEST_INVALID');
     text(task.label, 1024, 'EXECUTION_MANIFEST_INVALID');
     text(task.provider, 64, 'EXECUTION_MANIFEST_INVALID');
     text(task.provider_label, 64, 'EXECUTION_MANIFEST_INVALID');
@@ -246,17 +292,28 @@ function validateTask(task, lane, index) {
         || new Set(task.reference_result_tokens).size !== task.reference_result_tokens.length) {
         throw failure('EXECUTION_MANIFEST_INVALID');
     }
+    if (schema === MANIFEST_SCHEMA) {
+        const duration = task.duration_seconds;
+        if ((lane === 'image' && duration !== null)
+            || (lane === 'video' && (!Number.isFinite(duration) || duration <= 0 || duration > 60))) {
+            throw failure('EXECUTION_MANIFEST_INVALID');
+        }
+    }
     return task;
 }
 
 function validateManifest(value) {
-    exactKeys(value, [
+    const schema = value?.schema_version;
+    if (![LEGACY_MANIFEST_SCHEMA, MANIFEST_SCHEMA].includes(schema)) throw failure('EXECUTION_MANIFEST_INVALID');
+    const expected = [
         'schema_version', 'run_token', 'run_revision_sha256', 'preparation_revision_sha256',
         'attempt', 'lane', 'design_revision_sha256', 'image_plan_revision_sha256',
         'video_plan_revision_sha256', 'preparation_token', 'tasks', 'external_call_performed',
         'model_called', 'generation_executed', 'created_at',
-    ], 'EXECUTION_MANIFEST_INVALID');
-    if (value.schema_version !== MANIFEST_SCHEMA || !RUN_TOKEN.test(value.run_token || '')
+    ];
+    if (schema === MANIFEST_SCHEMA) expected.push('planning_revision_sha256', 'aspect_ratio');
+    exactKeys(value, expected, 'EXECUTION_MANIFEST_INVALID');
+    if (!RUN_TOKEN.test(value.run_token || '')
         || !SHA256.test(value.run_revision_sha256 || '') || !SHA256.test(value.preparation_revision_sha256 || '')
         || !Number.isSafeInteger(value.attempt) || value.attempt < 1 || value.attempt > 1000
         || !['image', 'video'].includes(value.lane) || !SHA256.test(value.design_revision_sha256 || '')
@@ -267,15 +324,15 @@ function validateManifest(value) {
         || value.generation_executed !== false || !Number.isFinite(Date.parse(value.created_at))) {
         throw failure('EXECUTION_MANIFEST_INVALID');
     }
-    value.tasks.forEach((task, index) => validateTask(task, value.lane, index));
-    const base = {
-        lane: value.lane, design_revision_sha256: value.design_revision_sha256,
-        image_plan_revision_sha256: value.image_plan_revision_sha256,
-        video_plan_revision_sha256: value.video_plan_revision_sha256,
-        preparation_token: value.preparation_token, tasks: value.tasks,
-    };
-    const baseRevision = sha256(JSON.stringify(base));
-    const runRevision = sha256(JSON.stringify({ preparation_revision_sha256: baseRevision, attempt: value.attempt }));
+    if (schema === MANIFEST_SCHEMA && (!SHA256.test(value.planning_revision_sha256 || '')
+        || !['9:16', '16:9'].includes(value.aspect_ratio))) {
+        throw failure('EXECUTION_MANIFEST_INVALID');
+    }
+    value.tasks.forEach((task, index) => validateTask(task, value.lane, index, schema));
+    const baseRevision = sha256(JSON.stringify(preparationBase(value, schema)));
+    const runRevision = sha256(JSON.stringify(schema === LEGACY_MANIFEST_SCHEMA
+        ? { preparation_revision_sha256: baseRevision, attempt: value.attempt }
+        : { schema_version: MANIFEST_SCHEMA, preparation_revision_sha256: baseRevision, attempt: value.attempt }));
     if (baseRevision !== value.preparation_revision_sha256 || runRevision !== value.run_revision_sha256
         || value.run_token !== `run_${runRevision}`) throw failure('EXECUTION_MANIFEST_INVALID');
     return value;
@@ -316,10 +373,29 @@ function listManifests(context = {}) {
     });
 }
 
+function executionSettings(context) {
+    const draft = (context.getNewProjectDraftState || newProjectDraftProvider.getNewProjectDraftState)(context);
+    const design = (context.getNewProjectDesignState || newProjectDesignProvider.getNewProjectDesignState)(context);
+    if (!draft?.ok || !SHA256.test(draft.revision_sha256 || '')
+        || !design?.ok || design.status !== 'restored' || !SHA256.test(design.revision_sha256 || '')
+        || design.planning_revision_sha256 !== draft.revision_sha256
+        || !['9:16', '16:9'].includes(draft.draft?.aspect_ratio)) {
+        throw failure('EXECUTION_SETTINGS_STALE');
+    }
+    return {
+        planningRevision: draft.revision_sha256,
+        designRevision: design.revision_sha256,
+        aspectRatio: draft.draft.aspect_ratio,
+        sceneDurations: new Map(design.board.scenes.map((scene) => [scene.id, scene.duration])),
+    };
+}
+
 function planBases(context) {
     const image = (context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan)(context);
     const video = (context.getNewProjectVideoPlan || newProjectVideoPlanProvider.getNewProjectVideoPlan)(context);
-    return [baseFromPlan(image, 'image'), baseFromPlan(video, 'video')].filter(Boolean);
+    if (![image, video].some(availablePreparation)) return [];
+    const settings = executionSettings(context);
+    return [baseFromPlan(image, 'image', settings), baseFromPlan(video, 'video', settings)].filter(Boolean);
 }
 
 function selectLanes(context = {}) {
@@ -327,7 +403,8 @@ function selectLanes(context = {}) {
     const bases = new Map(planBases(context).map((base) => [base.lane, base]));
     return ['image', 'video'].flatMap((lane) => {
         const base = bases.get(lane);
-        const candidates = manifests.filter(({ manifest }) => manifest.lane === lane
+        const candidates = manifests.filter(({ manifest }) => manifest.schema_version === MANIFEST_SCHEMA
+            && manifest.lane === lane
             && (!base || manifest.preparation_revision_sha256 === base.preparation_revision_sha256));
         candidates.sort((left, right) => right.manifest.attempt - left.manifest.attempt
             || String(right.manifest.created_at).localeCompare(String(left.manifest.created_at)));
@@ -336,7 +413,8 @@ function selectLanes(context = {}) {
             const manifest = manifestFor(base, 1);
             return [{ paths: exactPaths(context.userDataPath, manifest.run_token), manifest, prepared: false }];
         }
-        const historical = manifests.filter(({ manifest }) => manifest.lane === lane)
+        const historical = manifests.filter(({ manifest }) => manifest.schema_version === MANIFEST_SCHEMA
+            && manifest.lane === lane)
             .sort((left, right) => String(right.manifest.created_at).localeCompare(String(left.manifest.created_at)));
         return historical.length ? [{ ...historical[0], prepared: true }] : [];
     });
@@ -598,6 +676,9 @@ function prepareNewProjectExecution(payload, context = {}) {
         selections = selections.map((selection) => {
             if (!retryable.includes(selection)) return selection;
             const manifest = manifestFor({
+                schema_version: selection.manifest.schema_version,
+                planning_revision_sha256: selection.manifest.planning_revision_sha256,
+                aspect_ratio: selection.manifest.aspect_ratio,
                 lane: selection.manifest.lane,
                 design_revision_sha256: selection.manifest.design_revision_sha256,
                 image_plan_revision_sha256: selection.manifest.image_plan_revision_sha256,
@@ -714,10 +795,10 @@ function inspectExecutionHandoff(context = {}, options = {}) {
         selections = selectLanes(context);
     }
     return {
-        schema_version: 'film_pipeline.new_project_execution_handoff.v1',
+        schema_version: 'film_pipeline.new_project_execution_handoff.v2',
         tasks: selections.flatMap((selection) => selection.manifest.tasks.map((task) => ({
             ...task, run_revision_sha256: selection.manifest.run_revision_sha256,
-            attempt: selection.manifest.attempt,
+            attempt: selection.manifest.attempt, aspect_ratio: selection.manifest.aspect_ratio,
         }))),
         receipts: selections.flatMap((selection) => laneReceipts(selection).filter(Boolean)),
         external_call_performed: false, model_called: false, generation_executed: false,
@@ -740,6 +821,7 @@ function getNewProjectExecutionHistory(context = {}) {
 }
 
 module.exports = {
+    LEGACY_MANIFEST_SCHEMA,
     MANIFEST_SCHEMA,
     RECEIPT_SCHEMA,
     STATUS_LABELS,

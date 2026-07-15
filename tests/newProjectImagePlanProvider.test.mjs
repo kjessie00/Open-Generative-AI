@@ -43,12 +43,12 @@ function board() {
     };
 }
 
-function setup(t) {
+function setup(t, aspectRatio = '9:16') {
     const parts = fixture(t);
     draftProvider.saveNewProjectDraft({
         production_id: 'image-plan-01', brief: '할인 경쟁을 멈추는 사장의 이야기.',
         script: '비 오는 현장의 위험을 본 뒤 손익 기준을 다시 세운다.', route: 'both',
-        aspect_ratio: '9:16', scene_duration: 5, max_scenes: 4,
+        aspect_ratio: aspectRatio, scene_duration: 5, max_scenes: 4,
     }, { userDataPath: parts.userDataPath });
     const empty = designProvider.getNewProjectDesignState({ userDataPath: parts.userDataPath });
     const saved = designProvider.saveNewProjectDesignBoard({
@@ -96,6 +96,13 @@ test('image plan derives deterministic sheet-first sequence and saves an exact p
     assert.equal(JSON.stringify(saved).includes(parts.base), false, 'renderer state is pathless');
 });
 
+test('image prompts follow the saved 16:9 planning format instead of a fixed vertical default', (t) => {
+    const parts = setup(t, '16:9');
+    const derived = imagePlanProvider.getNewProjectImagePlan(parts);
+    assert.equal(derived.tasks.every((task) => task.prompt.includes('16:9 가로형')), true);
+    assert.equal(derived.tasks.some((task) => task.prompt.includes('9:16 세로형')), false);
+});
+
 test('whole-plan save rejects identity/status injection and design drift blocks preparation', (t) => {
     const parts = setup(t);
     const saved = savePlan(parts);
@@ -140,8 +147,10 @@ test('preparation queues only missing or retry tasks in deterministic order with
         expected_image_plan_revision_sha256: saved.revision_sha256,
     }, parts);
     assert.equal(prepared.queued, true);
-    assert.equal(prepared.task_count, 6);
-    assert.deepEqual(prepared.tasks.map((task) => task.sequence), [1, 2, 3, 4, 5, 6]);
+    assert.equal(prepared.task_count, 4);
+    assert.deepEqual(prepared.tasks.map((task) => task.sequence), [1, 2, 3, 4]);
+    assert.equal(prepared.tasks.every((task) => task.kind.endsWith('_sheet')), true,
+        'scene images wait until their character and location sheet results are connected');
     assert.equal(prepared.executed, false);
     assert.equal(prepared.model_called, false);
     assert.equal(prepared.generation_executed, false);
@@ -154,6 +163,34 @@ test('preparation queues only missing or retry tasks in deterministic order with
     const record = JSON.parse(fs.readFileSync(queueFile, 'utf8'));
     assert.deepEqual(record.tasks.map((task) => task.kind), prepared.tasks.map((task) => task.kind));
     assert.equal(JSON.stringify(record).includes(parts.base), false);
+});
+
+test('scene image preparation opens only after every referenced character and location sheet result is connected', (t) => {
+    const parts = setup(t);
+    let state = savePlan(parts);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
+    const context = {
+        ...parts,
+        getDstBundleImportPreview: () => ({
+            ready: true,
+            preview: { mime_type: 'image/png', byte_length: png.byteLength, base64: png.toString('base64') },
+            blockers: [],
+        }),
+    };
+    for (const task of state.tasks.filter((item) => item.kind.endsWith('_sheet'))) {
+        state = imagePlanProvider.connectNewProjectImageResult({
+            task_token: task.task_token, candidate_token: 'local-reference-fixture', image_index: 1,
+            expected_design_revision_sha256: state.design_revision_sha256,
+            expected_image_plan_revision_sha256: state.revision_sha256,
+        }, context).state;
+    }
+    const prepared = imagePlanProvider.prepareNewProjectImagePlan({
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    assert.deepEqual(prepared.tasks.map((task) => task.kind), ['scene_image', 'scene_image']);
+    assert.deepEqual(prepared.tasks.map((task) => task.sequence), [5, 6]);
+    assert.equal(prepared.tasks.every((task) => task.reference_task_ids.length > 0), true);
 });
 
 test('MOCK DST public preview connects a private result, previews it, selects retry, and excludes linked non-retry work', (t) => {
@@ -202,8 +239,8 @@ test('MOCK DST public preview connects a private result, previews it, selects re
         expected_design_revision_sha256: retry.design_revision_sha256,
         expected_image_plan_revision_sha256: retry.revision_sha256,
     }, context);
-    assert.deepEqual(prepared.tasks.map((task) => task.task_token), retry.tasks.map((task) => task.task_token),
-        'selected retry plus all still-missing tasks remain in sequence');
+    assert.deepEqual(prepared.tasks.map((task) => task.task_token), retry.tasks.slice(0, 4).map((task) => task.task_token),
+        'selected retry plus eligible missing sheets remain in sequence while scenes wait for references');
 
     const cleared = imagePlanProvider.saveNewProjectImageRetrySelection({
         task_tokens: [], expected_design_revision_sha256: retry.design_revision_sha256,

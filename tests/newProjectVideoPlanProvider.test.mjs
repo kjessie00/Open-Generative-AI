@@ -104,12 +104,12 @@ function saveAndConnectSceneImages(parts) {
     return image;
 }
 
-function setup(t) {
+function setup(t, aspectRatio = '9:16') {
     const parts = fixture(t);
     draftProvider.saveNewProjectDraft({
         production_id: 'video-plan-01', brief: '할인 경쟁을 멈추는 사장의 이야기.',
         script: '비 오는 현장의 위험을 본 뒤 안전 기준을 다시 세운다.', route: 'both',
-        aspect_ratio: '9:16', scene_duration: 5, max_scenes: 4,
+        aspect_ratio: aspectRatio, scene_duration: 5, max_scenes: 4,
     }, parts);
     const empty = designProvider.getNewProjectDesignState(parts);
     const design = designProvider.saveNewProjectDesignBoard({
@@ -161,6 +161,13 @@ test('video plan follows scene order, carries accepted image dependencies, and s
     assert.equal(fs.lstatSync(paths.root).mode & 0o777, 0o700);
     assert.equal(fs.lstatSync(paths.planPath).mode & 0o777, 0o600);
     assert.equal(JSON.stringify(saved).includes(parts.base), false, 'normal renderer state stays pathless');
+});
+
+test('video prompts follow the saved 16:9 planning format instead of a fixed vertical default', (t) => {
+    const parts = setup(t, '16:9');
+    const derived = videoPlanProvider.getNewProjectVideoPlan(parts);
+    assert.equal(derived.tasks.every((task) => task.prompt.includes('16:9 가로형')), true);
+    assert.equal(derived.tasks.some((task) => task.prompt.includes('9:16 세로형')), false);
 });
 
 test('video plan rejects identity/result injection and queues dry-run work only', (t) => {

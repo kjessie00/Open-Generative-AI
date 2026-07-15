@@ -90,11 +90,19 @@ if (mode === 'seed') {
     const receipt = {
         verified_at: new Date().toISOString(), mode, prepared: state.prepared,
         task_count: handoff.tasks.length, receipt_count: handoff.receipts.length,
+        handoff_schema: handoff.schema_version,
+        aspect_ratios: [...new Set(handoff.tasks.map((task) => task.aspect_ratio))],
+        source_ids: handoff.tasks.map((task) => task.source_id),
+        durations: handoff.tasks.map((task) => task.duration_seconds),
         permissions, external_call_performed: handoff.external_call_performed,
         model_called: handoff.model_called, generation_executed: handoff.generation_executed,
         provider_generation_calls: 0,
     };
-    if (receipt.external_call_performed || receipt.model_called || receipt.generation_executed
+    if (receipt.handoff_schema !== 'film_pipeline.new_project_execution_handoff.v2'
+        || receipt.aspect_ratios.length !== 1 || receipt.aspect_ratios[0] !== '9:16'
+        || receipt.source_ids.some((sourceId) => typeof sourceId !== 'string' || !sourceId)
+        || receipt.durations.some((duration) => duration !== null)
+        || receipt.external_call_performed || receipt.model_called || receipt.generation_executed
         || permissions.some((item) => item.manifest !== 0o600
             || item.run_directory !== 0o700 || item.receipts_directory !== 0o700)) {
         throw new Error('EXECUTION_HANDOFF_VERIFICATION_FAILED');

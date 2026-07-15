@@ -155,7 +155,8 @@ function promptParts(parts) {
     return parts.map((part) => part.trim()).filter(Boolean).join(' / ');
 }
 
-function deriveTasks(board) {
+function deriveTasks(board, aspectRatio = '9:16') {
+    const format = aspectRatio === '16:9' ? '16:9 가로형' : '9:16 세로형';
     const tasks = [];
     const characterTokens = new Map();
     const locationTokens = new Map();
@@ -169,7 +170,7 @@ function deriveTasks(board) {
             sequence: tasks.length + 1,
             label: `인물 시트 · ${character.name}`,
             prompt: promptParts([
-                `9:16 세로형 영화 제작용 인물 시트. ${character.name}`,
+                `${format} 영화 제작용 인물 시트. ${character.name}`,
                 character.role && `역할: ${character.role}`,
                 character.appearance && `외형: ${character.appearance}`,
                 character.wardrobe && `의상: ${character.wardrobe}`,
@@ -189,7 +190,7 @@ function deriveTasks(board) {
             sequence: tasks.length + 1,
             label: `장소 시트 · ${location.name}`,
             prompt: promptParts([
-                `9:16 세로형 영화 제작용 장소 시트. ${location.name}`,
+                `${format} 영화 제작용 장소 시트. ${location.name}`,
                 location.space && `공간: ${location.space}`,
                 location.lighting && `조명: ${location.lighting}`,
                 location.props && `소품: ${location.props}`,
@@ -212,7 +213,7 @@ function deriveTasks(board) {
             kind: 'scene_image', source_id: scene.id, sequence: tasks.length + 1,
             label: `장면 이미지 · ${scene.title}`,
             prompt: promptParts([
-                `9:16 세로형 시네마틱 스토리보드 장면. ${scene.title}`,
+                `${format} 시네마틱 스토리보드 장면. ${scene.title}`,
                 `등장인물: ${names.length ? names.join(', ') : '없음'}`,
                 `장소: ${locationNames.get(scene.location_id)}`,
                 scene.first_frame && `첫 프레임: ${scene.first_frame}`,
@@ -346,7 +347,7 @@ function getNewProjectImagePlan(context = {}) {
     try {
         const design = loadDesign(context);
         const paths = exactPaths(context.userDataPath);
-        const derived = deriveTasks(design.board);
+        const derived = deriveTasks(design.board, design.aspect_ratio);
         let tasks = derived;
         let status = 'derived';
         const blockers = [];
@@ -397,7 +398,7 @@ function saveNewProjectImagePlan(payload, context = {}) {
     assertExpected(payload, state);
     const tasks = validateTasks(payload.tasks);
     const design = loadDesign(context);
-    validateIdentity(tasks, deriveTasks(design.board));
+    validateIdentity(tasks, deriveTasks(design.board, design.aspect_ratio));
     const current = new Map(state.tasks.map((task) => [task.task_token, task]));
     for (const task of tasks) {
         const prior = current.get(task.task_token);
@@ -419,7 +420,14 @@ function requireSavedAlignedPlan(payload, context) {
 function prepareNewProjectImagePlan(payload, context = {}) {
     exactKeys(payload, ['expected_design_revision_sha256', 'expected_image_plan_revision_sha256'], 'IMAGE_PLAN_PREPARE_SHAPE_INVALID');
     const state = requireSavedAlignedPlan(payload, context);
-    const tasks = state.tasks.filter((task) => !task.result_token || task.status === '재제작');
+    const taskByToken = new Map(state.tasks.map((task) => [task.task_token, task]));
+    const tasks = state.tasks.filter((task) => (
+        (!task.result_token || task.status === '재제작')
+        && task.reference_task_ids.every((token) => {
+            const reference = taskByToken.get(token);
+            return reference?.status === '결과연결' && Boolean(reference.result_token);
+        })
+    ));
     if (!tasks.length) throw failure('IMAGE_PLAN_PREPARATION_EMPTY');
     const identity = JSON.stringify({ design: state.design_revision_sha256, revision: state.revision_sha256, tasks });
     const token = `preparation_${sha256(identity)}`;
