@@ -301,10 +301,12 @@ export function PipelineStudio() {
                         window.alert(result?.ok
                             ? p('Planning file saved: {path}', { path: result.relativePath })
                             : p('Save blocked: {reason}', { reason: p('Planning write safety policy rejected the request.') }));
+                        return result;
                     } catch {
                         window.alert(p('Save blocked: {reason}', {
                             reason: p('Planning write safety policy rejected the request.'),
                         }));
+                        return { ok: false, written: false, executed: false };
                     }
                 },
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),

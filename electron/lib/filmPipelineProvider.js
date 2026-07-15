@@ -294,6 +294,12 @@ function parsePlanningRelativePath(relativePath) {
             components: ['docs', 'ui_integration', 'intake_snapshot.json'],
         };
     }
+    if (relativePath === 'reviews/media_review_draft.json') {
+        return {
+            relativePath,
+            components: ['reviews', 'media_review_draft.json'],
+        };
+    }
 
     const safeId = `(?![A-Za-z0-9._-]*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,${MAX_PLANNING_FILE_ID_LENGTH - 1}}`;
     const patterns = [

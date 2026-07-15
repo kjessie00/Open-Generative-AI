@@ -425,6 +425,108 @@ test('copy-disabled command card attaches no click handler and performs zero cli
     assert.equal(calls.length, 1, 'usable preview copy must keep the existing copy-only bridge');
 });
 
+test('MOCK media review board updates selection and filter, then saves the exact review draft payload', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { StoryboardPanel } = await import('../src/components/pipeline/StoryboardPanel.js');
+    const state = {
+        project: { root_path: '/tmp/media-review-production' },
+        storyboard: [{ clip_id: 'clip_001', scene_id: 'scene_01', dramatic_beat: '검토 장면' }],
+        mediaAttempts: [{
+            media_id: 'scene-image-1',
+            kind: 'scene_image',
+            target_id: 'clip_001',
+            provider: 'dst',
+            operation_id: 'dst-001',
+            attempt: 1,
+            path: '',
+            generation_status: 'downloaded',
+            review_status: 'unreviewed',
+            review_note: '',
+            selected_for_retry: false,
+        }],
+    };
+    const board = StoryboardPanel({
+        state,
+        async onSavePlanningFile(payload) {
+            calls.push(payload);
+            return { ok: true, written: true, executed: false };
+        },
+    });
+
+    assert.match(board.textContent, /다시 만들기 0개 선택/);
+    assert.match(board.textContent, /실행 안 함/);
+    const note = byAttribute(board, 'textarea', 'aria-label', 'scene-image-1 검토 메모');
+    note.value = '손 모양과 조명을 수정';
+    await note.dispatchEvent({ type: 'input' });
+    const retryCardButton = findAll(board, 'button').find((button) => (
+        button.textContent.trim() === '다시 만들기 선택' && !button.attributes.has('aria-pressed')
+    ));
+    await retryCardButton.dispatchEvent({ type: 'click' });
+    assert.match(board.textContent, /다시 만들기 1개 선택/);
+    assert.ok(byText(board, 'button', '다시 만들기 해제'));
+
+    const retryFilterButton = findAll(board, 'button').find((button) => (
+        button.textContent.trim() === '다시 만들기 선택' && button.attributes.has('aria-pressed')
+    ));
+    await retryFilterButton.dispatchEvent({ type: 'click' });
+    assert.equal(byText(board, 'button', '다시 만들기 해제') !== null, true, 'filter button remains available after card label changes');
+    assert.match(board.textContent, /scene-image-1|clip_001/);
+
+    await byText(board, 'button', '선택 항목 순차 대기열에 담기').dispatchEvent({ type: 'click' });
+    assert.match(board.textContent, /순차 대기열 초안 1개/);
+    assert.match(board.textContent, /실제 이미지·영상 생성은 시작되지 않습니다|clip_001/);
+    await byText(board, 'button', '검토 초안 저장').dispatchEvent({ type: 'click' });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].rootPath, '/tmp/media-review-production');
+    assert.equal(calls[0].relativePath, 'reviews/media_review_draft.json');
+    const saved = JSON.parse(calls[0].content);
+    assert.equal(saved.schema, 'film_pipeline.media_review_draft.v1');
+    assert.equal(saved.execution, 'not_run');
+    assert.deepEqual(saved.reviews, [{
+        media_id: 'scene-image-1',
+        review_status: 'retry_requested',
+        review_note: '손 모양과 조명을 수정',
+        selected_for_retry: true,
+    }]);
+    assert.deepEqual(saved.retry_queue.map(({ sequence, media_id, execution_status }) => ({ sequence, media_id, execution_status })), [{
+        sequence: 1,
+        media_id: 'scene-image-1',
+        execution_status: 'draft_not_executed',
+    }]);
+});
+
+test('MOCK media attempt cards keep Korean labels and semantic review colors', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaAttemptCard } = await import('../src/components/pipeline/MediaReviewBoardParts.js');
+    const tones = [
+        ['accepted', '채택', 'emerald'],
+        ['needs_changes', '수정 필요', 'yellow'],
+        ['retry_requested', '다시 만들기', 'orange'],
+        ['unreviewed', '미검토', 'zinc'],
+    ];
+    const actions = { onNote() {}, onReview() {}, onRetry() {} };
+
+    for (const [reviewStatus, label, classToken] of tones) {
+        const card = MediaAttemptCard({
+            media_id: `media-${reviewStatus}`,
+            kind: 'scene_image',
+            target_id: 'clip_001',
+            provider: 'dst',
+            attempt: 1,
+            generation_status: 'downloaded',
+            review_status: reviewStatus,
+            selected_for_retry: reviewStatus === 'retry_requested',
+        }, actions);
+        const badge = findAll(card, 'span').find((span) => span.textContent.trim() === label);
+        assert.ok(badge, `${reviewStatus} must keep its Korean label`);
+        assert.match(badge.className, new RegExp(classToken), `${reviewStatus} must use its semantic badge tone`);
+    }
+});
+
 test('new-project intake uses labeled Korean controls and dedicated save/copy IPC without leaking errors', async (t) => {
     const calls = [];
     const alerts = [];

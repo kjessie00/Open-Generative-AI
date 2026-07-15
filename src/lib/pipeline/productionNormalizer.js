@@ -58,6 +58,63 @@ function absolutePath(rootPath, value) {
     return candidate;
 }
 
+const MEDIA_KINDS = new Set(['character_sheet', 'location_sheet', 'scene_image', 'video']);
+const MEDIA_PROVIDERS = new Set(['dst', 'flow', 'grok', 'replicate', 'bytedance', 'seedance']);
+const MEDIA_REVIEW_STATUSES = new Set(['unreviewed', 'accepted', 'needs_changes', 'retry_requested']);
+
+function safeMediaPath(rootPath, value) {
+    if (typeof value !== 'string' || !value || value.includes('\0')) return '';
+    const normalized = normalizeSlashes(value.trim());
+    if (!normalized || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(normalized)) return '';
+    return absolutePath(rootPath, normalized);
+}
+
+function safeMediaString(value, maxLength = 256) {
+    if (typeof value !== 'string') return '';
+    const normalized = value.trim();
+    if (!normalized || normalized.length > maxLength || normalized.includes('\0')) return '';
+    return normalized;
+}
+
+function normalizeMediaAttempts(rawReader) {
+    const records = rawReader.parsed?.mediaAttempts?.records || [];
+    const draftValue = rawReader.parsed?.mediaReviewDraft?.value;
+    const draftReviews = Array.isArray(draftValue?.reviews) ? draftValue.reviews : [];
+    const reviewById = new Map(draftReviews
+        .filter((review) => safeMediaString(review?.media_id, 160))
+        .map((review) => [review.media_id, review]));
+
+    return records.map((record, index) => {
+        const mediaId = safeMediaString(record?.media_id, 160) || `media_${String(index + 1).padStart(3, '0')}`;
+        const draft = reviewById.get(mediaId);
+        const recordStatus = MEDIA_REVIEW_STATUSES.has(record?.review_status) ? record.review_status : 'unreviewed';
+        const draftStatus = MEDIA_REVIEW_STATUSES.has(draft?.review_status) ? draft.review_status : recordStatus;
+        const path = safeMediaPath(rawReader.rootPath, record?.relative_path || record?.path || '');
+        return {
+            media_id: mediaId,
+            kind: MEDIA_KINDS.has(record?.kind) ? record.kind : 'scene_image',
+            target_id: safeMediaString(record?.target_id, 160),
+            provider: MEDIA_PROVIDERS.has(record?.provider) ? record.provider : '',
+            operation_id: safeMediaString(record?.operation_id, 256),
+            attempt: Number.isSafeInteger(Number(record?.attempt)) && Number(record.attempt) > 0 ? Number(record.attempt) : 1,
+            reference_ids: Array.isArray(record?.reference_ids)
+                ? record.reference_ids.map((value) => safeMediaString(value, 160)).filter(Boolean)
+                : [],
+            path,
+            relative_path: path ? normalizeSlashes(path).slice(normalizeSlashes(rawReader.rootPath).replace(/\/$/, '').length + 1) : '',
+            generation_status: safeMediaString(record?.generation_status, 80) || 'unknown',
+            review_status: draftStatus,
+            retry_of: safeMediaString(record?.retry_of, 160),
+            review_note: typeof draft?.review_note === 'string'
+                ? draft.review_note.slice(0, 4000)
+                : String(record?.review_note || '').slice(0, 4000),
+            selected_for_retry: typeof draft?.selected_for_retry === 'boolean'
+                ? draft.selected_for_retry
+                : record?.selected_for_retry === true,
+        };
+    });
+}
+
 function pickValue(record = {}, keys = []) {
     for (const key of keys) {
         if (record[key] !== undefined && record[key] !== null && String(record[key]).trim() !== '') return record[key];
@@ -461,6 +518,7 @@ export function normalizeProductionReaderState(rawReader) {
     const storyboard = normalizeStoryboard(storyboardSource);
     const motionBoard = normalizeMotionBoard(motionBoardSource);
     const assets = normalizeDashboardAssets(rawReader, rootPath);
+    const mediaAttempts = normalizeMediaAttempts(rawReader);
     const promptPacks = normalizePromptPacks(rawReader);
     const canonicalAcceptedSeconds = normalizeCanonicalSelectedRanges(rawReader);
     const acceptedSeconds = canonicalAcceptedSeconds === null ? normalizeAcceptedSeconds(rawReader) : canonicalAcceptedSeconds;
@@ -560,6 +618,7 @@ export function normalizeProductionReaderState(rawReader) {
         motionBoard,
         imageDashboard,
         assets,
+        mediaAttempts,
         promptPacks,
         reviewGates,
         submitRecords,

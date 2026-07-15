@@ -31,6 +31,8 @@ const BLOCKERS = Object.freeze({
     MISSING_IMAGE_DASHBOARD: 'MISSING_IMAGE_DASHBOARD',
     MISSING_ACCEPTED_SECONDS: 'MISSING_ACCEPTED_SECONDS',
     OUTPUT_QUALITY_NOT_PROVEN: 'OUTPUT_QUALITY_NOT_PROVEN',
+    MEDIA_ATTEMPTS_INVALID: 'MEDIA_ATTEMPTS_INVALID',
+    MEDIA_REVIEW_DRAFT_INVALID: 'MEDIA_REVIEW_DRAFT_INVALID',
 });
 
 const SENSITIVE_NAME_PATTERNS = [
@@ -1376,6 +1378,12 @@ function readProductionFolder(rootPath, options = {}) {
         'image_dashboard/image_dashboard_data.js',
         'image-dashboard-data.js',
     ]) || findByName(files, ['image-dashboard-data.js', 'image_dashboard_data.js']));
+    const mediaAttempts = parseJsonl(root, findFirst(root, ['media_attempts.jsonl']), 'media_attempts.jsonl');
+    const mediaReviewDraft = parseJsonFile(
+        root,
+        findFirst(root, ['reviews/media_review_draft.json']),
+        'media_review_draft.json',
+    );
     const submitRecords = parseJsonl(root, findByName(files, ['submit_records.jsonl']), 'submit_records.jsonl');
     const submitArtifacts = parseSubmitArtifacts(files);
     const heartbeatLog = parseJsonl(root, findByName(files, ['heartbeat_log.jsonl']), 'heartbeat_log.jsonl');
@@ -1424,6 +1432,8 @@ function readProductionFolder(rootPath, options = {}) {
     if (!imageDashboard.parsed) blockers.push(BLOCKERS.MISSING_IMAGE_DASHBOARD);
     if (!acceptedSeconds.records?.length) blockers.push(BLOCKERS.MISSING_ACCEPTED_SECONDS);
     if (!report?.exists || capcutReport.parsed) blockers.push(BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN);
+    if (mediaAttempts.exists && !mediaAttempts.parsed) blockers.push(BLOCKERS.MEDIA_ATTEMPTS_INVALID);
+    if (mediaReviewDraft.exists && !mediaReviewDraft.parsed) blockers.push(BLOCKERS.MEDIA_REVIEW_DRAFT_INVALID);
     const canonicalRecordsExist = submissionManifest.records.length > 0
         || (jimengState.value?.submitted_indices?.length || 0) > 0
         || downloadManifest.records.length > 0;
@@ -1516,6 +1526,8 @@ function readProductionFolder(rootPath, options = {}) {
             motionBoardJson,
             motionBoardMarkdown,
             imageDashboard,
+            mediaAttempts,
+            mediaReviewDraft,
             submitRecords,
             submitArtifacts,
             heartbeatLog,

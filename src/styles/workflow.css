@@ -135,12 +135,121 @@
 .workflow-detail-index { padding-left: 1.5rem; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
 .workflow-detail-label { color: inherit; font-size: 0.8125rem; }
 
+.media-review-workspace { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.media-review-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid #343434;
+  border-radius: 8px;
+  background: #151515;
+  padding: 0.75rem;
+}
+.media-review-filters,
+.media-review-toolbar-actions,
+.media-review-actions,
+.media-review-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.media-review-toolbar-actions { justify-content: flex-end; }
+.media-review-count { color: #d4d4d8; font-size: 0.75rem; font-weight: 700; }
+.media-review-queue-status {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  border-left: 3px solid #53d5cf;
+  background: #121918;
+  padding: 0.75rem 1rem;
+  color: #9a9aa2;
+  font-size: 0.75rem;
+}
+.media-review-queue-status strong { color: #f4f4f5; }
+.media-review-reference-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+.media-review-band,
+.media-review-scene { border: 1px solid #343434; border-radius: 8px; background: #101010; overflow: hidden; }
+.media-review-band-head,
+.media-review-scene-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid #343434;
+  padding: 0.875rem 1rem;
+}
+.media-review-band-head h3,
+.media-review-scene-head h3 { margin: 0; color: #f4f4f5; font-size: 0.9375rem; }
+.media-review-band-head p,
+.media-review-scene-head p { margin: 0; color: #8d8d95; font-size: 0.75rem; }
+.media-review-rail {
+  display: grid;
+  grid-auto-columns: minmax(15.5rem, 20rem);
+  grid-auto-flow: column;
+  gap: 0.75rem;
+  overflow-x: auto;
+  padding: 0.75rem;
+}
+.media-review-reference-grid .media-review-rail { grid-auto-columns: minmax(13rem, 1fr); }
+.media-review-scene-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr)); gap: 0.75rem; padding: 0.75rem; }
+.media-review-card { display: flex; min-width: 0; flex-direction: column; gap: 0.75rem; border-radius: 6px; background: #151515; }
+.media-review-card.is-retry-selected { border-color: #53d5cf; background: #14201f; }
+.media-review-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; }
+.media-review-target,
+.media-review-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-review-target { color: #f4f4f5; font-size: 0.8125rem; }
+.media-review-meta { margin-top: 0.2rem; color: #8d8d95; font-size: 0.6875rem; }
+.media-review-preview,
+.media-review-empty { width: 100%; aspect-ratio: 16 / 10; border: 1px solid #2f2f2f; border-radius: 4px; background: #0a0a0a; }
+.media-review-preview { display: block; object-fit: cover; }
+.media-review-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.3rem; color: #777780; text-align: center; font-size: 0.6875rem; }
+.media-review-empty strong { color: #b6b6bc; font-size: 0.75rem; }
+.media-review-empty-kind { color: #53d5cf; font-size: 0.625rem; font-weight: 800; letter-spacing: 0.12em; }
+.media-review-evidence { color: #83838b; font-size: 0.625rem; }
+.media-review-evidence span { border-right: 1px solid #3a3a3a; padding-right: 0.5rem; }
+.media-review-evidence span:last-child { border-right: 0; }
+.media-review-note {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #343434;
+  border-radius: 4px;
+  outline: none;
+  background: #0c0c0c;
+  color: #e4e4e7;
+  padding: 0.6rem;
+  font: inherit;
+  font-size: 0.75rem;
+}
+.media-review-note:focus { border-color: #53d5cf; }
+.media-review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.media-review-actions .ui-action-button { min-height: 2.5rem; padding-inline: 0.4rem; }
+.media-review-kicker { color: #53d5cf; font-size: 0.625rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+
 @media (min-width: 64rem) {
   .pipeline-mobile-subnav { display: none; }
   .pipeline-sidebar { width: 17.25rem; padding: 0; }
   .pipeline-desktop-nav { display: flex; }
   .pipeline-production-details { margin: auto 0.75rem 0.75rem; }
   .pipeline-panel-host { padding: 2rem; }
+}
+
+@media (min-width: 80rem) {
+  .media-review-reference-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .media-review-reference-grid .media-review-card {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1.35fr) minmax(10rem, 1fr);
+    grid-template-areas:
+      "head head"
+      "preview note"
+      "preview evidence"
+      "preview actions";
+    gap: 0.5rem 0.75rem;
+  }
+  .media-review-reference-grid .media-review-card-head { grid-area: head; }
+  .media-review-reference-grid .media-review-preview,
+  .media-review-reference-grid .media-review-empty { grid-area: preview; aspect-ratio: 16 / 10; }
+  .media-review-reference-grid .media-review-evidence { grid-area: evidence; align-self: center; }
+  .media-review-reference-grid .media-review-note { grid-area: note; min-height: 2.5rem; resize: none; }
+  .media-review-reference-grid .media-review-actions { grid-area: actions; align-self: end; }
+  .media-review-reference-grid .media-review-actions .ui-action-button { min-height: 2.25rem; }
 }
 
 @media (max-width: 63.99rem) {
@@ -156,6 +265,13 @@
   .workflow-capability-row { grid-template-columns: 1fr; }
   .workflow-capability-label { border-right: 0; border-bottom: 1px solid #343434; padding: 0.75rem 1rem; }
   .workflow-capability-detail { padding: 0.75rem 1rem; }
+  .media-review-toolbar,
+  .media-review-band-head,
+  .media-review-scene-head { align-items: stretch; flex-direction: column; }
+  .media-review-toolbar-actions { justify-content: flex-start; }
+  .media-review-queue-status { grid-template-columns: auto 1fr; }
+  .media-review-queue-status > :last-child { grid-column: 1 / -1; }
+  .media-review-scene-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 23rem) {
@@ -164,4 +280,7 @@
   .pipeline-status-item { min-height: 4rem; padding: 0.5rem; }
   .workflow-detail-row { grid-template-columns: 4rem 1fr; }
   .workflow-detail-index { padding-left: 1rem; }
+  .media-review-toolbar .ui-action-button { min-height: 2.5rem; }
+  .media-review-rail { grid-auto-columns: minmax(14rem, 88vw); }
+  .media-review-actions { grid-template-columns: 1fr; }
 }

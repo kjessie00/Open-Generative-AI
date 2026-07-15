@@ -51,12 +51,13 @@ function assertBlocked(fn, code) {
     });
 }
 
-test('planning write allowlist atomically creates and updates the three exact UI outputs', (t) => {
+test('planning write allowlist atomically creates and updates the four exact UI outputs', (t) => {
     const { root } = fixture(t);
     const cases = [
         ['docs/ui_integration/intake_snapshot.json', '{"kind":"intake"}'],
         ['storyboard/drafts/clip_001_shot_payload.json', '{"kind":"shot"}'],
         ['image_generation/prompts/clip.001-v2_deepsearch_scene_image.md', '# prompt'],
+        ['reviews/media_review_draft.json', '{"schema":"film_pipeline.media_review_draft.v1"}'],
     ];
 
     for (const [relativePath, content] of cases) {
@@ -107,6 +108,9 @@ test('planning write rejects arbitrary paths, unsafe ids, invalid content, and m
         path.join(outside, 'absolute.json'),
         'brief.md',
         'reviews/review.md',
+        'reviews/media_review_draft.jsonl',
+        'reviews/nested/media_review_draft.json',
+        'reviews/Media_review_draft.json',
         'storyboard/drafts/shot.json',
         'storyboard/drafts/_shot_payload.json',
         'storyboard/drafts/.hidden_shot_payload.json',
