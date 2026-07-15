@@ -185,7 +185,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'confirmVideoResultImport',
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
+        'decideDesignAgentSuggestion',
         'decidePlanningAgentSuggestion',
+        'enqueueDesignAgentRequest',
         'enqueuePlanningAgentRequest',
         'executeFinishingRun',
         'exportG3ReviewPacket',
@@ -195,6 +197,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getG3ReviewWorkspace',
         'getHarnessContractStatus',
         'getMediaRetryPlan',
+        'getNewProjectDesignState',
         'getNewProjectDraftState',
         'getVideoResultImportWorkspace',
         'listAssets',
@@ -213,6 +216,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'readProductionState',
         'runSafeCommand',
         'saveG3ReviewDraft',
+        'saveNewProjectDesignBoard',
         'saveNewProjectDraft',
         'selectProductionRoot',
         'writePlanningFile',
@@ -238,6 +242,12 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         suggestion_token: `suggestion_${'a'.repeat(64)}`,
         action: 'hold',
         expected_revision_sha256: 'a'.repeat(64),
+    });
+    await bridge.getNewProjectDesignState();
+    await bridge.saveNewProjectDesignBoard({ board: {}, expected_design_revision_sha256: 'a'.repeat(64) });
+    await bridge.enqueueDesignAgentRequest({ instruction: '설계해 주세요.', expected_design_revision_sha256: 'a'.repeat(64) });
+    await bridge.decideDesignAgentSuggestion({
+        suggestion_token: `suggestion_${'a'.repeat(64)}`, action: 'hold', expected_design_revision_sha256: 'a'.repeat(64),
     });
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
@@ -277,6 +287,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:save-new-project-draft',
             'film-pipeline:enqueue-planning-agent-request',
             'film-pipeline:decide-planning-agent-suggestion',
+            'film-pipeline:get-new-project-design-state',
+            'film-pipeline:save-new-project-design-board',
+            'film-pipeline:enqueue-design-agent-request',
+            'film-pipeline:decide-design-agent-suggestion',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
             'film-pipeline:list-production-children',
@@ -308,6 +322,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-dst-bundle-import-workspace',
         'film-pipeline:get-video-result-import-workspace',
         'film-pipeline:get-new-project-draft-state',
+        'film-pipeline:get-new-project-design-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
         'film-pipeline:read-production-state',

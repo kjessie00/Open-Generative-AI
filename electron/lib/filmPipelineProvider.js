@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
+const newProjectDesignProvider = require('./newProjectDesignProvider');
 const g3ReviewDraftProvider = require('./g3ReviewDraftProvider');
 const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider');
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
@@ -968,6 +969,55 @@ function getNewProjectDraftState(options = {}) {
     return newProjectDraftProvider.getNewProjectDraftState(newProjectContext(options));
 }
 
+function newProjectDesignContext(options = {}) {
+    return {
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        harnessStatus: getHarnessContractStatus(options),
+    };
+}
+
+function getNewProjectDesignState(options = {}) {
+    return newProjectDesignProvider.getNewProjectDesignState(newProjectDesignContext(options));
+}
+
+function saveNewProjectDesignBoard(payload, options = {}) {
+    const result = newProjectDesignProvider.saveNewProjectDesignBoard(payload, newProjectDesignContext(options));
+    sendProgress({
+        phase: 'new-project-design-board-saved',
+        status: result.status,
+        blockerCount: result.blockers.length,
+        executed: false,
+        modelCalled: false,
+    });
+    return result;
+}
+
+function enqueueDesignAgentRequest(payload, options = {}) {
+    const result = newProjectDesignProvider.enqueueDesignAgentRequest(payload, newProjectDesignContext(options));
+    sendProgress({
+        phase: 'design-agent-request-queued',
+        status: result.status,
+        alreadyQueued: result.already_queued,
+        executed: false,
+        modelCalled: false,
+    });
+    return result;
+}
+
+function decideDesignAgentSuggestion(payload, options = {}) {
+    const result = newProjectDesignProvider.decideDesignAgentSuggestion(payload, newProjectDesignContext(options));
+    sendProgress({
+        phase: 'design-agent-suggestion-decided',
+        status: result.status,
+        applied: result.applied === true,
+        held: result.held === true,
+        receiptRecovered: result.receipt_recovered === true,
+        executed: false,
+        modelCalled: false,
+    });
+    return result;
+}
+
 function saveNewProjectDraft(payload, options = {}) {
     const result = newProjectDraftProvider.saveNewProjectDraft(payload, newProjectContext(options));
     sendProgress({
@@ -1349,6 +1399,13 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:save-new-project-draft', (_, payload) => saveNewProjectDraft(payload, options));
     ipcApi.handle('film-pipeline:enqueue-planning-agent-request', (_, payload) => enqueuePlanningAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-planning-agent-suggestion', (_, payload) => decidePlanningAgentSuggestion(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-design-state', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectDesignState(options);
+    });
+    ipcApi.handle('film-pipeline:save-new-project-design-board', (_, payload) => saveNewProjectDesignBoard(payload, options));
+    ipcApi.handle('film-pipeline:enqueue-design-agent-request', (_, payload) => enqueueDesignAgentRequest(payload, options));
+    ipcApi.handle('film-pipeline:decide-design-agent-suggestion', (_, payload) => decideDesignAgentSuggestion(payload, options));
     ipcApi.handle('film-pipeline:copy-new-project-build-command', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return copyNewProjectBuildCommand(options);
@@ -1442,6 +1499,10 @@ module.exports = {
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
     decidePlanningAgentSuggestion,
+    getNewProjectDesignState,
+    saveNewProjectDesignBoard,
+    enqueueDesignAgentRequest,
+    decideDesignAgentSuggestion,
     copyNewProjectBuildCommand,
     getG3ReviewWorkspace,
     loadG3CandidatePreview,

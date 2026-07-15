@@ -293,7 +293,8 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
     );
     const details = findAll(studio, 'details');
     assert.ok(details.length >= 1, 'production tools must use progressive disclosure');
-    assert.ok(details.every((node) => !node.attributes.has('open')), 'progressive details must be collapsed by default');
+    const resultReviewDetails = details.find((node) => byText(node, 'summary', '생성 결과 검토'));
+    assert.ok(resultReviewDetails && !resultReviewDetails.attributes.has('open'), 'generated-result review stays collapsed by default');
 
     const openFolder = byText(studio, 'button', '제작 폴더 열기');
     assert.ok(openFolder, 'folder-selection UI must be rendered in Korean');
@@ -2319,4 +2320,282 @@ test('planning suggestions compare each stage independently and keep decisions e
     const dirtyApplyButtons = findAll(dirtyForm, 'button').filter((button) => button.textContent.trim() === '수정안 적용');
     assert.equal(dirtyApplyButtons[0].disabled, true, 'brief edit must stale only the brief suggestion');
     assert.equal(dirtyApplyButtons[1].disabled, false, 'brief edit must not stale a held script suggestion');
+});
+
+test('new project design board stays compact while supporting direct full-board edits', async (t) => {
+    const changes = [];
+    const saves = [];
+    const requests = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectDesignBoard } = await import('../src/components/pipeline/NewProjectDesignBoard.js');
+    const board = {
+        characters: [{ id: 'character_01', name: '지아', role: '주인공', appearance: '짧은 머리', wardrobe: '회색 코트', continuity: '코트 유지' }],
+        locations: [{ id: 'location_01', name: '상담실', space: '낡은 상담실', lighting: '창가 역광', props: '낡은 책상', continuity: '책상 위치 유지' }],
+        scenes: [{
+            id: 'scene_01', title: '문 앞의 지아', dramatic_beat: '지아가 문 앞에서 멈춘다.', characters: ['character_01'],
+            location_id: 'location_01', duration: 5, first_frame: '문 앞 전신', action: '손잡이를 잡는다', camera: '느린 전진',
+            lighting: '차가운 저녁빛', audio_sfx_dialogue: '빗소리',
+        }],
+    };
+    const node = NewProjectDesignBoard({
+        designState: { status: 'restored', board, collaboration: { recent_requests: [] } },
+        boardValue: board,
+        onBoardChange: (value) => changes.push(structuredClone(value)),
+        onSave: (value) => saves.push(structuredClone(value)),
+        onEnqueue: (value) => requests.push(structuredClone(value)),
+    });
+
+    assert.match(node.textContent, /1\. 인물 시트.*2\. 장소 시트.*3\. 장면 카드/s);
+    assert.match(node.textContent, /지아.*주인공.*상담실.*낡은 상담실.*문 앞의 지아.*지아가 문 앞에서 멈춘다/s);
+    assert.equal(findAll(node, 'details').filter((item) => item.attributes.has('open')).length, 0, 'saved cards start compact');
+    assert.ok(byText(node, 'button', '인물').className.includes('min-h-11'));
+    assert.ok(byText(node, 'button', '장소').className.includes('min-h-11'));
+    assert.ok(byText(node, 'button', '장면').className.includes('min-h-11'));
+    assert.ok(descendants(node).some((item) => item.className.includes('md:grid-cols-2')));
+    assert.ok(descendants(node).some((item) => item.className.includes('xl:grid-cols-3')));
+
+    const name = byAttribute(node, 'input', 'id', 'design-character-1-name');
+    name.value = '지아 수정';
+    await name.dispatchEvent({ type: 'input' });
+    assert.equal(changes.at(-1).characters[0].name, '지아 수정');
+    assert.match(node.textContent, /저장하지 않은 변경이 있습니다/);
+    await byText(node, 'button', '인물 추가').dispatchEvent({ type: 'click' });
+    assert.equal(changes.at(-1).characters[1].id, 'character_02');
+    assert.ok(byAttribute(node, 'input', 'id', 'design-character-2-name'));
+
+    await byText(node, 'button', '직접 저장').dispatchEvent({ type: 'click' });
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].characters[1].id, 'character_02');
+    assert.equal(saves[0].scenes[0].location_id, 'location_01');
+    const request = byAttribute(node, 'textarea', 'id', 'design-agent-request');
+    request.value = '장면 전환을 더 선명하게';
+    await byText(node, 'button', '에이전트에게 요청').dispatchEvent({ type: 'click' });
+    assert.equal(requests[0].instruction, '장면 전환을 더 선명하게');
+    assert.deepEqual(requests[0].board, saves[0]);
+
+    const empty = NewProjectDesignBoard({
+        designState: { status: 'empty', board: { characters: [], locations: [], scenes: [] }, collaboration: { recent_requests: [] } },
+        boardValue: { characters: [], locations: [], scenes: [] },
+    });
+    assert.equal(findAll(empty, 'details').filter((item) => item.attributes.has('open')).length, 3, 'one empty row per section starts open');
+    assert.ok(byAttribute(empty, 'input', 'id', 'design-character-1-name'));
+    assert.ok(byAttribute(empty, 'input', 'id', 'design-location-1-name'));
+    assert.ok(byAttribute(empty, 'input', 'id', 'design-scene-1-title'));
+
+    const limitedBoard = {
+        characters: Array.from({ length: 12 }, (_, index) => ({ id: `character_${String(index + 1).padStart(2, '0')}`, name: `인물 ${index + 1}`, role: '', appearance: '', wardrobe: '', continuity: '' })),
+        locations: Array.from({ length: 12 }, (_, index) => ({ id: `location_${String(index + 1).padStart(2, '0')}`, name: `장소 ${index + 1}`, space: '', lighting: '', props: '', continuity: '' })),
+        scenes: Array.from({ length: 20 }, (_, index) => ({ id: `scene_${String(index + 1).padStart(2, '0')}`, title: `장면 ${index + 1}`, dramatic_beat: '', characters: [], location_id: '', duration: 5, first_frame: '', action: '', camera: '', lighting: '', audio_sfx_dialogue: '' })),
+    };
+    const limited = NewProjectDesignBoard({ designState: { board: limitedBoard, collaboration: { recent_requests: [] } }, boardValue: limitedBoard });
+    assert.equal(byText(limited, 'button', '인물 추가').disabled, true);
+    assert.equal(byText(limited, 'button', '장소 추가').disabled, true);
+    assert.equal(byText(limited, 'button', '장면 추가').disabled, true);
+});
+
+test('design agent state uses newest request and exposes queued, compare, stale, and history without raw metadata', async (t) => {
+    const decisions = [];
+    const refreshes = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectDesignBoard } = await import('../src/components/pipeline/NewProjectDesignBoard.js');
+    const board = {
+        characters: [{ id: 'character_01', name: '현재 지아', role: '주인공', appearance: '', wardrobe: '', continuity: '' }],
+        locations: [{ id: 'location_01', name: '현재 상담실', space: '', lighting: '', props: '', continuity: '' }],
+        scenes: [{ id: 'scene_01', title: '현재 장면', dramatic_beat: '현재 핵심', characters: ['character_01'], location_id: 'location_01', duration: 5, first_frame: '', action: '', camera: '', lighting: '', audio_sfx_dialogue: '' }],
+    };
+    const proposed = structuredClone(board);
+    proposed.characters[0].name = '수정안 지아';
+    proposed.scenes[0].dramatic_beat = '수정안 핵심';
+    const suggestion = (token, proposedBoard, reviewStatus = 'ready') => ({
+        status: 'suggestion_ready',
+        suggestion: {
+            suggestion_token: token, review_status: reviewStatus, summary: '연속성과 전환을 다듬었습니다.',
+            proposed_board: proposedBoard, published_at: '2026-07-16T00:00:00.000Z', apply_allowed: true,
+        },
+    });
+    const ready = NewProjectDesignBoard({
+        designState: {
+            status: 'restored', board,
+            collaboration: { recent_requests: [suggestion('private-new-token', proposed), suggestion('private-old-token', board)] },
+        },
+        boardValue: board,
+        onDecide: (value) => decisions.push(value),
+    });
+    assert.match(ready.textContent, /현재 설계.*에이전트 수정안/s);
+    assert.match(ready.textContent, /수정안 지아.*수정안 핵심/s, 'newest-first request supplies the visible suggestion');
+    assert.match(ready.textContent, /수정안이 도착했습니다/);
+    assert.doesNotMatch(ready.textContent, /private-new-token|private-old-token|suggestion_ready|review_status|location_01/);
+    assert.ok(descendants(ready).some((item) => item.className.includes('xl:grid-cols-2')));
+    const apply = byText(ready, 'button', '수정안 적용');
+    const hold = byText(ready, 'button', '보류');
+    assert.ok(apply.className.includes('min-h-11'));
+    await apply.dispatchEvent({ type: 'click' });
+    await hold.dispatchEvent({ type: 'click' });
+    assert.deepEqual(decisions, [
+        { suggestion_token: 'private-new-token', action: 'apply' },
+        { suggestion_token: 'private-new-token', action: 'hold' },
+    ]);
+    const currentName = byAttribute(ready, 'input', 'id', 'design-character-1-name');
+    currentName.value = '직접 고친 지아';
+    await currentName.dispatchEvent({ type: 'input' });
+    assert.equal(apply.disabled, true, 'editing the current board disables an already visible apply action');
+    assert.match(ready.textContent, /원문이 바뀌어 적용할 수 없습니다/);
+
+    const stale = NewProjectDesignBoard({
+        designState: { status: 'restored', board, collaboration: { recent_requests: [suggestion('private-stale-token', proposed)] } },
+        boardValue: board,
+        dirty: true,
+    });
+    assert.match(stale.textContent, /원문이 바뀌어 적용할 수 없습니다/);
+    assert.equal(byText(stale, 'button', '수정안 적용').disabled, true);
+
+    const held = NewProjectDesignBoard({
+        designState: { status: 'restored', board, collaboration: { recent_requests: [suggestion('private-held-token', proposed, 'held')] } },
+        boardValue: board,
+    });
+    assert.match(held.textContent, /보류함 · 현재 설계는 그대로/);
+    assert.ok(byText(held, 'summary', '지난 수정안 보기'));
+    assert.doesNotMatch(held.textContent, /private-held-token/);
+    const heldApply = byText(held, 'button', '수정안 적용');
+    const heldName = byAttribute(held, 'input', 'id', 'design-character-1-name');
+    heldName.value = '보류 후 직접 수정';
+    await heldName.dispatchEvent({ type: 'input' });
+    assert.equal(heldApply.disabled, true, 'editing after hold disables the historical apply action');
+    assert.match(held.textContent, /원문이 바뀌어 적용할 수 없습니다/);
+
+    const queued = NewProjectDesignBoard({
+        designState: { status: 'restored', board, collaboration: { recent_requests: [{ status: 'queued_local_handoff' }] } },
+        boardValue: board,
+        onRefresh: () => refreshes.push(true),
+    });
+    assert.match(queued.textContent, /요청 저장됨 · 아직 실행 전/);
+    await byText(queued, 'button', '수정안 확인').dispatchEvent({ type: 'click' });
+    assert.equal(refreshes.length, 1);
+});
+
+test('PipelineStudio sends exact design revisions for save, enqueue, and suggestion decisions', async (t) => {
+    const calls = [];
+    const planningRevision = 'p'.repeat(64);
+    let designRevision = 'd'.repeat(64);
+    const board = {
+        characters: [{ id: 'character_01', name: '지아', role: '주인공', appearance: '', wardrobe: '', continuity: '' }],
+        locations: [{ id: 'location_01', name: '상담실', space: '', lighting: '', props: '', continuity: '' }],
+        scenes: [{ id: 'scene_01', title: '첫 장면', dramatic_beat: '문 앞에 선다', characters: ['character_01'], location_id: 'location_01', duration: 5, first_frame: '', action: '', camera: '', lighting: '', audio_sfx_dialogue: '' }],
+    };
+    let state = {
+        ok: true, status: 'restored', board, revision_sha256: designRevision,
+        planning_revision_sha256: planningRevision, blockers: [], collaboration: { recent_requests: [], blockers: [] },
+    };
+    const bridge = {
+        async getConfig() { return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getHarnessContractStatus() { return { ok: true, ready: true, readiness: 'available', entries: [] }; },
+        async getNewProjectDraftState() { return { status: 'restored', draft: {}, collaboration: { recent_requests: [] }, blockers: [] }; },
+        async getNewProjectDesignState() { calls.push(['get']); return structuredClone(state); },
+        async getVideoResultImportWorkspace() { return { status: 'empty', candidates: [], blockers: [] }; },
+        async saveNewProjectDesignBoard(payload) {
+            calls.push(['save', structuredClone(payload)]);
+            designRevision = 'e'.repeat(64);
+            state = { ...state, status: 'saved', board: structuredClone(payload.board), revision_sha256: designRevision };
+            return structuredClone(state);
+        },
+        async enqueueDesignAgentRequest(payload) {
+            calls.push(['enqueue', structuredClone(payload)]);
+            state = { ...state, collaboration: { recent_requests: [{ status: 'queued_local_handoff' }], blockers: [] } };
+            return { ok: true, queued: true, state: structuredClone(state) };
+        },
+        async decideDesignAgentSuggestion(payload) {
+            calls.push(['decide', structuredClone(payload)]);
+            return { ok: true, applied: true, state: { ...structuredClone(state), collaboration: { recent_requests: [], blockers: [] } } };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await byAttribute(studio, 'button', 'aria-label', '2 설계').dispatchEvent({ type: 'click' });
+
+    const name = byAttribute(studio, 'input', 'id', 'design-character-1-name');
+    name.value = '지아 수정';
+    await name.dispatchEvent({ type: 'input' });
+    await byText(studio, 'button', '직접 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const firstSave = calls.find(([method]) => method === 'save')[1];
+    assert.deepEqual(firstSave, {
+        board: { ...structuredClone(board), characters: [{ ...board.characters[0], name: '지아 수정' }] },
+        expected_planning_revision_sha256: planningRevision,
+        expected_design_revision_sha256: 'd'.repeat(64),
+    });
+
+    const instruction = byAttribute(studio, 'textarea', 'id', 'design-agent-request');
+    instruction.value = '장면 전환을 다듬어줘';
+    await byText(studio, 'button', '에이전트에게 요청').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const enqueue = calls.find(([method]) => method === 'enqueue')[1];
+    assert.deepEqual(enqueue, {
+        instruction: '장면 전환을 다듬어줘',
+        expected_planning_revision_sha256: planningRevision,
+        expected_design_revision_sha256: 'e'.repeat(64),
+    });
+
+    const proposed = structuredClone(state.board);
+    proposed.scenes[0].dramatic_beat = '더 선명한 전환';
+    state = {
+        ...state,
+        collaboration: { recent_requests: [{ status: 'suggestion_ready', suggestion: {
+            suggestion_token: 'private-decision-token', review_status: 'ready', summary: '전환 개선',
+            proposed_board: proposed, apply_allowed: true, published_at: '2026-07-16T00:00:00.000Z',
+        } }], blockers: [] },
+    };
+    await byText(studio, 'button', '수정안 확인').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    await byText(studio, 'button', '수정안 적용').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'decide')[1], {
+        suggestion_token: 'private-decision-token', action: 'apply', expected_design_revision_sha256: 'e'.repeat(64),
+    });
+    assert.doesNotMatch(studio.textContent, /private-decision-token/);
+});
+
+test('PipelineStudio queues the first design request from a clean empty board without an invalid save', async (t) => {
+    const calls = [];
+    const planningRevision = 'a'.repeat(64);
+    const designRevision = 'b'.repeat(64);
+    const emptyState = {
+        ok: true, status: 'empty', board: { characters: [], locations: [], scenes: [] },
+        revision_sha256: designRevision, planning_revision_sha256: planningRevision,
+        collaboration: { recent_requests: [], blockers: [] }, blockers: [],
+    };
+    const bridge = {
+        async getConfig() { return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getHarnessContractStatus() { return { ok: true, ready: true, readiness: 'available', entries: [] }; },
+        async getNewProjectDraftState() { return { status: 'restored', draft: {}, collaboration: { recent_requests: [] }, blockers: [] }; },
+        async getNewProjectDesignState() { return structuredClone(emptyState); },
+        async getVideoResultImportWorkspace() { return { status: 'empty', candidates: [], blockers: [] }; },
+        async saveNewProjectDesignBoard(payload) { calls.push(['save', payload]); throw new Error('EMPTY_SAVE_MUST_NOT_RUN'); },
+        async enqueueDesignAgentRequest(payload) {
+            calls.push(['enqueue', structuredClone(payload)]);
+            return { ok: true, queued: true, state: { ...structuredClone(emptyState), collaboration: { recent_requests: [{ status: 'queued_local_handoff' }], blockers: [] } } };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await byAttribute(studio, 'button', 'aria-label', '2 설계').dispatchEvent({ type: 'click' });
+    const instruction = byAttribute(studio, 'textarea', 'id', 'design-agent-request');
+    instruction.value = '기획과 대본을 바탕으로 첫 설계를 만들어줘';
+    await byText(studio, 'button', '에이전트에게 요청').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+
+    assert.equal(calls.filter(([method]) => method === 'save').length, 0);
+    assert.deepEqual(calls.find(([method]) => method === 'enqueue')[1], {
+        instruction: '기획과 대본을 바탕으로 첫 설계를 만들어줘',
+        expected_planning_revision_sha256: planningRevision,
+        expected_design_revision_sha256: designRevision,
+    });
+    assert.match(studio.textContent, /요청 저장됨 · 아직 실행 전/);
 });

@@ -164,6 +164,52 @@ export async function decidePlanningAgentSuggestion(payload) {
     };
 }
 
+function unavailableDesignState(method) {
+    return {
+        ...unavailable(method),
+        status: 'blocked',
+        board: { characters: [], locations: [], scenes: [] },
+        revision_sha256: '',
+        planning_revision_sha256: '',
+        collaboration: {
+            status: 'empty', total_request_count: 0, ready_suggestion_count: 0,
+            stale_suggestion_count: 0, applied_suggestion_count: 0,
+            recent_requests: [], truncated: false, blockers: [],
+        },
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function getNewProjectDesignState() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectDesignState === 'function') return bridge.getNewProjectDesignState();
+    return unavailableDesignState('getNewProjectDesignState');
+}
+
+export async function saveNewProjectDesignBoard(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectDesignBoard === 'function') return bridge.saveNewProjectDesignBoard(payload);
+    return unavailableDesignState('saveNewProjectDesignBoard');
+}
+
+export async function enqueueDesignAgentRequest(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.enqueueDesignAgentRequest === 'function') return bridge.enqueueDesignAgentRequest(payload);
+    return {
+        ...unavailableDesignState('enqueueDesignAgentRequest'), queued: false,
+        already_queued: false, request_id: '', model_called: false,
+    };
+}
+
+export async function decideDesignAgentSuggestion(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.decideDesignAgentSuggestion === 'function') return bridge.decideDesignAgentSuggestion(payload);
+    return {
+        ...unavailableDesignState('decideDesignAgentSuggestion'), applied: false, held: false,
+        already_decided: false, receipt_recovered: false, reapply_allowed: false,
+    };
+}
+
 export async function copyNewProjectBuildCommand() {
     const bridge = getBridge();
     if (typeof bridge?.copyNewProjectBuildCommand === 'function') return bridge.copyNewProjectBuildCommand();
@@ -500,6 +546,10 @@ export const pipelineClient = Object.freeze({
     saveNewProjectDraft,
     enqueuePlanningAgentRequest,
     decidePlanningAgentSuggestion,
+    getNewProjectDesignState,
+    saveNewProjectDesignBoard,
+    enqueueDesignAgentRequest,
+    decideDesignAgentSuggestion,
     copyNewProjectBuildCommand,
     selectProductionRoot,
     listProductionChildren,

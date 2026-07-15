@@ -128,6 +128,19 @@ function emptyVideoResultImportPlan(status = 'empty', blocker = '') {
     };
 }
 
+function emptyNewProjectDesignState(status = 'empty', blocker = '') {
+    return {
+        status,
+        board: { characters: [], locations: [], scenes: [] },
+        revision_sha256: '',
+        planning_revision_sha256: '',
+        collaboration: {
+            status: 'empty', recent_requests: [], blockers: blocker ? [blocker] : [],
+        },
+        blockers: blocker ? [blocker] : [],
+    };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
@@ -176,6 +189,10 @@ export function PipelineStudio() {
     let newProjectDraftValue = { ...newProjectDraftState.draft };
     let newProjectDraftDirty = { brief: false, script: false, settings: false };
     let newProjectNotice = '';
+    let newProjectDesignState = emptyNewProjectDesignState('loading');
+    let newProjectDesignBoard = { characters: [], locations: [], scenes: [] };
+    let newProjectDesignDirty = false;
+    let newProjectDesignNotice = '';
     let g3Workspace = emptyG3ReviewState();
     let g3ActiveShotId = '';
     let g3PromotionPlan = emptyG3PromotionPlan();
@@ -227,6 +244,24 @@ export function PipelineStudio() {
                     blockers: ['NEW_PROJECT_DRAFT_READ_FAILED'],
                     preview: { ready: false, copyAllowed: false, previewOnly: true, executed: false, shellSafeCommand: '' },
                 };
+            }
+        };
+
+        const refreshNewProjectDesign = async ({ preserveLocalEdits = false } = {}) => {
+            const localBoard = newProjectDesignBoard;
+            try {
+                const result = await pipelineClient.getNewProjectDesignState();
+                newProjectDesignState = result;
+                if (result?.board && !(preserveLocalEdits && newProjectDesignDirty)) {
+                    newProjectDesignBoard = structuredClone(result.board);
+                    newProjectDesignDirty = false;
+                } else if (preserveLocalEdits && newProjectDesignDirty) {
+                    newProjectDesignBoard = localBoard;
+                }
+                newProjectDesignNotice = preserveLocalEdits ? '최신 수정안 상태를 확인했습니다.' : '';
+            } catch {
+                newProjectDesignState = emptyNewProjectDesignState('error', 'DESIGN_STATE_READ_FAILED');
+                newProjectDesignNotice = '설계를 불러오지 못했습니다.';
             }
         };
 
@@ -376,6 +411,10 @@ export function PipelineStudio() {
                 newProjectDraftValue,
                 newProjectNotice,
                 newProjectDraftDirty,
+                newProjectDesignState,
+                newProjectDesignBoard,
+                newProjectDesignDirty,
+                newProjectDesignNotice,
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
                     if (field === 'brief' || field === 'script') newProjectDraftDirty[field] = true;
@@ -391,6 +430,7 @@ export function PipelineStudio() {
                         if (result?.draft) newProjectDraftValue = { ...result.draft };
                         newProjectNotice = result?.ok ? '직접 저장됨' : '저장하지 못했습니다.';
                         if (result?.ok) newProjectDraftDirty = { brief: false, script: false, settings: false };
+                        if (result?.ok) await refreshNewProjectDesign();
                         render();
                         return result;
                     } catch {
@@ -514,6 +554,113 @@ export function PipelineStudio() {
                         newProjectNotice = '빌드 명령을 복사하지 못했습니다.';
                     }
                     render();
+                },
+                onNewProjectDesignChange: (board) => {
+                    newProjectDesignBoard = structuredClone(board);
+                    newProjectDesignDirty = true;
+                    newProjectDesignNotice = '저장하지 않은 변경이 있습니다';
+                },
+                onSaveNewProjectDesign: async (board) => {
+                    newProjectDesignState = { ...newProjectDesignState, status: 'saving' };
+                    newProjectDesignNotice = '저장 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectDesignBoard({
+                            board,
+                            expected_planning_revision_sha256: newProjectDesignState.planning_revision_sha256,
+                            expected_design_revision_sha256: newProjectDesignState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!result?.ok || !nextState?.revision_sha256) throw new Error('DESIGN_SAVE_FAILED');
+                        newProjectDesignState = nextState;
+                        newProjectDesignBoard = structuredClone(nextState.board);
+                        newProjectDesignDirty = false;
+                        newProjectDesignNotice = '직접 저장됨';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectDesignState = { ...newProjectDesignState, status: 'error' };
+                        newProjectDesignNotice = '필수 내용을 채운 뒤 다시 저장하세요.';
+                        render();
+                        return { ok: false, status: 'error' };
+                    }
+                },
+                onEnqueueDesignAgentRequest: async ({ instruction, board }) => {
+                    newProjectDesignState = { ...newProjectDesignState, status: 'requesting' };
+                    newProjectDesignNotice = '요청 저장 중…';
+                    render();
+                    try {
+                        const persistedBoard = newProjectDesignState.board || {};
+                        const cleanEmptyBoard = !newProjectDesignDirty
+                            && ['characters', 'locations', 'scenes'].every((key) => Array.isArray(persistedBoard[key]) && persistedBoard[key].length === 0);
+                        let savedState = newProjectDesignState;
+                        if (!cleanEmptyBoard) {
+                            const saved = await pipelineClient.saveNewProjectDesignBoard({
+                                board,
+                                expected_planning_revision_sha256: newProjectDesignState.planning_revision_sha256,
+                                expected_design_revision_sha256: newProjectDesignState.revision_sha256,
+                            });
+                            savedState = saved?.state || saved;
+                            if (!saved?.ok || !savedState?.revision_sha256) throw new Error('DESIGN_SAVE_FAILED');
+                        }
+                        newProjectDesignState = savedState;
+                        newProjectDesignBoard = structuredClone(savedState.board);
+                        newProjectDesignDirty = false;
+                        const result = await pipelineClient.enqueueDesignAgentRequest({
+                            instruction,
+                            expected_planning_revision_sha256: savedState.planning_revision_sha256,
+                            expected_design_revision_sha256: savedState.revision_sha256,
+                        });
+                        if (!result?.queued || !result?.state) throw new Error('DESIGN_REQUEST_FAILED');
+                        newProjectDesignState = result.state;
+                        newProjectDesignBoard = structuredClone(result.state.board);
+                        newProjectDesignNotice = '요청 저장됨 · 아직 실행 전';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectDesignState = { ...newProjectDesignState, status: 'error' };
+                        newProjectDesignNotice = '필수 내용을 채운 뒤 다시 요청하세요.';
+                        render();
+                        return { ok: false, queued: false, executed: false, model_called: false };
+                    }
+                },
+                onRefreshNewProjectDesign: async () => {
+                    newProjectDesignState = { ...newProjectDesignState, status: 'loading' };
+                    newProjectDesignNotice = '수정안 확인 중…';
+                    render();
+                    await refreshNewProjectDesign({ preserveLocalEdits: true });
+                    render();
+                },
+                onDecideDesignAgentSuggestion: async ({ suggestion_token, action }) => {
+                    if (action === 'apply' && newProjectDesignDirty) {
+                        newProjectDesignNotice = '원문이 바뀌어 적용할 수 없습니다';
+                        render();
+                        return { ok: false, status: 'stale' };
+                    }
+                    newProjectDesignState = { ...newProjectDesignState, status: 'saving' };
+                    newProjectDesignNotice = action === 'apply' ? '수정안 적용 중…' : '보류 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.decideDesignAgentSuggestion({
+                            suggestion_token,
+                            action,
+                            expected_design_revision_sha256: newProjectDesignState.revision_sha256,
+                        });
+                        if (!result?.ok || !result?.state) throw new Error('DESIGN_DECISION_FAILED');
+                        newProjectDesignState = result.state;
+                        if (action === 'apply') {
+                            newProjectDesignBoard = structuredClone(result.state.board);
+                            newProjectDesignDirty = false;
+                        }
+                        newProjectDesignNotice = action === 'apply' ? '수정안을 적용했습니다' : '보류함 · 현재 설계는 그대로';
+                        render();
+                        return result;
+                    } catch {
+                        newProjectDesignState = { ...newProjectDesignState, status: 'error' };
+                        newProjectDesignNotice = '수정안을 처리하지 못했습니다.';
+                        render();
+                        return { ok: false, status: 'error' };
+                    }
                 },
                 onSavePlanningFile: async (payload) => {
                     try {
@@ -823,10 +970,11 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, videoImportResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, videoImportResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
+            pipelineClient.getNewProjectDesignState(),
             pipelineClient.getVideoResultImportWorkspace(),
         ]);
         if (configResult.status === 'fulfilled') {
@@ -846,6 +994,13 @@ export function PipelineStudio() {
                 status: 'error',
                 blockers: ['NEW_PROJECT_DRAFT_READ_FAILED'],
             };
+        }
+        if (designResult.status === 'fulfilled' && designResult.value) {
+            newProjectDesignState = designResult.value;
+            newProjectDesignBoard = structuredClone(designResult.value.board || { characters: [], locations: [], scenes: [] });
+            newProjectDesignDirty = false;
+        } else {
+            newProjectDesignState = emptyNewProjectDesignState('error', 'DESIGN_STATE_READ_FAILED');
         }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;

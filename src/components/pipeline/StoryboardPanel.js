@@ -11,6 +11,7 @@ import {
 } from '../../lib/pipeline/mediaReviewBoard.js';
 import { ReferenceRail, SceneReviewRow } from './MediaReviewBoardParts.js';
 import { MediaRetryPlanBand } from './MediaRetryPlanBand.js';
+import { NewProjectDesignBoard } from './NewProjectDesignBoard.js';
 import { actionButton, el, emptyState, panelShell } from './ui.js';
 import { p } from './copy.js';
 
@@ -40,6 +41,15 @@ export function StoryboardPanel({
     onLoadVideoResultImportPreview,
     onPlanVideoResultImport,
     onConfirmVideoResultImport,
+    newProjectDesignState,
+    newProjectDesignBoard,
+    newProjectDesignDirty,
+    newProjectDesignNotice,
+    onNewProjectDesignChange,
+    onSaveNewProjectDesign,
+    onEnqueueDesignAgentRequest,
+    onRefreshNewProjectDesign,
+    onDecideDesignAgentSuggestion,
 }) {
     let attempts = deriveMediaAttempts(state).map((attempt) => ({
         ...attempt,
@@ -169,7 +179,29 @@ export function StoryboardPanel({
     renderBoard();
     return panelShell(
         p('Storyboard'),
-        '캐릭터·장소 기준과 장면별 이미지·영상을 한눈에 비교하고, 필요한 항목만 다시 만들기 초안으로 고릅니다.',
-        [board],
+        '인물과 장소를 먼저 정한 뒤 장면을 순서대로 설계합니다.',
+        [
+            NewProjectDesignBoard({
+                designState: newProjectDesignState,
+                boardValue: newProjectDesignBoard,
+                dirty: newProjectDesignDirty,
+                notice: newProjectDesignNotice,
+                onBoardChange: onNewProjectDesignChange,
+                onSave: onSaveNewProjectDesign,
+                onEnqueue: onEnqueueDesignAgentRequest,
+                onRefresh: onRefreshNewProjectDesign,
+                onDecide: onDecideDesignAgentSuggestion,
+            }),
+            el('details', { className: 'rounded-md border border-white/10 bg-black/20 px-3' }, [
+                el('summary', { text: '생성 결과 검토', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),
+                el('div', { className: 'pb-3 pt-2' }, [
+                    el('p', {
+                        text: '생성된 캐릭터·장소 기준과 장면별 이미지·영상을 확인하고 필요한 결과만 다시 고릅니다.',
+                        className: 'mb-3 text-xs leading-5 text-secondary',
+                    }),
+                    board,
+                ]),
+            ]),
+        ],
     );
 }
