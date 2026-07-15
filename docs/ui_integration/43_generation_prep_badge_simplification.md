@@ -8,12 +8,12 @@
 
 | 화면 | 변경 전 | 변경 후 |
 | --- | ---: | ---: |
-| 참조 이미지 | 7개 | 1개 (`통과`) |
+| 참조 이미지 | 7개 | 0개 |
 | 프롬프트 팩 | 25개 | 0개 |
-| 검토 게이트 | 16개 | 8개 (게이트당 1개) |
-| 생성 대기열 | 수십 개 | 2개 (`연결됨`, `제출 전`) |
+| 검토 게이트 | 16개 | 0개 |
+| 생성 대기열 | 수십 개 | 0개 |
 
-- 상태 코드와 차단 사유는 `통과`, `준비 필요`, `검토 전`, `확인 필요`처럼 짧은 한글로 통일했다.
+- 상태 코드와 차단 사유는 뱃지가 아닌 `통과`, `준비 필요`, `검토 전`, `확인 필요` 같은 짧은 한글 문구로 표시한다.
 - 일반 정보와 문제 목록은 평문으로 표시해 뱃지처럼 보이지 않게 했다.
 - 명령 미리보기와 기술 기록은 기본적으로 접어 두고 필요할 때만 펼치게 했다.
 - 라이브 생성, 크레딧 사용, 외부 업로드는 실행하지 않았다.
@@ -24,11 +24,14 @@
 - 모든 해상도에서 문서 전체 가로 넘침이 없었다.
 - 닫힌 상세 영역의 기술 차단 코드가 기본 화면에 노출되지 않았다.
 - 320px에서 명령 상세 영역을 키보드 스페이스로 열고 닫을 수 있었다.
+- 실제 기본 Electron에서 네 화면의 보이는 작은 상태 뱃지가 각각 0개임을 다시 확인했다.
+- Computer Use로 검토 게이트를 직접 열었고, 각 상태가 일반 한글 문구로 읽히며 색상 뱃지는 없음을 확인했다.
 - 캡처:
   - `/Users/jessiek/.codex/visualizations/2026/07/15/generation-prep-references-1440.png`
   - `/Users/jessiek/.codex/visualizations/2026/07/15/generation-prep-prompts-1440.png`
   - `/Users/jessiek/.codex/visualizations/2026/07/15/generation-prep-gates-1440.png`
   - `/Users/jessiek/.codex/visualizations/2026/07/15/generation-prep-queue-1440.png`
+  - `/Users/jessiek/.codex/visualizations/2026/07/15/open-ga-dst-initial-storyboard-e2e/generation-prep-no-badges.png`
 
 ## 검증 결과
 

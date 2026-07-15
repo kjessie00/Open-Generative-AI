@@ -154,6 +154,21 @@ function configureRetryTargets(fx, specs) {
     return records;
 }
 
+function writeStoryboard(fx, clips) {
+    const directory = path.join(fx.productionRoot, 'storyboard');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'storyboard.json'), `${JSON.stringify({ clips })}\n`);
+}
+
+function removeRetrySources(fx) {
+    fs.rmSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), { force: true });
+    fs.rmSync(path.join(fx.productionRoot, 'reviews', 'media_review_draft.json'), { force: true });
+}
+
+function targetsOfKind(workspace, kind) {
+    return workspace.initial_targets.filter((target) => target.kind === kind);
+}
+
 test('real local workspace returns only opaque bounded completed single-image bundle evidence', (t) => {
     const fx = fixture(t);
     writeBundle(fx.dstRoot, {
@@ -418,6 +433,201 @@ test('multi-image ledger publication is one atomic rename and repairs after copy
         ledger: repaired.ledger_appended_count,
     }, { imported: 3, copied: 0, ledger: 3 });
     assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 4);
+});
+
+test('first import uses storyboard-authoritative character targets without ledger or review and is atomic and idempotent', (t) => {
+    const fx = fixture(t);
+    removeRetrySources(fx);
+    writeStoryboard(fx, [{
+        clip_id: 'clip_001',
+        characters: ['김지아', 'hero_side'],
+        location: '서울 골목',
+    }]);
+    writeBundle(fx.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('initial-character-one') },
+        { name: 'image_02.png', buffer: pngFixture('initial-character-two') },
+    ] });
+
+    const workspace = provider.getDstBundleImportWorkspace(fx.context);
+    const characters = targetsOfKind(workspace, 'character_sheet');
+    assert.deepEqual(characters.map((target) => target.target_label), ['김지아', 'hero_side']);
+    assert.match(characters[0].target_id, /^character_sheet_[a-f0-9]{20}$/);
+    assert.equal(characters[1].target_id, 'hero_side');
+    assert.deepEqual(workspace.initial_targets.map((target) => target.sequence), [1, 2, 1, 1]);
+    assert.ok(workspace.initial_targets.every((target) => /^[A-Za-z0-9_-]{43}$/.test(target.target_token)));
+    const candidate = workspace.candidates[0];
+    const initialMappings = characters.map((target, index) => ({
+        imageIndex: index + 1,
+        targetToken: target.target_token,
+    }));
+    const plan = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, initialMappings }, fx.context);
+    assert.equal(plan.status, 'ready', JSON.stringify(plan));
+    assert.equal(plan.mapping_mode, 'initial_targets');
+    assert.equal(plan.kind, 'character_sheet');
+    assert.equal(plan.target_label, '김지아');
+
+    let renameCount = 0;
+    const result = provider.confirmDstBundleImport({ planToken: plan.plan_token, confirmed: true }, {
+        ...fx.context,
+        ledgerRenameFile(from, to) {
+            renameCount += 1;
+            fs.renameSync(from, to);
+        },
+    });
+    assert.equal(renameCount, 1);
+    assert.deepEqual({ imported: result.imported_count, copied: result.copy_count, ledger: result.ledger_appended_count }, {
+        imported: 2, copied: 2, ledger: 2,
+    });
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'reviews', 'media_review_draft.json')), false);
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map((record) => ({
+        kind: record.kind,
+        target: record.target_id,
+        label: record.target_label,
+        attempt: record.attempt,
+        retryOf: record.retry_of,
+        provider: record.provider,
+        review: record.review_status,
+    })), [{
+        kind: 'character_sheet', target: characters[0].target_id, label: '김지아', attempt: 1,
+        retryOf: '', provider: 'dst', review: 'unreviewed',
+    }, {
+        kind: 'character_sheet', target: 'hero_side', label: 'hero_side', attempt: 1,
+        retryOf: '', provider: 'dst', review: 'unreviewed',
+    }]);
+    const refreshedWorkspace = provider.getDstBundleImportWorkspace(fx.context);
+    assert.equal(targetsOfKind(refreshedWorkspace, 'character_sheet').length, 0, 'claimed initial targets stay hidden');
+    assert.deepEqual(refreshedWorkspace.initial_targets.map((target) => target.kind), ['location_sheet', 'scene_image']);
+
+    const replay = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, initialMappings }, fx.context);
+    assert.equal(replay.status, 'already_current', JSON.stringify(replay));
+    const replayed = provider.confirmDstBundleImport({ planToken: replay.plan_token, confirmed: true }, fx.context);
+    assert.equal(replayed.already_current, true);
+    assert.equal(fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').length, 2);
+});
+
+test('first import supports location and scene targets in storyboard first-appearance order', (t) => {
+    const fx = fixture(t);
+    removeRetrySources(fx);
+    writeStoryboard(fx, [{
+        clip_id: 'clip_001', characters: [], location: '학교 상담실',
+    }, {
+        clip_id: 'clip_002', characters: [], location: 'rain_car',
+    }, {
+        clip_id: 'requires_scene', characters: [], location: 'Unresolved from structural evidence', structural_only: true,
+    }]);
+    writeBundle(fx.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('initial-place-one') },
+        { name: 'image_02.png', buffer: pngFixture('initial-place-two') },
+    ] });
+    const workspace = provider.getDstBundleImportWorkspace(fx.context);
+    const locations = targetsOfKind(workspace, 'location_sheet');
+    const scenes = targetsOfKind(workspace, 'scene_image');
+    assert.deepEqual(locations.map((target) => target.target_label), ['학교 상담실', 'rain_car']);
+    assert.match(locations[0].target_id, /^location_sheet_[a-f0-9]{20}$/);
+    assert.equal(locations[1].target_id, 'rain_car');
+    assert.deepEqual(scenes.map((target) => target.target_id), ['clip_001', 'clip_002']);
+    assert.deepEqual(workspace.initial_targets.map((target) => target.kind), [
+        'location_sheet', 'scene_image', 'location_sheet', 'scene_image',
+    ]);
+    const candidate = workspace.candidates[0];
+    const map = (targets) => targets.map((target, index) => ({ imageIndex: index + 1, targetToken: target.target_token }));
+    const locationPlan = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, initialMappings: map(locations) }, fx.context);
+    assert.equal(locationPlan.ready, true, JSON.stringify(locationPlan));
+    provider.confirmDstBundleImport({ planToken: locationPlan.plan_token, confirmed: true }, fx.context);
+    const scenePlan = provider.planDstBundleImport({ candidateToken: candidate.candidate_token, initialMappings: map(scenes) }, fx.context);
+    assert.equal(scenePlan.ready, true, JSON.stringify(scenePlan));
+    provider.confirmDstBundleImport({ planToken: scenePlan.plan_token, confirmed: true }, fx.context);
+    const records = fs.readFileSync(path.join(fx.productionRoot, 'media_attempts.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(records.map((record) => record.kind), [
+        'location_sheet', 'location_sheet', 'scene_image', 'scene_image',
+    ]);
+    assert.ok(records.every((record) => record.attempt === 1 && record.retry_of === ''));
+});
+
+test('first import rejects malformed, duplicate, mixed-kind, wrong-count, unordered, and unknown target mappings', (t) => {
+    const fx = fixture(t);
+    removeRetrySources(fx);
+    writeStoryboard(fx, [{ clip_id: 'clip_001', characters: ['hero', 'friend'], location: 'office' }]);
+    writeBundle(fx.dstRoot, { images: [
+        { name: 'image_01.png', buffer: pngFixture('initial-invalid-one') },
+        { name: 'image_02.png', buffer: pngFixture('initial-invalid-two') },
+    ] });
+    const workspace = provider.getDstBundleImportWorkspace(fx.context);
+    const candidateToken = workspace.candidates[0].candidate_token;
+    const characters = targetsOfKind(workspace, 'character_sheet');
+    const location = targetsOfKind(workspace, 'location_sheet')[0];
+    const valid = characters.map((target, index) => ({ imageIndex: index + 1, targetToken: target.target_token }));
+    const cases = [{
+        name: 'count', mappings: valid.slice(0, 1), blocker: 'DST_IMPORT_INITIAL_MAPPING_COUNT_INVALID',
+    }, {
+        name: 'sequence', mappings: [valid[1], valid[0]], blocker: 'DST_IMPORT_INITIAL_MAPPING_SEQUENCE_INVALID',
+    }, {
+        name: 'duplicate', mappings: [valid[0], { imageIndex: 2, targetToken: valid[0].targetToken }], blocker: 'DST_IMPORT_INITIAL_TARGET_DUPLICATE',
+    }, {
+        name: 'mixed kind', mappings: [valid[0], { imageIndex: 2, targetToken: location.target_token }], blocker: 'DST_IMPORT_INITIAL_TARGET_KIND_MISMATCH',
+    }, {
+        name: 'unknown', mappings: [valid[0], { imageIndex: 2, targetToken: 'A'.repeat(43) }], blocker: 'DST_IMPORT_INITIAL_TARGET_UNKNOWN',
+    }, {
+        name: 'mapping extra key', mappings: [{ ...valid[0], targetId: 'forged' }, valid[1]], blocker: 'DST_IMPORT_INITIAL_MAPPING_INVALID',
+    }];
+    for (const item of cases) {
+        const plan = provider.planDstBundleImport({ candidateToken, initialMappings: item.mappings }, fx.context);
+        assert.deepEqual(plan.blockers, [item.blocker], item.name);
+    }
+    const forged = provider.planDstBundleImport({ candidateToken, initialMappings: valid, targetPath: '/tmp/forged.png' }, fx.context);
+    assert.deepEqual(forged.blockers, ['DST_IMPORT_PLAN_REQUEST_INVALID']);
+    assert.equal(fs.existsSync(path.join(fx.productionRoot, 'media_attempts.jsonl')), false);
+});
+
+test('first import blocks an existing target and fails closed on storyboard or ledger drift', (t) => {
+    const existing = fixture(t);
+    fs.rmSync(path.join(existing.productionRoot, 'reviews', 'media_review_draft.json'), { force: true });
+    writeStoryboard(existing, [{ clip_id: 'clip_001', characters: ['hero'], location: '' }]);
+    const existingWorkspace = provider.getDstBundleImportWorkspace(existing.context);
+    const existingTargetToken = targetsOfKind(existingWorkspace, 'character_sheet')[0].target_token;
+    fs.writeFileSync(path.join(existing.productionRoot, 'media_attempts.jsonl'), `${JSON.stringify({
+        media_id: 'old_hero', kind: 'character_sheet', target_id: 'hero', provider: 'dst', attempt: 1,
+    })}\n`);
+    const existingPlan = provider.planDstBundleImport({
+        candidateToken: existingWorkspace.candidates[0].candidate_token,
+        initialMappings: [{ imageIndex: 1, targetToken: existingTargetToken }],
+    }, existing.context);
+    assert.deepEqual(existingPlan.blockers, ['DST_IMPORT_INITIAL_TARGET_EXISTS']);
+
+    const storyboardDrift = fixture(t);
+    removeRetrySources(storyboardDrift);
+    writeStoryboard(storyboardDrift, [{ clip_id: 'clip_001', characters: ['hero'], location: '' }]);
+    const storyboardWorkspace = provider.getDstBundleImportWorkspace(storyboardDrift.context);
+    const storyboardPlan = provider.planDstBundleImport({
+        candidateToken: storyboardWorkspace.candidates[0].candidate_token,
+        initialMappings: [{ imageIndex: 1, targetToken: targetsOfKind(storyboardWorkspace, 'character_sheet')[0].target_token }],
+    }, storyboardDrift.context);
+    assert.equal(storyboardPlan.ready, true);
+    writeStoryboard(storyboardDrift, [{ clip_id: 'clip_001', characters: ['changed_hero'], location: '' }]);
+    assert.throws(
+        () => provider.confirmDstBundleImport({ planToken: storyboardPlan.plan_token, confirmed: true }, storyboardDrift.context),
+        { code: 'DST_IMPORT_INITIAL_TARGET_UNKNOWN' },
+    );
+    assert.equal(fs.existsSync(path.join(storyboardDrift.productionRoot, 'media_attempts.jsonl')), false);
+
+    const ledgerDrift = fixture(t);
+    removeRetrySources(ledgerDrift);
+    writeStoryboard(ledgerDrift, [{ clip_id: 'clip_001', characters: ['hero'], location: '' }]);
+    const ledgerWorkspace = provider.getDstBundleImportWorkspace(ledgerDrift.context);
+    const ledgerPlan = provider.planDstBundleImport({
+        candidateToken: ledgerWorkspace.candidates[0].candidate_token,
+        initialMappings: [{ imageIndex: 1, targetToken: targetsOfKind(ledgerWorkspace, 'character_sheet')[0].target_token }],
+    }, ledgerDrift.context);
+    assert.equal(ledgerPlan.ready, true);
+    fs.writeFileSync(path.join(ledgerDrift.productionRoot, 'media_attempts.jsonl'), `${JSON.stringify({
+        media_id: 'unrelated', kind: 'scene_image', target_id: 'clip_other', provider: 'dst', attempt: 1,
+    })}\n`);
+    assert.throws(
+        () => provider.confirmDstBundleImport({ planToken: ledgerPlan.plan_token, confirmed: true }, ledgerDrift.context),
+        { code: 'DST_IMPORT_PLAN_STALE' },
+    );
+    assert.equal(fs.existsSync(path.join(ledgerDrift.productionRoot, 'media', 'imports', 'dst')), false);
 });
 
 test('explicit sheet mapping imports each image into its own saved DST retry item with one ledger rename', (t) => {

@@ -354,24 +354,24 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
 
     await byText(studio, 'button', '참조 이미지').dispatchEvent({ type: 'click' });
     assert.match(studio.textContent, /하네스 이미지 대시보드를 읽기 전용으로 보여 줍니다/);
-    assert.deepEqual(visibleBadgeLabels(), ['통과']);
+    assert.deepEqual(visibleBadgeLabels(), []);
 
     await byText(studio, 'button', '프롬프트 팩').dispatchEvent({ type: 'click' });
     assert.deepEqual(visibleBadgeLabels(), []);
 
     await byText(studio, 'button', '검토 게이트').dispatchEvent({ type: 'click' });
-    assert.equal(visibleBadgeLabels().length, 8, 'review gates keep exactly one short Korean badge per gate');
-    assert.ok(visibleBadgeLabels().every((label) => ['통과', '준비 필요', '검토 전', '확인 필요'].includes(label)));
+    assert.deepEqual(visibleBadgeLabels(), [], 'review gate states stay readable without repeated badges');
+    assert.match(studio.textContent, /통과|준비 필요|검토 전|확인 필요/);
 
     await byText(studio, 'button', '생성 대기열').dispatchEvent({ type: 'click' });
     const queueText = studio.textContent;
-    assert.match(queueText, /Canonical 하네스 연결연결됨/);
+    assert.match(queueText, /Canonical 하네스 연결통과/);
     assert.match(queueText, /라이브 제출은 차단/);
     assert.match(queueText, /필요할 때만 펼쳐서 명령 내용을 확인하세요/);
     assert.match(queueText, /복사 불가/);
     assert.match(queueText, /생성 승인 필요/);
     assert.doesNotMatch(queueText, /CREDIT_CONFIRMATION_REQUIRED|DREAMINA_PREFLIGHT_BLOCKED/);
-    assert.deepEqual(visibleBadgeLabels(), ['연결됨', '제출 전']);
+    assert.deepEqual(visibleBadgeLabels(), []);
     assert.ok(byText(studio, 'button', '제출 차단')?.disabled, 'submit control must stay visibly disabled');
 
     const unsafeEnabledButtons = findAll(studio, 'button').filter((button) => (
@@ -857,6 +857,236 @@ test('MOCK DST reference bundle shows every image and maps each once to the same
     assert.equal(previewCalls.length, 2, 'cached thumbnails are not fetched again after rerenders');
 });
 
+test('MOCK DST first import maps every image to an authoritative Korean-labeled target without a retry draft', async (t) => {
+    const calls = [];
+    const previewCalls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaRetryPlanBand } = await import('../src/components/pipeline/MediaRetryPlanBand.js');
+    const band = MediaRetryPlanBand({
+        plan: { status: 'empty', blockers: [], items: [] },
+        dstBundleImportWorkspace: {
+            status: 'ready',
+            blockers: [],
+            candidates: [{
+                candidate_token: 'opaque-first-bundle',
+                bundle_id: 'first-character-sheets',
+                created_at: '2026-07-15T08:00:00Z',
+                prompt_excerpt: '주인공 첫 캐릭터 시트',
+                image_count: 3,
+                total_size_bytes: 6144,
+            }],
+            initial_targets: [{
+                target_token: 'opaque-character-one',
+                kind: 'character_sheet',
+                target_id: 'character_zhixia',
+                target_label: '지아',
+                sequence: 1,
+            }, {
+                target_token: 'opaque-character-two',
+                kind: 'character_sheet',
+                target_id: 'character_mother',
+                target_label: '엄마',
+                sequence: 2,
+            }, {
+                target_token: 'opaque-character-three',
+                kind: 'character_sheet',
+                target_id: 'character_teacher',
+                target_label: '담임 선생님',
+                sequence: 3,
+            }, {
+                target_token: 'opaque-location-one',
+                kind: 'location_sheet',
+                target_id: 'location_classroom',
+                target_label: '교실',
+                sequence: 1,
+            }, {
+                target_token: 'opaque-scene-one',
+                kind: 'scene_image',
+                target_id: 'clip_001',
+                target_label: '첫 장면',
+                sequence: 1,
+            }],
+        },
+        dstBundleImportPreview: {
+            status: 'ready',
+            ready: true,
+            candidate_token: 'opaque-first-bundle',
+            image_index: 1,
+            preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=', byte_length: 8 },
+            blockers: [],
+        },
+        async onLoadDstBundleImportPreview(payload) {
+            previewCalls.push(payload);
+            return {
+                status: 'ready',
+                ready: true,
+                candidate_token: payload.candidateToken,
+                image_index: payload.imageIndex,
+                preview: { mime_type: 'image/png', base64: `iVBORw0KGg${payload.imageIndex}=`, byte_length: 8 },
+                blockers: [],
+            };
+        },
+        async onPlanDstBundleImport(payload) {
+            calls.push(['plan', payload]);
+            return {
+                status: 'ready',
+                ready: true,
+                mapping_mode: 'initial_targets',
+                plan_token: 'opaque-first-plan',
+                source_bundle_id: 'first-character-sheets',
+                image_count: 3,
+                new_image_count: 3,
+                blockers: [],
+                executed: false,
+            };
+        },
+        async onConfirmDstBundleImport(payload) {
+            calls.push(['confirm', payload]);
+            return { ok: true, imported: true, imported_count: 3, executed: true };
+        },
+    });
+
+    assert.match(band.textContent, /첫 이미지 연결/);
+    assert.doesNotMatch(band.textContent, /제공자별 다시 만들기 계획|검토 초안을 저장한 뒤/);
+    assert.equal(byAttribute(band, 'select', 'id', 'dst-import-mode'), null, 'mode choice stays hidden when only first import is available');
+
+    const kindSelect = byAttribute(band, 'select', 'id', 'dst-import-initial-kind');
+    const kindLabel = byAttribute(band, 'label', 'for', 'dst-import-initial-kind');
+    assert.equal(kindLabel.textContent, '이미지 종류');
+    assert.match(kindSelect.className, /min-h-11/);
+    assert.deepEqual(findAll(kindSelect, 'option').map((option) => [option.value, option.textContent]), [
+        ['character_sheet', '캐릭터'],
+        ['location_sheet', '장소'],
+        ['scene_image', '장면'],
+    ]);
+
+    await flushRenderer();
+    assert.deepEqual(previewCalls, [
+        { candidateToken: 'opaque-first-bundle', imageIndex: 2 },
+        { candidateToken: 'opaque-first-bundle', imageIndex: 3 },
+    ]);
+    for (let imageIndex = 1; imageIndex <= 3; imageIndex += 1) {
+        const select = byAttribute(band, 'select', 'id', `dst-reference-target-${imageIndex}`);
+        const label = byAttribute(band, 'label', 'for', `dst-reference-target-${imageIndex}`);
+        assert.ok(byAttribute(band, 'img', 'alt', `이미지 ${imageIndex} 미리보기`));
+        assert.equal(label.textContent, `이미지 ${imageIndex} 대상`);
+        assert.match(select.className, /min-h-11/);
+        assert.equal(select.value, ['opaque-character-one', 'opaque-character-two', 'opaque-character-three'][imageIndex - 1]);
+    }
+    assert.match(band.textContent, /1\. 지아 · 캐릭터/);
+    assert.match(band.textContent, /2\. 엄마 · 캐릭터/);
+    assert.match(band.textContent, /3\. 담임 선생님 · 캐릭터/);
+    assert.equal(band.textContent.includes('character_zhixia'), false, 'Korean labels replace internal target ids');
+    assert.equal(band.textContent.includes('opaque-character-one'), false, 'opaque target tokens stay out of copy');
+    assert.ok(descendants(band).some((node) => /grid-cols-1/.test(node.className)
+        && /sm:grid-cols-2/.test(node.className) && /xl:grid-cols-3/.test(node.className)));
+
+    let second = byAttribute(band, 'select', 'id', 'dst-reference-target-2');
+    second.value = '';
+    await second.dispatchEvent({ type: 'change' });
+    assert.equal(byText(band, 'button', '연결 확인').disabled, true);
+
+    let first = byAttribute(band, 'select', 'id', 'dst-reference-target-1');
+    assert.deepEqual(findAll(first, 'option').map((option) => option.value), [
+        '', 'opaque-character-one', 'opaque-character-two',
+    ]);
+    first.value = 'opaque-character-two';
+    await first.dispatchEvent({ type: 'change' });
+    second = byAttribute(band, 'select', 'id', 'dst-reference-target-2');
+    assert.deepEqual(findAll(second, 'option').map((option) => option.value), ['', 'opaque-character-one']);
+    second.value = 'opaque-character-one';
+    await second.dispatchEvent({ type: 'change' });
+
+    await byText(band, 'button', '연결 확인').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[0], ['plan', {
+        candidateToken: 'opaque-first-bundle',
+        initialMappings: [
+            { imageIndex: 1, targetToken: 'opaque-character-two' },
+            { imageIndex: 2, targetToken: 'opaque-character-one' },
+            { imageIndex: 3, targetToken: 'opaque-character-three' },
+        ],
+    }]);
+    assert.match(band.textContent, /3장의 연결을 확인했습니다/);
+    assert.doesNotMatch(band.textContent, /PASS|PREVIEW|BLOCK|DST_/);
+
+    await byText(band, 'button', '3장 연결').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[1], ['confirm', { planToken: 'opaque-first-plan', confirmed: true }]);
+    assert.match(band.textContent, /3장을 각각 연결했습니다/);
+    assert.match(band.textContent, /이미지 묶음을 작업대에 연결했습니다/);
+});
+
+test('MOCK DST connection mode choice appears only when first and retry targets both exist', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaRetryPlanBand } = await import('../src/components/pipeline/MediaRetryPlanBand.js');
+    const band = MediaRetryPlanBand({
+        plan: {
+            status: 'preview_ready',
+            blockers: [],
+            items: [{
+                sequence: 1,
+                media_id: 'saved-retry',
+                target_id: 'clip_002',
+                provider: 'dst',
+                kind: 'scene_image',
+                readiness: 'preview_ready',
+                blockers: [],
+                command_spec: {},
+            }],
+        },
+        dstBundleImportWorkspace: {
+            status: 'ready',
+            candidates: [{
+                candidate_token: 'opaque-both-bundle',
+                bundle_id: 'both-modes',
+                image_count: 1,
+                created_at: '2026-07-15T08:00:00Z',
+            }],
+            initial_targets: [{
+                target_token: 'opaque-first-scene',
+                kind: 'scene_image',
+                target_id: 'clip_001',
+                target_label: '첫 장면',
+                sequence: 1,
+            }],
+        },
+        dstBundleImportPreview: {
+            ready: true,
+            candidate_token: 'opaque-both-bundle',
+            preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=' },
+        },
+        async onLoadDstBundleImportPreview(payload) {
+            return {
+                ready: true,
+                candidate_token: payload.candidateToken,
+                image_index: payload.imageIndex,
+                preview: { mime_type: 'image/png', base64: 'iVBORw0KGgo=' },
+            };
+        },
+        async onPlanDstBundleImport() {
+            return { status: 'blocked', ready: false };
+        },
+    });
+
+    let mode = byAttribute(band, 'select', 'id', 'dst-import-mode');
+    assert.equal(byAttribute(band, 'label', 'for', 'dst-import-mode').textContent, '연결 방식');
+    assert.deepEqual(findAll(mode, 'option').map((option) => [option.value, option.textContent]), [
+        ['initial', '처음 연결'],
+        ['retry', '다시 연결'],
+    ]);
+    assert.ok(byAttribute(band, 'select', 'id', 'dst-import-initial-kind'));
+    assert.ok(byText(band, 'button', '연결 확인'));
+
+    mode.value = 'retry';
+    await mode.dispatchEvent({ type: 'change' });
+    mode = byAttribute(band, 'select', 'id', 'dst-import-mode');
+    assert.equal(mode.value, 'retry');
+    assert.ok(byAttribute(band, 'select', 'id', 'dst-import-retry-target'));
+    assert.equal(byAttribute(band, 'select', 'id', 'dst-import-initial-kind'), null);
+    assert.ok(byText(band, 'button', '묶음 확인'));
+});
+
 test('MOCK video result import binds Flow candidates to the exact saved video retry', async (t) => {
     const calls = [];
     const { restore } = installDeterministicDom({});
@@ -1009,6 +1239,7 @@ test('MOCK media attempt cards keep Korean labels and semantic review colors', a
             media_id: `media-${reviewStatus}`,
             kind: 'scene_image',
             target_id: 'clip_001',
+            target_label: '첫 장면',
             provider: 'dst',
             attempt: 1,
             generation_status: 'downloaded',
@@ -1018,6 +1249,8 @@ test('MOCK media attempt cards keep Korean labels and semantic review colors', a
         const badge = findAll(card, 'span').find((span) => span.textContent.trim() === label);
         assert.ok(badge, `${reviewStatus} must keep its Korean label`);
         assert.match(badge.className, new RegExp(classToken), `${reviewStatus} must use its semantic badge tone`);
+        assert.match(card.textContent, /첫 장면/);
+        assert.equal(card.textContent.includes('clip_001'), false, 'the review card shows the user-facing target label');
     }
 });
 

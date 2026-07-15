@@ -26,6 +26,7 @@ export function deriveMediaAttempts(state = {}) {
         media_id: asset.asset_id || `asset_${index + 1}`,
         kind: ['character_sheet', 'location_sheet'].includes(asset.type) ? asset.type : 'scene_image',
         target_id: asset.target_clip_id || asset.target_id || asset.asset_id || '',
+        target_label: asset.target_label || asset.target_clip_id || asset.target_id || asset.asset_id || '',
         provider: fallbackProvider(asset.provider, 'dst'),
         operation_id: asset.operation_id || '',
         attempt: Number.isSafeInteger(Number(asset.attempt)) && Number(asset.attempt) > 0 ? Number(asset.attempt) : 1,
@@ -43,6 +44,7 @@ export function deriveMediaAttempts(state = {}) {
             media_id: `${record.clip_id || `clip_${recordIndex + 1}`}_download_${fileIndex + 1}`,
             kind: 'video',
             target_id: record.clip_id || '',
+            target_label: record.target_label || record.clip_id || '',
             provider: fallbackProvider(record.provider || state.project?.route, 'seedance'),
             operation_id: record.submit_id || record.operation_id || '',
             attempt: fileIndex + 1,
@@ -124,7 +126,13 @@ export function groupMediaAttempts(attempts = []) {
             return;
         }
         const targetId = attempt.target_id || 'unassigned';
-        const group = scenes.get(targetId) || { target_id: targetId, images: [], videos: [] };
+        const group = scenes.get(targetId) || {
+            target_id: targetId,
+            target_label: attempt.target_label || targetId,
+            images: [],
+            videos: [],
+        };
+        if (!group.target_label && attempt.target_label) group.target_label = attempt.target_label;
         if (attempt.kind === 'video') group.videos.push(attempt);
         else group.images.push(attempt);
         scenes.set(targetId, group);

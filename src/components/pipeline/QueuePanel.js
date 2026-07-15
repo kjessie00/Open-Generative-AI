@@ -4,7 +4,7 @@ import { QUEUE_PHASES, validateSeedanceQueuePolicy, validateSubmitAllowed } from
 import { actionButton, card, dataTable, el, panelShell } from './ui.js';
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { p } from './copy.js';
-import { blockerLabel, issueList, queuePhaseLabel, simpleStatusBadge } from './generationUi.js';
+import { blockerLabel, issueList, plainStatus, queuePhaseLabel } from './generationUi.js';
 
 function latestHeartbeatForClip(state, clipId) {
     return [...(state.heartbeatRecords || [])].reverse().find((record) => record.clip_id === clipId) || null;
@@ -40,7 +40,10 @@ function phaseBadge(phase) {
         [QUEUE_PHASES.QUEUED]: 'PREVIEW',
         [QUEUE_PHASES.NOT_QUEUED]: 'UNREVIEWED',
     }[phase] || 'UNREVIEWED';
-    return simpleStatusBadge(status, queuePhaseLabel(phase));
+    return el('span', {
+        text: queuePhaseLabel(phase),
+        className: status === 'BLOCK' || status === 'FAIL' ? 'text-sm text-amber-100' : 'text-sm text-secondary',
+    });
 }
 
 function submitIdBadge(submitId) {
@@ -87,11 +90,10 @@ function strictBlockerCard(queuePolicy) {
 
 function harnessStatusCard(harnessStatus) {
     const readiness = harnessStatus?.readiness || 'blocked';
-    const badge = readiness === 'available' ? 'PASS' : readiness === 'partial' ? 'WARN' : 'BLOCK';
     return card([
         el('div', { className: 'mb-2 flex flex-wrap items-center gap-2' }, [
             el('div', { text: p('Canonical harness handoff'), className: 'text-sm font-bold text-white' }),
-            simpleStatusBadge(badge, readiness === 'available' ? '연결됨' : readiness === 'partial' ? '일부 준비' : '연결 필요'),
+            plainStatus(readiness === 'available' ? 'PASS' : readiness === 'partial' ? 'WARN' : 'BLOCK'),
         ]),
         el('p', {
             text: readiness === 'available'

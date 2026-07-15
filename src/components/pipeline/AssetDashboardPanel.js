@@ -2,12 +2,7 @@ import { BLOCKERS } from '../../lib/pipeline/blockers.js';
 import { validateImageDashboard } from '../../lib/pipeline/validators.js';
 import { card, dataTable, el, infoGrid, panelShell } from './ui.js';
 import { p } from './copy.js';
-import { issueList, plainStatus, simpleStatusBadge } from './generationUi.js';
-
-function verdictBadge(asset) {
-    const verdict = asset.review_verdict || 'UNREVIEWED';
-    return simpleStatusBadge(verdict);
-}
+import { issueList, plainStatus } from './generationUi.js';
 
 function hasAssetException(asset) {
     return asset.review_verdict === 'EXCEPTION' || asset.explicit_exception === true || asset.exception_approved === true;
@@ -56,7 +51,7 @@ export function AssetDashboardPanel({ state }) {
             { label: p('Target shot'), key: 'target_clip_id' },
             { label: p('Prompt path'), key: 'prompt_path' },
             { label: p('Review path'), key: 'review_path' },
-            { label: p('Verdict'), render: verdictBadge },
+            { label: p('Verdict'), render: (asset) => plainStatus(asset.review_verdict || 'UNREVIEWED') },
             { label: p('Video-use status'), key: 'video_use_status' },
             { label: p('Continuity notes'), key: 'continuity_notes' },
             { label: p('Retry notes'), key: 'retry_notes' },

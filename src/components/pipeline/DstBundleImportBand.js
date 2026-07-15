@@ -2,6 +2,7 @@ import { actionButton, el, emptyState } from './ui.js';
 
 const SAFE_PREVIEW_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const REFERENCE_KINDS = new Set(['character_sheet', 'location_sheet']);
+const INITIAL_KINDS = ['character_sheet', 'location_sheet', 'scene_image'];
 
 const KIND_LABELS = Object.freeze({
     character_sheet: '캐릭터',
@@ -36,7 +37,11 @@ function itemSequence(item) {
 }
 
 function itemLabel(item) {
-    return `${itemSequence(item)}. ${item.target_id || item.media_id} · ${KIND_LABELS[item.kind] || '이미지'}`;
+    return `${itemSequence(item)}. ${item.target_label || item.target_id || item.media_id} · ${KIND_LABELS[item.kind] || '이미지'}`;
+}
+
+function initialTargetLabel(item) {
+    return `${itemSequence(item)}. ${item.target_label || item.target_id} · ${KIND_LABELS[item.kind] || '이미지'}`;
 }
 
 function labeledSelect(id, labelText, options, value, onChange) {
@@ -68,6 +73,30 @@ export function DstBundleImportBand({
     onConfirm,
 }) {
     const candidates = Array.isArray(workspace?.candidates) ? workspace.candidates : [];
+    const initialTargets = Array.isArray(workspace?.initial_targets)
+        ? workspace.initial_targets.filter((item) => (
+            INITIAL_KINDS.includes(item?.kind)
+            && typeof item?.target_token === 'string'
+            && item.target_token
+            && itemSequence(item)
+        ))
+        : [];
+    const initialKinds = INITIAL_KINDS.filter((kind) => initialTargets.some((item) => item.kind === kind));
+    const hasInitialMode = initialKinds.length > 0;
+    const hasRetryMode = retryItems.length > 0;
+    const planUsesInitialTargets = ['initial_targets', 'explicit_initial_targets'].includes(plan?.mapping_mode)
+        || plan?.import_mode === 'initial'
+        || plan?.initial === true;
+    const planUsesRetryItems = Boolean(plan?.retry_media_id)
+        || ['single_retry_target', 'explicit_retry_items'].includes(plan?.mapping_mode);
+    let selectedMode = planUsesInitialTargets
+        ? 'initial'
+        : planUsesRetryItems
+            ? 'retry'
+            : hasInitialMode
+                ? 'initial'
+                : 'retry';
+    let selectedInitialKind = initialKinds.includes(plan?.kind) ? plan.kind : initialKinds[0] || '';
     const plannedRetry = retryItems.find((item) => item.media_id === plan?.retry_media_id);
     let selectedRetryMediaId = plannedRetry?.media_id || retryItems[0]?.media_id || '';
     let selectedCandidateToken = candidates.find((candidate) => candidate.bundle_id === plan?.source_bundle_id)?.candidate_token
@@ -93,6 +122,14 @@ export function DstBundleImportBand({
         attrs: { 'aria-labelledby': 'dst-bundle-import-title' },
     });
 
+    const resetSelection = () => {
+        activePlan = null;
+        activePreview = null;
+        referenceMappingKey = '';
+        referenceMappings = [];
+        feedback = '';
+    };
+
     const referenceContext = (candidate, retryItem) => {
         if (!candidate || !REFERENCE_KINDS.has(retryItem?.kind)) return null;
         const count = Number(candidate.image_count) || 1;
@@ -111,6 +148,26 @@ export function DstBundleImportBand({
             && new Set(selected).size === count
             && selected.every((mediaId) => availableTargets.has(mediaId));
         return { count, targets, complete };
+    };
+
+    const initialContext = (candidate) => {
+        if (!candidate || selectedMode !== 'initial' || !selectedInitialKind) return null;
+        const count = Number(candidate.image_count) || 1;
+        const targets = initialTargets
+            .filter((item) => item.kind === selectedInitialKind)
+            .sort((left, right) => itemSequence(left) - itemSequence(right));
+        const key = `initial:${selectedCandidateToken}:${selectedInitialKind}:${count}:${targets.map((item) => item.target_token).join(',')}`;
+        if (referenceMappingKey !== key) {
+            referenceMappingKey = key;
+            referenceMappings = Array.from({ length: count }, (_, index) => targets[index]?.target_token || '');
+        }
+        const availableTargets = new Set(targets.map((item) => item.target_token));
+        const selected = referenceMappings.filter(Boolean);
+        const complete = referenceMappings.length === count
+            && selected.length === count
+            && new Set(selected).size === count
+            && selected.every((targetToken) => availableTargets.has(targetToken));
+        return { count, targets, complete, initial: true, kind: selectedInitialKind };
     };
 
     const loadScenePreview = async (candidateToken) => {
@@ -144,6 +201,9 @@ export function DstBundleImportBand({
         }
     };
 
+    const mappingValue = (context, item) => context.initial ? item.target_token : item.media_id;
+    const mappingLabel = (context, item) => context.initial ? initialTargetLabel(item) : itemLabel(item);
+
     const mappingOptions = (context, imageIndex) => {
         const selectedElsewhere = new Set(referenceMappings
             .filter((_, index) => index !== imageIndex - 1)
@@ -152,8 +212,8 @@ export function DstBundleImportBand({
         return [
             { value: '', label: '대상 선택' },
             ...context.targets
-                .filter((item) => item.media_id === current || !selectedElsewhere.has(item.media_id))
-                .map((item) => ({ value: item.media_id, label: itemLabel(item) })),
+                .filter((item) => mappingValue(context, item) === current || !selectedElsewhere.has(mappingValue(context, item)))
+                .map((item) => ({ value: mappingValue(context, item), label: mappingLabel(context, item) })),
         ];
     };
 
@@ -162,7 +222,7 @@ export function DstBundleImportBand({
         attrs: { 'aria-label': '참조 이미지 대상 연결' },
     }, [
         el('p', {
-            text: `${KIND_LABELS[retryItems.find((item) => item.media_id === selectedRetryMediaId)?.kind] || '참조'} 이미지 ${context.count}장을 각각 연결하세요.`,
+            text: `${KIND_LABELS[context.kind || retryItems.find((item) => item.media_id === selectedRetryMediaId)?.kind] || '참조'} 이미지 ${context.count}장을 각각 연결하세요.`,
             className: 'text-xs text-secondary',
         }),
         el('div', { className: 'mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3' }, (
@@ -202,19 +262,33 @@ export function DstBundleImportBand({
     const render = () => {
         const candidate = candidates.find((item) => item.candidate_token === selectedCandidateToken);
         const retryItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
-        const references = referenceContext(candidate, retryItem);
+        const references = selectedMode === 'initial'
+            ? initialContext(candidate)
+            : referenceContext(candidate, retryItem);
         const previewUrl = previewSource(activePreview);
         const workspaceBlocked = workspace?.status === 'blocked';
         const planReady = activePlan?.ready === true && Boolean(activePlan?.plan_token);
         const imported = activePlan?.imported === true || activePlan?.already_current === true;
-        const canPlan = Boolean(selectedRetryMediaId && selectedCandidateToken && typeof onPlan === 'function'
-            && (!references || references.complete));
+        const canPlan = Boolean(selectedCandidateToken && typeof onPlan === 'function'
+            && (selectedMode === 'initial'
+                ? references?.complete
+                : selectedRetryMediaId && (!references || references.complete)));
+        const hasActiveMode = selectedMode === 'initial' ? hasInitialMode : hasRetryMode;
+        const showModeSelect = hasInitialMode && hasRetryMode;
+        const controlColumns = selectedMode === 'initial'
+            ? showModeSelect ? 'lg:grid-cols-3' : 'lg:grid-cols-2'
+            : showModeSelect ? 'lg:grid-cols-3' : 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_12rem]';
 
         root.replaceChildren(...[
             el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
                 el('div', {}, [
-                    el('h4', { text: 'DST 이미지 연결', className: 'text-sm font-bold text-white', attrs: { id: 'dst-bundle-import-title' } }),
-                    el('p', { text: '완료된 이미지 묶음을 선택한 항목에 한 번에 연결합니다.', className: 'mt-1 text-xs text-secondary' }),
+                    el('h4', { text: selectedMode === 'initial' ? '첫 이미지 연결' : 'DST 이미지 연결', className: 'text-sm font-bold text-white', attrs: { id: 'dst-bundle-import-title' } }),
+                    el('p', {
+                        text: selectedMode === 'initial'
+                            ? '완료된 이미지를 캐릭터·장소·장면에 처음 연결합니다.'
+                            : '완료된 이미지 묶음을 선택한 항목에 한 번에 연결합니다.',
+                        className: 'mt-1 text-xs text-secondary',
+                    }),
                 ]),
                 actionButton(workspace?.status === 'loading' ? '확인 중…' : '결과 목록 새로고침', {
                     variant: 'muted',
@@ -222,9 +296,35 @@ export function DstBundleImportBand({
                     onClick: () => onRefresh?.(),
                 }),
             ]),
-            retryItems.length && candidates.length
-                ? el('div', { className: 'mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_12rem]' }, [
-                    labeledSelect(
+            hasActiveMode && candidates.length
+                ? el('div', { className: `mt-4 grid grid-cols-1 gap-4 ${controlColumns}` }, [
+                    showModeSelect ? labeledSelect(
+                        'dst-import-mode',
+                        '연결 방식',
+                        [
+                            { value: 'initial', label: '처음 연결' },
+                            { value: 'retry', label: '다시 연결' },
+                        ],
+                        selectedMode,
+                        (value) => {
+                            selectedMode = value;
+                            resetSelection();
+                            render();
+                            const nextItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
+                            if (value === 'retry' && !REFERENCE_KINDS.has(nextItem?.kind)) void loadScenePreview(selectedCandidateToken);
+                        },
+                    ) : null,
+                    selectedMode === 'initial' ? labeledSelect(
+                        'dst-import-initial-kind',
+                        '이미지 종류',
+                        initialKinds.map((kind) => ({ value: kind, label: KIND_LABELS[kind] })),
+                        selectedInitialKind,
+                        (value) => {
+                            selectedInitialKind = value;
+                            resetSelection();
+                            render();
+                        },
+                    ) : labeledSelect(
                         'dst-import-retry-target',
                         '연결할 항목',
                         retryItems.map((item) => ({
@@ -234,8 +334,7 @@ export function DstBundleImportBand({
                         selectedRetryMediaId,
                         (value) => {
                             selectedRetryMediaId = value;
-                            activePlan = null;
-                            feedback = '';
+                            resetSelection();
                             render();
                             const nextItem = retryItems.find((item) => item.media_id === value);
                             if (!REFERENCE_KINDS.has(nextItem?.kind)) void loadScenePreview(selectedCandidateToken);
@@ -252,40 +351,46 @@ export function DstBundleImportBand({
                         selectedCandidateToken,
                         async (value) => {
                             selectedCandidateToken = value;
-                            activePlan = null;
-                            activePreview = null;
-                            feedback = '';
+                            resetSelection();
                             render();
                             const nextItem = retryItems.find((item) => item.media_id === selectedRetryMediaId);
-                            if (!REFERENCE_KINDS.has(nextItem?.kind)) await loadScenePreview(value);
+                            if (selectedMode === 'retry' && !REFERENCE_KINDS.has(nextItem?.kind)) await loadScenePreview(value);
                         },
                     ),
-                    !references && previewUrl
+                    selectedMode === 'retry' && !references && previewUrl
                         ? el('img', {
                             className: 'aspect-video h-full max-h-28 w-full rounded-md border border-white/10 bg-black object-cover',
                             attrs: { src: previewUrl, alt: `${candidate.bundle_id} 결과 미리보기` },
                         })
-                        : !references ? emptyState('미리보기 없음') : null,
-                ])
-                : emptyState(retryItems.length
-                    ? workspaceBlocked
+                        : selectedMode === 'retry' && !references ? emptyState('미리보기 없음') : null,
+                ].filter(Boolean))
+                : emptyState(candidates.length
+                    ? selectedMode === 'initial'
+                        ? '스토리보드에 연결할 첫 대상이 없습니다.'
+                        : 'DST 이미지 다시 만들기 항목을 먼저 선택하고 검토 초안을 저장하세요.'
+                    : workspaceBlocked
                         ? 'DST 완료 결과 목록을 읽지 못했습니다. 결과 목록을 새로고침하세요.'
-                        : '가져올 수 있는 완료 이미지가 없습니다.'
-                    : 'DST 이미지 다시 만들기 항목을 먼저 선택하고 검토 초안을 저장하세요.'),
+                        : '가져올 수 있는 완료 이미지가 없습니다.'),
             candidate ? el('p', {
                 text: [formatCreatedAt(candidate.created_at), candidate.prompt_excerpt].filter(Boolean).join(' · '),
                 className: 'mt-3 line-clamp-2 text-xs leading-5 text-secondary',
             }) : null,
             references ? referenceMappingGrid(references) : null,
-            retryItems.length && candidates.length ? el('div', { className: 'mt-4 flex flex-wrap items-center gap-3' }, [
-                actionButton(busy ? '확인 중…' : '묶음 확인', {
+            hasActiveMode && candidates.length ? el('div', { className: 'mt-4 flex flex-wrap items-center gap-3' }, [
+                actionButton(busy ? '확인 중…' : selectedMode === 'initial' ? '연결 확인' : '묶음 확인', {
                     disabled: busy || !canPlan,
                     onClick: async () => {
                         busy = true;
                         feedback = '';
                         render();
                         try {
-                            activePlan = await onPlan(references ? {
+                            activePlan = await onPlan(selectedMode === 'initial' ? {
+                                candidateToken: selectedCandidateToken,
+                                initialMappings: referenceMappings.map((targetToken, index) => ({
+                                    imageIndex: index + 1,
+                                    targetToken,
+                                })),
+                            } : references ? {
                                 candidateToken: selectedCandidateToken,
                                 mappings: referenceMappings.map((retryMediaId, index) => ({
                                     imageIndex: index + 1,

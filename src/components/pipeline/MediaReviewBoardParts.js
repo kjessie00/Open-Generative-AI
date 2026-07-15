@@ -17,10 +17,11 @@ const REVIEW_BADGE_STATUS = Object.freeze({
 function mediaPreview(attempt) {
     const kind = attempt.kind === 'video' ? 'video' : 'image';
     const source = localMediaSource(attempt.path, kind);
+    const targetLabel = attempt.target_label || attempt.target_id || attempt.media_id;
     if (kind === 'image' && source) {
         return el('img', {
             className: 'media-review-preview',
-            attrs: { src: source, alt: `${attempt.target_id || attempt.media_id} 시도 ${attempt.attempt}` },
+            attrs: { src: source, alt: `${targetLabel} 시도 ${attempt.attempt}` },
         });
     }
     if (kind === 'video' && source) {
@@ -39,6 +40,7 @@ function mediaPreview(attempt) {
 }
 
 export function MediaAttemptCard(attempt, actions) {
+    const targetLabel = attempt.target_label || attempt.target_id || '대상 미지정';
     const note = el('textarea', {
         value: attempt.review_note || '',
         className: 'media-review-note',
@@ -53,7 +55,7 @@ export function MediaAttemptCard(attempt, actions) {
     return card([
         el('div', { className: 'media-review-card-head' }, [
             el('div', { className: 'min-w-0' }, [
-                el('strong', { text: attempt.target_id || '대상 미지정', className: 'media-review-target' }),
+                el('strong', { text: targetLabel, className: 'media-review-target' }),
                 el('span', { text: `${attempt.provider || '제공자 미상'} · 시도 ${attempt.attempt}`, className: 'media-review-meta' }),
             ]),
             statusBadge(
@@ -103,7 +105,7 @@ export function SceneReviewRow(group, clip, actions) {
         el('header', { className: 'media-review-scene-head' }, [
             el('div', {}, [
                 el('span', { text: clip?.scene_id || '장면', className: 'media-review-kicker' }),
-                el('h3', { text: group.target_id }),
+                el('h3', { text: group.target_label || group.target_id }),
             ]),
             el('p', { text: clip?.dramatic_beat || '장면 설명이 아직 연결되지 않았습니다.' }),
         ]),

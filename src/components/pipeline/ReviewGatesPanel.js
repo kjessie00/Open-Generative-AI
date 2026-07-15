@@ -1,6 +1,6 @@
 import { dataTable, el, panelShell } from './ui.js';
 import { p } from './copy.js';
-import { blockerLabel, gateLabel, simpleStatusBadge } from './generationUi.js';
+import { blockerLabel, gateLabel, plainStatus } from './generationUi.js';
 
 const GATE_ORDER = [
     'image_prompt',
@@ -33,7 +33,7 @@ export function ReviewGatesPanel({ state }) {
             el('article', { className: 'rounded-lg border border-white/10 bg-white/[0.035] p-4' }, [
                 el('div', { className: 'flex items-center justify-between gap-3' }, [
                     el('h3', { text: gateLabel(gate.type), className: 'text-base font-bold text-white' }),
-                    simpleStatusBadge(gate.status),
+                    plainStatus(gate.status),
                 ]),
                 gate.blocker ? el('p', { text: blockerLabel(gate.blocker), className: 'mt-3 text-sm text-amber-100', title: gate.blocker }) : null,
                 gate.notes ? el('p', { text: gate.notes, className: 'mt-2 text-sm leading-6 text-secondary' }) : null,

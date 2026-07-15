@@ -102,6 +102,7 @@ function normalizeMediaAttempts(rawReader) {
             media_id: mediaId,
             kind: MEDIA_KINDS.has(record?.kind) ? record.kind : 'scene_image',
             target_id: safeMediaString(record?.target_id, 160),
+            target_label: safeMediaString(record?.target_label, 256) || safeMediaString(record?.target_id, 160),
             provider: MEDIA_PROVIDERS.has(record?.provider) ? record.provider : '',
             operation_id: safeMediaString(record?.operation_id, 256),
             attempt: Number.isSafeInteger(Number(record?.attempt)) && Number(record.attempt) > 0 ? Number(record.attempt) : 1,

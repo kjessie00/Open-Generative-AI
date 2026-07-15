@@ -65,8 +65,11 @@ export function MediaRetryPlanBand({
     const videoItems = items.filter((item) => item.kind === 'video'
         && ['flow', 'grok', 'replicate', 'bytedance'].includes(String(item.provider || '').toLowerCase()));
     const loading = plan?.status === 'loading';
+    const hasInitialTargets = Array.isArray(dstBundleImportWorkspace?.initial_targets)
+        && dstBundleImportWorkspace.initial_targets.length > 0;
+    const showRetryPlan = items.length > 0 || !hasInitialTargets;
     return el('section', { className: 'media-review-band' }, [
-        el('header', { className: 'media-review-band-head' }, [
+        showRetryPlan ? el('header', { className: 'media-review-band-head' }, [
             el('div', {}, [
                 el('h3', { text: '제공자별 다시 만들기 계획' }),
                 el('p', { text: '저장된 검토 초안을 Electron main이 다시 읽어 만든 순서 고정·실행 안 함 계획입니다.' }),
@@ -76,14 +79,14 @@ export function MediaRetryPlanBand({
                 disabled: loading || typeof onRefresh !== 'function',
                 onClick: () => onRefresh?.(),
             }),
-        ]),
-        el('div', { className: 'media-review-queue-status' }, [
+        ]) : null,
+        showRetryPlan ? el('div', { className: 'media-review-queue-status' }, [
             el('strong', { text: items.length ? `실행 안 함 · 저장된 순서 ${items.length}개` : '저장된 실행 계획 없음' }),
             plan?.blockers?.length ? el('span', { text: '준비되지 않은 항목이 있습니다.' }) : null,
-        ]),
+        ]) : null,
         items.length
             ? el('div', { className: 'grid grid-cols-1 gap-4 xl:grid-cols-2' }, items.map(retryPlanItem))
-            : emptyState('검토 초안을 저장한 뒤 실행 계획을 확인하세요.'),
+            : showRetryPlan ? emptyState('검토 초안을 저장한 뒤 실행 계획을 확인하세요.') : null,
         DstBundleImportBand({
             retryItems: dstImageItems,
             workspace: dstBundleImportWorkspace,
@@ -94,7 +97,7 @@ export function MediaRetryPlanBand({
             onPlan: onPlanDstBundleImport,
             onConfirm: onConfirmDstBundleImport,
         }),
-        VideoResultImportBand({
+        showRetryPlan ? VideoResultImportBand({
             retryItems: videoItems,
             workspace: videoResultImportWorkspace,
             plan: videoResultImportPlan,
@@ -102,6 +105,6 @@ export function MediaRetryPlanBand({
             onLoadPreview: onLoadVideoResultImportPreview,
             onPlan: onPlanVideoResultImport,
             onConfirm: onConfirmVideoResultImport,
-        }),
-    ]);
+        }) : null,
+    ].filter(Boolean));
 }
