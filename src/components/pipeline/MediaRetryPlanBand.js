@@ -1,5 +1,6 @@
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { DstBundleImportBand } from './DstBundleImportBand.js';
+import { VideoResultImportBand } from './VideoResultImportBand.js';
 import { actionButton, card, el, emptyState, statusBadge } from './ui.js';
 
 const READINESS_LABELS = Object.freeze({
@@ -49,12 +50,20 @@ export function MediaRetryPlanBand({
     onLoadDstBundleImportPreview,
     onPlanDstBundleImport,
     onConfirmDstBundleImport,
+    videoResultImportWorkspace,
+    videoResultImportPlan,
+    onRefreshVideoResultImportWorkspace,
+    onLoadVideoResultImportPreview,
+    onPlanVideoResultImport,
+    onConfirmVideoResultImport,
 }) {
     const items = Array.isArray(plan?.items) ? plan.items : [];
     const dstImageItems = items.filter((item) => (
         String(item.provider || '').toLowerCase() === 'dst'
         && !/(?:video|clip)/i.test(String(item.kind || ''))
     ));
+    const videoItems = items.filter((item) => item.kind === 'video'
+        && ['flow', 'grok'].includes(String(item.provider || '').toLowerCase()));
     const loading = plan?.status === 'loading';
     return el('section', { className: 'media-review-band' }, [
         el('header', { className: 'media-review-band-head' }, [
@@ -85,6 +94,15 @@ export function MediaRetryPlanBand({
             onLoadPreview: onLoadDstBundleImportPreview,
             onPlan: onPlanDstBundleImport,
             onConfirm: onConfirmDstBundleImport,
+        }),
+        VideoResultImportBand({
+            retryItems: videoItems,
+            workspace: videoResultImportWorkspace,
+            plan: videoResultImportPlan,
+            onRefresh: onRefreshVideoResultImportWorkspace,
+            onLoadPreview: onLoadVideoResultImportPreview,
+            onPlan: onPlanVideoResultImport,
+            onConfirm: onConfirmVideoResultImport,
         }),
     ]);
 }

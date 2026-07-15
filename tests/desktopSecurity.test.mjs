@@ -182,6 +182,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     const bridge = exposed.get('filmPipeline');
     assert.deepEqual(Object.keys(bridge).sort(), [
         'confirmDstBundleImport',
+        'confirmVideoResultImport',
         'copyCommandPreview',
         'copyNewProjectBuildCommand',
         'executeFinishingRun',
@@ -193,14 +194,17 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getHarnessContractStatus',
         'getMediaRetryPlan',
         'getNewProjectDraftState',
+        'getVideoResultImportWorkspace',
         'listAssets',
         'listProductionChildren',
         'loadDstBundleImportPreview',
         'loadG3CandidatePreview',
+        'loadVideoResultImportPreview',
         'onProgress',
         'planDstBundleImport',
         'planFinishingRun',
         'planG3ProductionPromotion',
+        'planVideoResultImport',
         'previewCommand',
         'promoteG3ProductionSelection',
         'readJsonl',
@@ -219,6 +223,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.loadDstBundleImportPreview({ candidateToken: 'opaque' });
     await bridge.planDstBundleImport({ candidateToken: 'opaque', retryMediaId: 'media_01' });
     await bridge.confirmDstBundleImport({ planToken: 'opaque', confirmed: true });
+    await bridge.getVideoResultImportWorkspace();
+    await bridge.loadVideoResultImportPreview({ candidateToken: 'video-opaque' });
+    await bridge.planVideoResultImport({ candidateToken: 'video-opaque', retryMediaId: 'video_01' });
+    await bridge.confirmVideoResultImport({ planToken: 'video-plan', confirmed: true });
     await bridge.getNewProjectDraftState();
     await bridge.saveNewProjectDraft({ production_id: 'test-project' });
     await bridge.copyNewProjectBuildCommand();
@@ -251,6 +259,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:load-dst-bundle-import-preview',
             'film-pipeline:plan-dst-bundle-import',
             'film-pipeline:confirm-dst-bundle-import',
+            'film-pipeline:get-video-result-import-workspace',
+            'film-pipeline:load-video-result-import-preview',
+            'film-pipeline:plan-video-result-import',
+            'film-pipeline:confirm-video-result-import',
             'film-pipeline:get-new-project-draft-state',
             'film-pipeline:save-new-project-draft',
             'film-pipeline:copy-new-project-build-command',
@@ -282,6 +294,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-harness-contract-status',
         'film-pipeline:get-media-retry-plan',
         'film-pipeline:get-dst-bundle-import-workspace',
+        'film-pipeline:get-video-result-import-workspace',
         'film-pipeline:get-new-project-draft-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
@@ -305,6 +318,18 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:load-g3-candidate-preview')[1],
         [{ candidateToken: 'opaque' }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:load-video-result-import-preview')[1],
+        [{ candidateToken: 'video-opaque' }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:plan-video-result-import')[1],
+        [{ candidateToken: 'video-opaque', retryMediaId: 'video_01' }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:confirm-video-result-import')[1],
+        [{ planToken: 'video-plan', confirmed: true }],
     );
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:promote-g3-production-selection')[1],

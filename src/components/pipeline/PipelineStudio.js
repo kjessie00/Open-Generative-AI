@@ -104,6 +104,29 @@ function emptyDstBundleImportPlan(status = 'empty', blocker = '') {
     };
 }
 
+function emptyVideoResultImportWorkspace(status = 'empty', blocker = '') {
+    return {
+        status,
+        ready: false,
+        blockers: blocker ? [blocker] : [],
+        candidates: [],
+    };
+}
+
+function emptyVideoResultImportPlan(status = 'empty', blocker = '') {
+    return {
+        status,
+        ready: false,
+        already_current: false,
+        plan_token: '',
+        retry_media_id: '',
+        target_id: '',
+        source_result_id: '',
+        blockers: blocker ? [blocker] : [],
+        executed: false,
+    };
+}
+
 function renderPanel(tabId, state, config, actions) {
     const props = { state, config, ...actions };
     if (tabId === 'intake') return IntakePanel(props);
@@ -159,6 +182,8 @@ export function PipelineStudio() {
     let dstBundleImportWorkspace = emptyDstBundleImportWorkspace();
     let dstBundleImportPreview = emptyDstBundleImportPreview();
     let dstBundleImportPlan = emptyDstBundleImportPlan();
+    let videoResultImportWorkspace = emptyVideoResultImportWorkspace();
+    let videoResultImportPlan = emptyVideoResultImportPlan();
     let mediaReviewSaveStatus = '';
 
     const render = () => {
@@ -213,6 +238,7 @@ export function PipelineStudio() {
                 dstBundleImportWorkspace = dstImportLoaded.workspace;
                 dstBundleImportPreview = dstImportLoaded.preview;
                 dstBundleImportPlan = emptyDstBundleImportPlan();
+                videoResultImportPlan = emptyVideoResultImportPlan();
                 mediaReviewSaveStatus = '';
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
@@ -292,6 +318,7 @@ export function PipelineStudio() {
                 dstBundleImportWorkspace = dstImportLoaded.workspace;
                 dstBundleImportPreview = dstImportLoaded.preview;
                 dstBundleImportPlan = emptyDstBundleImportPlan();
+                videoResultImportPlan = emptyVideoResultImportPlan();
                 mediaReviewSaveStatus = '';
                 g3Workspace = normalizeG3ReviewState(g3Loaded);
                 g3PromotionPlan = normalizeG3PromotionPlan(promotionLoaded);
@@ -396,6 +423,8 @@ export function PipelineStudio() {
                 dstBundleImportWorkspace,
                 dstBundleImportPreview,
                 dstBundleImportPlan,
+                videoResultImportWorkspace,
+                videoResultImportPlan,
                 mediaReviewSaveStatus,
                 onMediaReviewSaveStatusChange: (status) => {
                     mediaReviewSaveStatus = status;
@@ -459,6 +488,47 @@ export function PipelineStudio() {
                             dstBundleImportWorkspace = loadedImport.workspace;
                             dstBundleImportPreview = loadedImport.preview;
                         }
+                        mediaReviewSaveStatus = '';
+                        render();
+                    }
+                    return result;
+                },
+                onRefreshVideoResultImportWorkspace: async () => {
+                    videoResultImportWorkspace = emptyVideoResultImportWorkspace('loading');
+                    videoResultImportPlan = emptyVideoResultImportPlan();
+                    render();
+                    try {
+                        videoResultImportWorkspace = await pipelineClient.getVideoResultImportWorkspace();
+                    } catch {
+                        videoResultImportWorkspace = emptyVideoResultImportWorkspace('blocked', 'VIDEO_IMPORT_WORKSPACE_READ_FAILED');
+                    }
+                    render();
+                    return videoResultImportWorkspace;
+                },
+                onLoadVideoResultImportPreview: (payload) => pipelineClient.loadVideoResultImportPreview(payload),
+                onPlanVideoResultImport: async (payload) => {
+                    try {
+                        videoResultImportPlan = await pipelineClient.planVideoResultImport(payload);
+                    } catch {
+                        videoResultImportPlan = emptyVideoResultImportPlan('blocked', 'VIDEO_IMPORT_PLAN_FAILED');
+                    }
+                    return videoResultImportPlan;
+                },
+                onConfirmVideoResultImport: async (payload) => {
+                    const result = await pipelineClient.confirmVideoResultImport(payload);
+                    videoResultImportPlan = {
+                        ...videoResultImportPlan,
+                        ...result,
+                        ready: false,
+                        status: result?.imported || result?.already_current ? 'imported' : 'blocked',
+                    };
+                    if (result?.imported || result?.already_current) {
+                        const [loadedState, loadedRetryPlan] = await Promise.all([
+                            pipelineClient.readProductionState().catch(() => null),
+                            pipelineClient.getMediaRetryPlan().catch(() => null),
+                        ]);
+                        if (loadedState?.state) state = normalizeState(loadedState.state);
+                        if (loadedRetryPlan) mediaRetryPlan = loadedRetryPlan;
                         mediaReviewSaveStatus = '';
                         render();
                     }
@@ -641,10 +711,11 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, videoImportResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
+            pipelineClient.getVideoResultImportWorkspace(),
         ]);
         if (configResult.status === 'fulfilled') {
             const result = configResult.value;
@@ -662,6 +733,11 @@ export function PipelineStudio() {
                 status: 'error',
                 blockers: ['NEW_PROJECT_DRAFT_READ_FAILED'],
             };
+        }
+        if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
+            videoResultImportWorkspace = videoImportResult.value;
+        } else {
+            videoResultImportWorkspace = emptyVideoResultImportWorkspace('blocked', 'VIDEO_IMPORT_WORKSPACE_READ_FAILED');
         }
         config = {
             ...config,

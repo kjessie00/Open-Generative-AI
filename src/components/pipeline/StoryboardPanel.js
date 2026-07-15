@@ -34,6 +34,12 @@ export function StoryboardPanel({
     onLoadDstBundleImportPreview,
     onPlanDstBundleImport,
     onConfirmDstBundleImport,
+    videoResultImportWorkspace,
+    videoResultImportPlan,
+    onRefreshVideoResultImportWorkspace,
+    onLoadVideoResultImportPreview,
+    onPlanVideoResultImport,
+    onConfirmVideoResultImport,
 }) {
     let attempts = deriveMediaAttempts(state).map((attempt) => ({
         ...attempt,
@@ -149,6 +155,12 @@ export function StoryboardPanel({
                 onLoadDstBundleImportPreview,
                 onPlanDstBundleImport,
                 onConfirmDstBundleImport,
+                videoResultImportWorkspace,
+                videoResultImportPlan,
+                onRefreshVideoResultImportWorkspace,
+                onLoadVideoResultImportPreview,
+                onPlanVideoResultImport,
+                onConfirmVideoResultImport,
             }),
         ];
         if (!attempts.length) children.push(emptyState('media_attempts.jsonl에 기록된 생성 시도가 없습니다.'));

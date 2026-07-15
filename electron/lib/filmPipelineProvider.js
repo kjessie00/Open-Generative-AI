@@ -9,6 +9,7 @@ const g3ProductionPromotionProvider = require('./g3ProductionPromotionProvider')
 const { createFinishingWorkbenchProvider } = require('./finishingWorkbenchProvider');
 const { buildMediaRetryPlan } = require('./mediaRetryPlanProvider');
 const dstBundleImportProvider = require('./dstBundleImportProvider');
+const videoResultImportProvider = require('./videoResultImportProvider');
 
 const CONFIG_FILE = 'film-pipeline-config.json';
 const MAX_JSONL_BYTES = 10 * 1024 * 1024;
@@ -1041,6 +1042,30 @@ function confirmDstBundleImport(payload, options = {}) {
     return dstBundleImportProvider.confirmDstBundleImport(payload, dstBundleImportContext(options));
 }
 
+function videoResultImportContext(options = {}) {
+    return {
+        ...options,
+        config: getConfig(options),
+        userDataPath: options.userDataPath || app.getPath('userData'),
+    };
+}
+
+function getVideoResultImportWorkspace(options = {}) {
+    return videoResultImportProvider.getVideoResultImportWorkspace(videoResultImportContext(options));
+}
+
+function loadVideoResultImportPreview(payload, options = {}) {
+    return videoResultImportProvider.getVideoResultImportPreview(payload, videoResultImportContext(options));
+}
+
+function planVideoResultImport(payload, options = {}) {
+    return videoResultImportProvider.planVideoResultImport(payload, videoResultImportContext(options));
+}
+
+function confirmVideoResultImport(payload, options = {}) {
+    return videoResultImportProvider.confirmVideoResultImport(payload, videoResultImportContext(options));
+}
+
 function listConfiguredAssets(options = {}) {
     const productionRoot = configuredPath(options, 'productionRoot', 'PRODUCTION_ROOT_NOT_CONFIGURED');
     return listAssets(productionRoot);
@@ -1314,6 +1339,13 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:load-dst-bundle-import-preview', (_, payload) => loadDstBundleImportPreview(payload, options));
     ipcApi.handle('film-pipeline:plan-dst-bundle-import', (_, payload) => planDstBundleImport(payload, options));
     ipcApi.handle('film-pipeline:confirm-dst-bundle-import', (_, payload) => confirmDstBundleImport(payload, options));
+    ipcApi.handle('film-pipeline:get-video-result-import-workspace', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getVideoResultImportWorkspace(options);
+    });
+    ipcApi.handle('film-pipeline:load-video-result-import-preview', (_, payload) => loadVideoResultImportPreview(payload, options));
+    ipcApi.handle('film-pipeline:plan-video-result-import', (_, payload) => planVideoResultImport(payload, options));
+    ipcApi.handle('film-pipeline:confirm-video-result-import', (_, payload) => confirmVideoResultImport(payload, options));
     ipcApi.handle('film-pipeline:list-production-children', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return listConfiguredProductionChildren(options);
@@ -1368,6 +1400,10 @@ module.exports = {
     loadDstBundleImportPreview,
     planDstBundleImport,
     confirmDstBundleImport,
+    getVideoResultImportWorkspace,
+    loadVideoResultImportPreview,
+    planVideoResultImport,
+    confirmVideoResultImport,
     listConfiguredAssets,
     readConfiguredJsonl,
     resolveProductionDialogDefaultPath,

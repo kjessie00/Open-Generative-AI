@@ -231,6 +231,54 @@ export async function confirmDstBundleImport(payload) {
     };
 }
 
+export async function getVideoResultImportWorkspace() {
+    const bridge = getBridge();
+    if (typeof bridge?.getVideoResultImportWorkspace === 'function') return bridge.getVideoResultImportWorkspace();
+    return {
+        ...unavailable('getVideoResultImportWorkspace'),
+        status: 'blocked',
+        ready: false,
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        candidates: [],
+    };
+}
+
+export async function loadVideoResultImportPreview(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.loadVideoResultImportPreview === 'function') return bridge.loadVideoResultImportPreview(payload);
+    return {
+        ...unavailable('loadVideoResultImportPreview'),
+        loaded: false,
+        candidate_token: '',
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function planVideoResultImport(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.planVideoResultImport === 'function') return bridge.planVideoResultImport(payload);
+    return {
+        ...unavailable('planVideoResultImport'),
+        status: 'blocked',
+        ready: false,
+        already_current: false,
+        plan_token: '',
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function confirmVideoResultImport(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.confirmVideoResultImport === 'function') return bridge.confirmVideoResultImport(payload);
+    return {
+        ...unavailable('confirmVideoResultImport'),
+        imported: false,
+        already_current: false,
+        copied: false,
+        ledger_appended: false,
+    };
+}
+
 export async function writePlanningFile(payload) {
     const bridge = getBridge();
     if (bridge) return bridge.writePlanningFile(payload);
@@ -422,6 +470,10 @@ export const pipelineClient = Object.freeze({
     loadDstBundleImportPreview,
     planDstBundleImport,
     confirmDstBundleImport,
+    getVideoResultImportWorkspace,
+    loadVideoResultImportPreview,
+    planVideoResultImport,
+    confirmVideoResultImport,
     writePlanningFile,
     listAssets,
     readJsonl,

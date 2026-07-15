@@ -681,6 +681,95 @@ test('MOCK DST result import exposes only image retry targets and uses opaque pl
     assert.equal(findAll(band, 'button').some((button) => /(?:생성|명령) 실행/.test(button.textContent)), false);
 });
 
+test('MOCK video result import binds Flow candidates to the exact saved video retry', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { MediaRetryPlanBand } = await import('../src/components/pipeline/MediaRetryPlanBand.js');
+    const band = MediaRetryPlanBand({
+        plan: {
+            status: 'blocked',
+            blockers: ['MISSING_FLOW_RUNTIME_CONTEXT'],
+            items: [{
+                sequence: 1,
+                media_id: 'flow-video-retry',
+                target_id: 'clip_010',
+                provider: 'flow',
+                kind: 'video',
+                readiness: 'blocked_runtime_context',
+                blockers: ['MISSING_FLOW_RUNTIME_CONTEXT'],
+                command_spec: {},
+            }, {
+                sequence: 2,
+                media_id: 'grok-video-retry',
+                target_id: 'clip_002',
+                provider: 'grok',
+                kind: 'video',
+                readiness: 'blocked_runtime_unverified',
+                blockers: ['GROK_RUNTIME_UNVERIFIED'],
+                command_spec: {},
+            }],
+        },
+        videoResultImportWorkspace: {
+            status: 'ready',
+            ready: true,
+            blockers: [],
+            candidates: [{
+                candidate_token: 'flow-opaque',
+                provider: 'flow',
+                result_id: 'H1_ancient_campfire',
+                size_bytes: 2673934,
+                duration_seconds: 10.006,
+                width: 1280,
+                height: 720,
+                preview_allowed: true,
+            }, {
+                candidate_token: 'grok-opaque',
+                provider: 'grok',
+                result_id: 'smoke_valid',
+                size_bytes: 4417147,
+                duration_seconds: 6.042,
+                width: 464,
+                height: 688,
+                preview_allowed: true,
+            }],
+        },
+        async onPlanVideoResultImport(payload) {
+            calls.push(['plan', payload]);
+            return {
+                status: 'ready',
+                ready: true,
+                plan_token: 'video-plan-opaque',
+                retry_media_id: payload.retryMediaId,
+                target_id: 'clip_010',
+                source_result_id: 'H1_ancient_campfire',
+                blockers: [],
+            };
+        },
+        async onConfirmVideoResultImport(payload) {
+            calls.push(['confirm', payload]);
+            return { ok: true, imported: true, already_current: false, media_id: 'flow-imported' };
+        },
+    });
+
+    const targetSelect = byAttribute(band, 'select', 'id', 'video-import-retry-target');
+    const candidateSelect = byAttribute(band, 'select', 'id', 'video-import-candidate');
+    assert.deepEqual(findAll(targetSelect, 'option').map((option) => option.value), ['flow-video-retry', 'grok-video-retry']);
+    assert.deepEqual(findAll(candidateSelect, 'option').map((option) => option.value), ['', 'flow-opaque']);
+    candidateSelect.value = 'flow-opaque';
+    await candidateSelect.dispatchEvent({ type: 'change' });
+
+    await byText(band, 'button', '가져오기 계획').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[0], ['plan', { candidateToken: 'flow-opaque', retryMediaId: 'flow-video-retry' }]);
+    assert.match(band.textContent, /가져올 영상과 장면을 확인했습니다/);
+    assert.doesNotMatch(band.textContent, /Users\/jessiek|sourcePath|targetPath/);
+
+    await byText(band, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls[1], ['confirm', { planToken: 'video-plan-opaque', confirmed: true }]);
+    assert.match(band.textContent, /장면 검토 보드에 연결했습니다/);
+    assert.equal(findAll(band, 'button').some((button) => /생성 실행/.test(button.textContent)), false);
+});
+
 test('MOCK media attempt cards keep Korean labels and semantic review colors', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);
