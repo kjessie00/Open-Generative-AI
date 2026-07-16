@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import test from 'node:test';
 import draftProvider from '../electron/lib/newProjectDraftProvider.js';
 import finalStitchProvider from '../electron/lib/newProjectFinalStitchProvider.js';
 import finalRenderProvider from '../electron/lib/newProjectFinalRenderProvider.js';
+import previewProtocol from '../electron/lib/finalRenderPreviewProtocol.js';
 
 function fixture(t, hooks = {}) {
     const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'open-ga-final-render-')));
@@ -157,6 +159,136 @@ test('MOCK: one restored get verifies once and returns the exact pathless previe
     assert.deepEqual(Buffer.from(restored.preview.base64, 'base64'), Buffer.from('mock-review-video'));
     assert.deepEqual(fx.runtimeCalls, { inspect: 1, probe: 1 });
     assert.equal(JSON.stringify(restored).includes(fx.base), false);
+});
+
+test('MOCK: inline final preview never asks the streaming issuer', async (t) => {
+    const fx = fixture(t);
+    await publishReviewVideo(fx);
+    let commits = 0;
+    let releases = 0;
+    const restored = await fx.makeProvider({
+        previewLease: {
+            commit() { commits += 1; throw new Error('issuer must stay unused'); },
+            release() { releases += 1; },
+        },
+    }).get();
+
+    assert.equal(restored.preview.ready, true);
+    assert.equal(typeof restored.preview.base64, 'string');
+    assert.equal(commits, 0);
+    assert.equal(releases, 1);
+});
+
+test('MOCK: large final preview uses one pathless stream capability from the same inspection', async (t) => {
+    const largeBytes = Buffer.alloc(32 * 1024 * 1024 + 1, 19);
+    const fx = fixture(t, { output: largeBytes });
+    const committed = [];
+    const streamUrl = `film-preview://final-render/${'c'.repeat(64)}/video.mp4`;
+    const provider = fx.makeProvider({
+        previewLease: {
+            commit(source) {
+                committed.push(source);
+                return {
+                    ready: true,
+                    mime_type: 'video/mp4',
+                    byte_length: source.outputSize,
+                    stream_url: streamUrl,
+                };
+            },
+        },
+    });
+    const plan = await provider.plan();
+    const executed = await provider.execute({
+        planToken: plan.plan_token, confirmed: true, projectId: 'final-render-01',
+    });
+    assert.equal(executed.preview_ready, true);
+    assert.equal(executed.preview.stream_url, streamUrl);
+    assert.equal(committed.length, 1);
+
+    committed.length = 0;
+    fx.runtimeCalls.inspect = 0;
+    fx.runtimeCalls.probe = 0;
+    const restored = await provider.get();
+
+    assert.equal(restored.rendered, true);
+    assert.equal(restored.preview_ready, true);
+    assert.deepEqual(restored.preview, {
+        ready: true, mime_type: 'video/mp4', byte_length: largeBytes.byteLength, stream_url: streamUrl,
+    });
+    assert.equal(committed.length, 1);
+    assert.equal(committed[0].outputSize, largeBytes.byteLength);
+    assert.match(committed[0].outputSha256, /^[a-f0-9]{64}$/);
+    assert.deepEqual(Object.keys(committed[0].outputIdentity).sort(), ['ctimeMs', 'dev', 'ino', 'mode', 'mtimeMs', 'size']);
+    assert.deepEqual(fx.runtimeCalls, { inspect: 1, probe: 1 });
+    const publicText = JSON.stringify(restored);
+    assert.equal(publicText.includes(fx.base), false);
+    assert.doesNotMatch(publicText, /base64|outputSha256|outputIdentity|outputPath|run_id|snapshot/i);
+});
+
+test('MOCK: stale large-preview lease leaves verified render state intact but preview unavailable', async (t) => {
+    const fx = fixture(t, { output: Buffer.alloc(32 * 1024 * 1024 + 1, 23) });
+    await publishReviewVideo(fx);
+    let commits = 0;
+    let releases = 0;
+    const restored = await fx.makeProvider({
+        previewLease: {
+            commit() { commits += 1; return null; },
+            release() { releases += 1; },
+        },
+    }).get();
+
+    assert.equal(commits, 1);
+    assert.equal(releases, 1);
+    assert.equal(restored.status, 'already_current');
+    assert.equal(restored.rendered, true);
+    assert.equal(restored.fresh_probe_verified, true);
+    assert.equal(restored.preview_ready, false);
+    assert.deepEqual(restored.preview, { ready: false, mime_type: '', byte_length: 0, base64: '' });
+});
+
+test('MOCK: blocked get, legacy preview, and every execute rejection release the latest lease', async (t) => {
+    const hooks = {};
+    const fx = fixture(t, hooks);
+    await publishReviewVideo(fx);
+    hooks.afterProbe = ({ outputPath }) => fs.appendFileSync(outputPath, 'tampered-after-probe');
+    let releases = 0;
+    const lease = { release() { releases += 1; } };
+
+    const blocked = await fx.makeProvider({ previewLease: lease }).get();
+    assert.equal(blocked.status, 'blocked');
+    assert.equal(releases, 1);
+    const preview = await fx.makeProvider({ previewLease: lease }).preview();
+    assert.equal(preview.ready, false);
+    assert.equal(releases, 2);
+    await assert.rejects(
+        fx.makeProvider({ previewLease: lease }).execute({ planToken: 'invalid' }),
+        { code: 'FINAL_RENDER_PLAN_INVALID' },
+    );
+    assert.equal(releases, 3);
+});
+
+test('MOCK: latest blocked get revokes the prior large capability in the real preview service', async (t) => {
+    const fx = fixture(t, { output: Buffer.alloc(32 * 1024 * 1024 + 1, 29) });
+    const service = previewProtocol.createFinalRenderPreviewProtocol();
+    const sender = new EventEmitter();
+    t.after(() => service.dispose());
+    const provider = fx.makeProvider({ previewLease: service.begin(sender) });
+    const plan = await provider.plan();
+    const rendered = await provider.execute({
+        planToken: plan.plan_token, confirmed: true, projectId: 'final-render-01',
+    });
+    const streamUrl = rendered.preview.stream_url;
+    const request = () => ({ url: streamUrl, method: 'HEAD', destination: 'video', headers: new Headers() });
+    assert.equal((await service.handle(request())).status, 200);
+
+    const paths = finalRenderProvider.pathsFor(fx.userDataPath);
+    const pointer = JSON.parse(fs.readFileSync(paths.currentPath, 'utf8'));
+    fs.appendFileSync(path.join(paths.runsRoot, pointer.run_id, 'receipt.json'), '\n');
+    const blocked = await fx.makeProvider({ previewLease: service.begin(sender) }).get();
+
+    assert.equal(blocked.status, 'blocked');
+    assert.equal(blocked.preview.ready, false);
+    assert.equal((await service.handle(request())).status, 404);
 });
 
 test('MOCK: inline preview fails closed when output changes after the fresh probe', async (t) => {

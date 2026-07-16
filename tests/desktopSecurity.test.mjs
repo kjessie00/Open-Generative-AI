@@ -116,6 +116,31 @@ test('Electron web preferences preserve the isolated preload boundary', async ()
     assert.doesNotMatch(preload, /g3[^'"\n]*(?:generation|upload|ledger-write|run-command)/i);
 });
 
+test('final preview scheme is privileged before ready and its handler plus IPC precede window loading', async () => {
+    const main = await source('electron/main.js');
+    const provider = await source('electron/lib/filmPipelineProvider.js');
+    const html = await source('index.html');
+    const preload = await source('electron/preload.js');
+    const privilege = main.indexOf('registerSchemePrivileges(protocol)');
+    const ready = main.indexOf('app.whenReady()');
+    const handler = main.indexOf('finalRenderPreviewService.register(protocol)');
+    const ipc = main.indexOf('registerFilmPipeline(undefined, { finalRenderPreviewService })');
+    const window = main.indexOf('createWindow();', ready);
+    assert.ok(privilege >= 0 && privilege < ready);
+    assert.ok(handler > ready && handler < window);
+    assert.ok(ipc > handler && ipc < window);
+    assert.match(html, /media-src[^;]*film-preview:/);
+    assert.match(html, /connect-src 'none'/);
+    assert.doesNotMatch(preload, /film-preview|finalRenderPreview/);
+    for (const channel of [
+        'get-new-project-final-render',
+        'execute-new-project-final-render',
+        'get-new-project-final-render-preview',
+    ]) {
+        assert.match(provider, new RegExp(`ipcApi\\.handle\\('film-pipeline:${channel}'[\\s\\S]{0,180}const lease = finalRenderLease\\(event, options\\)`));
+    }
+});
+
 function assertDefaultElectronEntryBoundary(main, preload) {
     assert.doesNotMatch(main, /(?:require\s*\(\s*['"]\.\/lib\/|register)(?:localInference|wan2gpProvider)/i);
     assert.doesNotMatch(main, /register(?:LocalInference|Wan2gp)\s*\(/i);

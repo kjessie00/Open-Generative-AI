@@ -19,6 +19,7 @@ import {
 } from '../../lib/pipeline/finishingWorkbenchState.js';
 import { deriveWorkflowGuide, stageForTab, WORKFLOW_STAGES } from '../../lib/pipeline/workflowGuide.js';
 import { createG3PreviewObjectUrl } from '../../lib/pipeline/g3PreviewObjectUrl.js';
+import { createFinalRenderStreamPreview } from '../../lib/pipeline/finalRenderStreamPreview.js';
 import { PipelineSidebar } from './PipelineSidebar.js';
 import { WorkflowOverview } from './WorkflowOverview.js';
 import { IntakePanel } from './IntakePanel.js';
@@ -329,7 +330,9 @@ export function PipelineStudio() {
                 const raw = consumedInline ? inline : await pipelineClient.getNewProjectFinalRenderPreview();
                 if (!isLatestNewProjectFinalRenderRequest(requestEpoch)
                     || newProjectFinalRenderState !== sourceState) return false;
-                prepared = createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
+                prepared = typeof raw?.stream_url === 'string'
+                    ? createFinalRenderStreamPreview(raw)
+                    : createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
             } catch { /* pathless preview remains unavailable */ }
             if (!isLatestNewProjectFinalRenderRequest(requestEpoch)
                 || newProjectFinalRenderState !== sourceState) {

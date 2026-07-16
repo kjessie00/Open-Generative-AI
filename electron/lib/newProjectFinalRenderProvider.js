@@ -130,7 +130,18 @@ function hashStableFile(target, maxBytes, code) {
         const after = fs.fstatSync(descriptor);
         const final = fs.lstatSync(target);
         if (!sameFile(opened, after) || !sameFile(opened, final)) throw failure(`${code}_CHANGED`);
-        return { sha256: digest.digest('hex'), size: opened.size };
+        return {
+            sha256: digest.digest('hex'),
+            size: opened.size,
+            identity: {
+                dev: opened.dev,
+                ino: opened.ino,
+                mode: opened.mode,
+                size: opened.size,
+                mtimeMs: opened.mtimeMs,
+                ctimeMs: opened.ctimeMs,
+            },
+        };
     } finally { fs.closeSync(descriptor); }
 }
 
@@ -246,8 +257,11 @@ function inspectReview(paths, inspection, current) {
     };
 }
 
-function publicState(inspection, current, review, status = 'ready', executed = false) {
+function publicState(inspection, current, review, status = 'ready', executed = false, previewReady) {
     const rendered = current?.valid === true;
+    const resolvedPreviewReady = previewReady === undefined
+        ? rendered && current.outputSize <= MAX_PREVIEW_BYTES
+        : previewReady;
     const reviewState = review || pendingReview(inspection, current);
     return {
         ok: true,
@@ -260,7 +274,7 @@ function publicState(inspection, current, review, status = 'ready', executed = f
         fresh_probe_verified: rendered,
         has_video: rendered,
         has_audio: rendered,
-        preview_ready: rendered && current.outputSize <= MAX_PREVIEW_BYTES,
+        preview_ready: rendered && resolvedPreviewReady,
         executed,
         ...reviewState,
         output_quality_approved: reviewState.review_decision === 'use',
@@ -292,6 +306,43 @@ function inlinePreview(current) {
         mime_type: 'video/mp4',
         byte_length: output.size,
         base64: output.buffer.toString('base64'),
+    };
+}
+
+function previewFromCurrent(current, previewLease) {
+    if (!current?.valid) {
+        previewLease?.release?.();
+        return emptyPreview();
+    }
+    if (current.outputSize <= MAX_PREVIEW_BYTES) {
+        const preview = inlinePreview(current);
+        previewLease?.release?.();
+        return preview;
+    }
+    const streamed = previewLease?.commit?.({
+        outputPath: current.outputPath,
+        outputSha256: current.outputSha256,
+        outputSize: current.outputSize,
+        outputIdentity: current.outputIdentity,
+    });
+    if (!streamed || streamed.ready !== true || streamed.mime_type !== 'video/mp4'
+        || streamed.byte_length !== current.outputSize
+        || typeof streamed.stream_url !== 'string') {
+        previewLease?.release?.();
+        return emptyPreview();
+    }
+    return streamed;
+}
+
+function singleUsePreviewLease(previewLease) {
+    let released = false;
+    return {
+        commit(source) { return previewLease?.commit?.(source); },
+        release() {
+            if (released) return;
+            released = true;
+            previewLease?.release?.();
+        },
     };
 }
 
@@ -379,6 +430,7 @@ async function inspectRunRoot(paths, inspection, runtime, runId, expectedReceipt
         outputPath: path.join(runRoot, 'roughcut.mp4'),
         outputSha256: output.sha256,
         outputSize: output.size,
+        outputIdentity: output.identity,
         receiptSha256: receiptRead.sha256,
         probe,
     };
@@ -425,6 +477,7 @@ function createNewProjectFinalRenderProvider(options = {}) {
         randomBytes: options.randomBytes || crypto.randomBytes,
         planStore: options.planStore || defaultPlanStore,
         planTtlMs: options.planTtlMs || PLAN_TTL_MS,
+        previewLease: options.previewLease,
         onInternalError: typeof options.onInternalError === 'function' ? options.onInternalError : () => {},
     };
 
@@ -504,13 +557,16 @@ function createNewProjectFinalRenderProvider(options = {}) {
     }
 
     async function get() {
+        const previewLease = singleUsePreviewLease(context.previewLease);
         try {
             const value = await inspect();
+            const preview = previewFromCurrent(value.current, previewLease);
             return {
-                ...publicState(value.inspection, value.current, value.review),
-                preview: inlinePreview(value.current),
+                ...publicState(value.inspection, value.current, value.review, 'ready', false, preview.ready),
+                preview,
             };
         } catch (error) {
+            previewLease.release();
             context.onInternalError(error);
             return { ...blockedState(), preview: emptyPreview() };
         }
@@ -542,7 +598,7 @@ function createNewProjectFinalRenderProvider(options = {}) {
         };
     }
 
-    async function execute(payload) {
+    async function executeInternal(payload, previewLease) {
         const token = payload?.planToken;
         if (typeof token !== 'string' || !TOKEN_PATTERN.test(token)) throw failure('FINAL_RENDER_PLAN_INVALID');
         const planned = context.planStore.get(token);
@@ -556,7 +612,13 @@ function createNewProjectFinalRenderProvider(options = {}) {
         if (value.inspection.snapshotId !== planned.snapshotId || value.inspection.runId !== planned.runId) {
             throw failure('FINAL_RENDER_INPUT_CHANGED');
         }
-        if (value.current.valid) return publicState(value.inspection, value.current, value.review, 'already_current', false);
+        if (value.current.valid) {
+            const preview = previewFromCurrent(value.current, previewLease);
+            return {
+                ...publicState(value.inspection, value.current, value.review, 'already_current', false, preview.ready),
+                preview,
+            };
+        }
 
         assertPrivateDirectory(value.paths.stitchRoot, 'FINAL_RENDER_DIRECTORY_UNSAFE');
         ensureDirectory(value.paths.runsRoot, value.paths.stitchRoot, 'FINAL_RENDER_DIRECTORY_UNSAFE');
@@ -572,7 +634,13 @@ function createNewProjectFinalRenderProvider(options = {}) {
         try {
             value = await inspect();
             if (value.inspection.snapshotId !== planned.snapshotId || value.current.valid) {
-                if (value.current.valid) return publicState(value.inspection, value.current, value.review, 'already_current', false);
+                if (value.current.valid) {
+                    const preview = previewFromCurrent(value.current, previewLease);
+                    return {
+                        ...publicState(value.inspection, value.current, value.review, 'already_current', false, preview.ready),
+                        preview,
+                    };
+                }
                 throw failure('FINAL_RENDER_INPUT_CHANGED');
             }
             if (fs.existsSync(runRoot)) throw failure('FINAL_RENDER_TARGET_EXISTS');
@@ -659,7 +727,11 @@ function createNewProjectFinalRenderProvider(options = {}) {
                 value.paths.runsRoot, context.randomBytes);
             const verified = await inspect();
             if (!verified.current.valid) throw failure('FINAL_RENDER_PUBLICATION_FAILED');
-            return publicState(verified.inspection, verified.current, verified.review, 'already_current', true);
+            const preview = previewFromCurrent(verified.current, previewLease);
+            return {
+                ...publicState(verified.inspection, verified.current, verified.review, 'already_current', true, preview.ready),
+                preview,
+            };
         } catch (error) {
             if (!published) {
                 try { fs.rmSync(stagingRoot, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -672,11 +744,23 @@ function createNewProjectFinalRenderProvider(options = {}) {
         }
     }
 
+    async function execute(payload) {
+        const previewLease = singleUsePreviewLease(context.previewLease);
+        try {
+            return await executeInternal(payload, previewLease);
+        } catch (error) {
+            previewLease.release();
+            throw error;
+        }
+    }
+
     async function preview() {
+        const previewLease = singleUsePreviewLease(context.previewLease);
         try {
             const value = await inspect();
-            return inlinePreview(value.current);
+            return previewFromCurrent(value.current, previewLease);
         } catch (error) {
+            previewLease.release();
             context.onInternalError(error);
             return emptyPreview();
         }

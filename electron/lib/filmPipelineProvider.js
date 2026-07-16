@@ -1324,7 +1324,16 @@ function newProjectFinalRender(options = {}) {
         now: options.finalRenderNow,
         nowMs: options.finalRenderNowMs,
         randomBytes: options.finalRenderRandomBytes,
+        previewLease: options.finalRenderPreviewLease,
     });
+}
+
+function finalRenderLease(event, options) {
+    return options.finalRenderPreviewService?.begin?.(event?.sender);
+}
+
+function withFinalRenderLease(options, lease) {
+    return { ...options, finalRenderPreviewLease: lease };
 }
 
 async function getNewProjectFinalRender(options = {}) {
@@ -1898,18 +1907,23 @@ function register(ipcApi = ipcMain, options = {}) {
         return getNewProjectFinalStitch(options);
     });
     ipcApi.handle('film-pipeline:stage-new-project-final-stitch', (_, payload) => stageNewProjectFinalStitch(payload, options));
-    ipcApi.handle('film-pipeline:get-new-project-final-render', (_, pathArgument) => {
+    ipcApi.handle('film-pipeline:get-new-project-final-render', (event, pathArgument) => {
+        const lease = finalRenderLease(event, options);
         assertNoRendererPathArgument(pathArgument);
-        return getNewProjectFinalRender(options);
+        return getNewProjectFinalRender(withFinalRenderLease(options, lease));
     });
     ipcApi.handle('film-pipeline:plan-new-project-final-render', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return planNewProjectFinalRender(options);
     });
-    ipcApi.handle('film-pipeline:execute-new-project-final-render', (_, payload) => executeNewProjectFinalRender(payload, options));
-    ipcApi.handle('film-pipeline:get-new-project-final-render-preview', (_, pathArgument) => {
+    ipcApi.handle('film-pipeline:execute-new-project-final-render', (event, payload) => {
+        const lease = finalRenderLease(event, options);
+        return executeNewProjectFinalRender(payload, withFinalRenderLease(options, lease));
+    });
+    ipcApi.handle('film-pipeline:get-new-project-final-render-preview', (event, pathArgument) => {
+        const lease = finalRenderLease(event, options);
         assertNoRendererPathArgument(pathArgument);
-        return getNewProjectFinalRenderPreview(options);
+        return getNewProjectFinalRenderPreview(withFinalRenderLease(options, lease));
     });
     ipcApi.handle('film-pipeline:save-new-project-final-review-decision', (_, payload) => (
         saveNewProjectFinalReviewDecision(payload, options)

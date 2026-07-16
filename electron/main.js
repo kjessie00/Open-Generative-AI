@@ -1,8 +1,15 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, protocol } = require('electron');
 const path = require('path');
 const { createMainWindow } = require('./lib/createMainWindow');
 const { installNavigationPolicy } = require('./lib/navigationPolicy');
 const { register: registerFilmPipeline } = require('./lib/filmPipelineProvider');
+const {
+    registerSchemePrivileges,
+    createFinalRenderPreviewProtocol,
+} = require('./lib/finalRenderPreviewProtocol');
+
+registerSchemePrivileges(protocol);
+const finalRenderPreviewService = createFinalRenderPreviewProtocol();
 
 // Ubuntu 24.04+ sets kernel.apparmor_restrict_unprivileged_userns=1 which
 // blocks Chromium's user namespace sandbox. The .deb package ships an AppArmor
@@ -29,14 +36,19 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+    finalRenderPreviewService.register(protocol);
+    registerFilmPipeline(undefined, { finalRenderPreviewService });
     createWindow();
-    registerFilmPipeline();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
         }
     });
+});
+
+app.on('before-quit', () => {
+    finalRenderPreviewService.dispose();
 });
 
 app.on('window-all-closed', () => {

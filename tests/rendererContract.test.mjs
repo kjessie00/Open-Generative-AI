@@ -941,6 +941,76 @@ test('MOCK: final panel stays usable while restore verifies and consumes inline 
     assert.equal(calls.filter(([method]) => method === 'previewRender').length, 0);
 });
 
+test('streamed final preview accepts only the exact pathless capability shape', async () => {
+    const { createFinalRenderStreamPreview } = await import('../src/lib/pipeline/finalRenderStreamPreview.js');
+    const token = 'd'.repeat(64);
+    const valid = {
+        ready: true,
+        mime_type: 'video/mp4',
+        byte_length: 32 * 1024 * 1024 + 1,
+        stream_url: `film-preview://final-render/${token}/video.mp4`,
+    };
+    const prepared = createFinalRenderStreamPreview(valid);
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.url, valid.stream_url);
+    assert.equal(typeof prepared.dispose, 'function');
+    for (const candidate of [
+        { ...valid, stream_url: `file:///private/${token}.mp4` },
+        { ...valid, stream_url: `https://final-render/${token}/video.mp4` },
+        { ...valid, stream_url: `${valid.stream_url}?path=/private` },
+        { ...valid, stream_url: `${valid.stream_url}#private` },
+        { ...valid, stream_url: `film-preview://user@final-render/${token}/video.mp4` },
+        { ...valid, stream_url: `film-preview://final-render/${token}/other.mp4` },
+        { ...valid, base64: 'private' },
+        { ...valid, byte_length: 0 },
+        { ...valid, mime_type: 'text/html' },
+    ]) assert.equal(createFinalRenderStreamPreview(candidate).ok, false);
+});
+
+test('MOCK: final panel uses a validated stream capability without legacy preview IPC', async (t) => {
+    const calls = [];
+    const streamUrl = `film-preview://final-render/${'e'.repeat(64)}/video.mp4`;
+    const stitched = {
+        ok: true, status: 'restored', revision: `handoff_${'a'.repeat(64)}`, staged: true,
+        selected_count: 1, total_duration_seconds: 0.6,
+        clips: [{ sequence: 1, label: '첫 장면', in_seconds: 0.2, out_seconds: 0.8 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const rendered = {
+        ok: true, status: 'already_current', can_render: false, rendered: true, selected_count: 1,
+        selected_duration_seconds: 0.6, output_duration_seconds: 0.6, fresh_probe_verified: true,
+        has_video: true, has_audio: true, preview_ready: true, executed: false,
+        output_quality_approved: false, generation_executed: false,
+        review_version: 'a'.repeat(64), review_decision: 'pending', review_ready: true,
+        human_review_recorded: false, legacy_production_modified: false, canonical_delivery_modified: false,
+        notice: '검토용 영상이 준비되었습니다. 사용할지 직접 확인해 주세요.',
+        preview: {
+            ready: true, mime_type: 'video/mp4', byte_length: 32 * 1024 * 1024 + 1, stream_url: streamUrl,
+        },
+    };
+    const bridge = {
+        async getNewProjectFinalStitch() { return structuredClone(stitched); },
+        async getNewProjectFinalRender() { calls.push(['getRender']); return structuredClone(rendered); },
+        async getNewProjectFinalRenderPreview() {
+            calls.push(['legacyPreview']);
+            return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+    await flushRenderer();
+
+    const video = findAll(studio, 'video')[0];
+    assert.ok(video);
+    assert.equal(video.attributes.get('src'), streamUrl);
+    assert.equal(calls.filter(([method]) => method === 'getRender').length, 1);
+    assert.equal(calls.filter(([method]) => method === 'legacyPreview').length, 0);
+});
+
 test('MOCK: a late initial final response cannot overwrite a newer user refresh', async (t) => {
     const calls = [];
     let resolveInitial;
