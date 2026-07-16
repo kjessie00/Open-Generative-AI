@@ -22,12 +22,14 @@ export function ImageTaskCard({ task, resultPreview, resultWorkspace, agentReque
     let connectorOpen = false;
     let preferredCandidateToken = '';
     let preferredImageIndex = 0;
+    const cardClass = () => `min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3 ${agentRequest?.status === 'suggestion_ready' || connectorOpen ? 'lg:col-span-2 xl:col-span-3' : ''}`;
     const root = el('article', {
-        className: `min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3 ${agentRequest?.status === 'suggestion_ready' ? 'lg:col-span-2 xl:col-span-3' : ''}`,
+        className: cardClass(),
         attrs: { 'data-work-target': 'image', 'data-sequence': task.sequence, tabindex: -1 },
     });
 
     const render = () => {
+        root.className = cardClass();
         const prompt = el('textarea', {
             value: task.prompt,
             className: 'min-h-32 w-full resize-y rounded-md border border-white/10 bg-black/25 px-3 py-3 text-sm leading-6 text-white outline-none focus:border-cyan-300/50',

@@ -3434,16 +3434,269 @@ test('image preparation workbench keeps the ordered DST flow compact and editabl
     await byText(panel, 'button', 'DST 결과 연결').dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.match(panel.textContent, /\d{2}\/\d{2} \d{2}:\d{2} · 이미지 2장/);
-    assert.ok(calls.some(([method, payload]) => method === 'preview' && payload.candidateToken === 'opaque-candidate'));
-    const imageChoice = byAttribute(panel, 'select', 'aria-label', '문의 32통, 사장 몱 0원 이미지 선택');
-    imageChoice.value = '2';
-    await imageChoice.dispatchEvent({ type: 'change' });
-    await flushRenderer();
-    assert.ok(calls.some(([method, payload]) => method === 'preview' && payload.imageIndex === 2));
-    await byText(panel, 'button', '이 결과 연결').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls.filter(([method]) => method === 'preview').map(([, payload]) => payload), [
+        { candidateToken: 'opaque-candidate', imageIndex: 1 },
+        { candidateToken: 'opaque-candidate', imageIndex: 2 },
+    ]);
+    assert.ok(byAttribute(panel, 'img', 'alt', '후보 1 미리보기'));
+    assert.ok(byAttribute(panel, 'img', 'alt', '후보 2 미리보기'));
+    assert.equal(byAttribute(panel, 'select', 'aria-label', '문의 32통, 사장 몱 0원 이미지 선택'), null);
+    await byAttribute(panel, 'button', 'aria-label', '후보 2 이 이미지 선택').dispatchEvent({ type: 'click' });
     assert.ok(calls.some(([method, payload]) => method === 'connect' && payload.taskToken === 'opaque-scene' && payload.imageIndex === 2));
     await byText(panel, 'button', '결과 검토로 이동').dispatchEvent({ type: 'click' });
     assert.ok(calls.some(([method]) => method === 'openReview'));
+});
+
+test('MOCK: DST connector loads a three-image bundle together and connects the exact chosen index', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageResultConnector } = await import('../src/components/pipeline/ImageResultConnector.js');
+    const connector = ImageResultConnector({
+        task: { task_token: 'private-task', sequence: 1, label: '첫 장면' },
+        workspace: {
+            candidates: [{
+                candidate_token: 'private-bundle', created_at: '2026-07-17T08:00:00Z', image_count: 3,
+                source_path: '/private/result', provider: 'dst-secret',
+            }],
+        },
+        onLoadPreview: async ({ candidateToken, imageIndex }) => {
+            calls.push(['preview', { candidateToken, imageIndex }]);
+            return {
+                ready: true, candidate_token: candidateToken, image_index: imageIndex,
+                preview: { mime_type: 'image/png', base64: Buffer.from(`image-${imageIndex}`).toString('base64') },
+            };
+        },
+        onConnect: async (payload) => { calls.push(['connect', payload]); return { ok: true }; },
+    });
+    await flushRenderer();
+
+    assert.deepEqual(calls.filter(([method]) => method === 'preview').map(([, payload]) => payload), [
+        { candidateToken: 'private-bundle', imageIndex: 1 },
+        { candidateToken: 'private-bundle', imageIndex: 2 },
+        { candidateToken: 'private-bundle', imageIndex: 3 },
+    ]);
+    assert.deepEqual(findAll(connector, 'img').map((image) => image.attributes.get('alt')), [
+        '후보 1 미리보기', '후보 2 미리보기', '후보 3 미리보기',
+    ]);
+    await byAttribute(connector, 'button', 'aria-label', '후보 2 이 이미지 선택').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls.find(([method]) => method === 'connect'), ['connect', {
+        taskToken: 'private-task', candidateToken: 'private-bundle', imageIndex: 2,
+    }]);
+    assert.equal(findAll(connector, 'button').filter((button) => button.textContent === '이 이미지 선택')
+        .every((button) => button.className.includes('min-h-11')), true);
+    assert.doesNotMatch(connector.textContent, /private-|\/private\/|dst-secret|provider|sha|token|명령/i);
+    assert.deepEqual(findAll(connector, 'span').filter((node) => node.className.includes('text-[11px]')), []);
+});
+
+test('MOCK: changing DST bundles ignores three late old previews and connects the new sibling', async (t) => {
+    const pending = new Map();
+    const calls = [];
+    const connections = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageResultConnector } = await import('../src/components/pipeline/ImageResultConnector.js');
+    const connector = ImageResultConnector({
+        task: { task_token: 'task-hidden', sequence: 2, label: '둘째 장면' },
+        workspace: { candidates: [
+            { candidate_token: 'old-hidden', created_at: '2026-07-17T08:00:00Z', image_count: 3 },
+            { candidate_token: 'new-hidden', created_at: '2026-07-17T09:00:00Z', image_count: 3 },
+        ] },
+        onLoadPreview: ({ candidateToken, imageIndex }) => {
+            calls.push({ candidateToken, imageIndex });
+            if (candidateToken === 'old-hidden') return new Promise((resolve) => pending.set(imageIndex, resolve));
+            return Promise.resolve({
+                ready: true, candidate_token: candidateToken, image_index: imageIndex,
+                preview: { mime_type: 'image/png', base64: Buffer.from(`new-${imageIndex}`).toString('base64') },
+            });
+        },
+        onConnect: async (payload) => { connections.push(payload); return { ok: true }; },
+    });
+    assert.deepEqual(calls, [
+        { candidateToken: 'old-hidden', imageIndex: 1 },
+        { candidateToken: 'old-hidden', imageIndex: 2 },
+        { candidateToken: 'old-hidden', imageIndex: 3 },
+    ]);
+    const select = byAttribute(connector, 'select', 'aria-label', '둘째 장면 DST 결과');
+    select.value = 'new-hidden';
+    await select.dispatchEvent({ type: 'change' });
+    await flushRenderer();
+
+    assert.equal(findAll(connector, 'img').length, 3);
+    assert.deepEqual(calls.slice(3), [
+        { candidateToken: 'new-hidden', imageIndex: 1 },
+        { candidateToken: 'new-hidden', imageIndex: 2 },
+        { candidateToken: 'new-hidden', imageIndex: 3 },
+    ]);
+    for (const [index, resolve] of pending) resolve({
+        ready: true, candidate_token: 'old-hidden', image_index: index,
+        preview: { mime_type: 'image/png', base64: Buffer.from(`old-${index}`).toString('base64') },
+    });
+    await flushRenderer();
+
+    assert.equal(findAll(connector, 'img').length, 3);
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '둘째 장면 DST 결과').value, 'new-hidden');
+    await byAttribute(connector, 'button', 'aria-label', '후보 3 이 이미지 선택').dispatchEvent({ type: 'click' });
+    assert.deepEqual(connections, [{ taskToken: 'task-hidden', candidateToken: 'new-hidden', imageIndex: 3 }]);
+    assert.doesNotMatch(connector.textContent, /old-hidden|new-hidden/);
+});
+
+test('MOCK: a failed DST gallery tile shows only a short Korean state', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageResultConnector } = await import('../src/components/pipeline/ImageResultConnector.js');
+    const connector = ImageResultConnector({
+        task: { task_token: 'failed-task', sequence: 3, label: '실패 장면' },
+        workspace: { candidates: [{ candidate_token: 'failed-result', created_at: '2026-07-17T09:00:00Z', image_count: 1 }] },
+        onLoadPreview: async () => { throw new Error('PRIVATE_PREVIEW_FAILURE'); },
+    });
+    await flushRenderer();
+    assert.ok(byText(connector, 'div', '불러오지 못했습니다.'));
+    assert.doesNotMatch(connector.textContent, /PRIVATE_PREVIEW_FAILURE|failed-task|failed-result/);
+});
+
+test('MOCK: workbench result handoff marks the preferred image but keeps every sibling selectable', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageTaskCard } = await import('../src/components/pipeline/ImageTaskCard.js');
+    const card = ImageTaskCard({
+        task: {
+            task_token: 'task-private', kind: 'scene_image', sequence: 4, label: '선호 장면',
+            prompt: 'prompt', status: '준비', result_token: '', reference_task_ids: [],
+        },
+        resultWorkspace: { candidates: [{
+            candidate_token: 'preferred-private', created_at: '2026-07-17T10:00:00Z', image_count: 3,
+        }] },
+        onLoadCandidatePreview: async ({ candidateToken, imageIndex }) => {
+            calls.push(['preview', imageIndex]);
+            return {
+                ready: true, candidate_token: candidateToken, image_index: imageIndex,
+                preview: { mime_type: 'image/png', base64: Buffer.from(`preferred-${imageIndex}`).toString('base64') },
+            };
+        },
+        onConnectResult: async (payload) => { calls.push(['connect', payload]); return { ok: true }; },
+    });
+    await card.dispatchEvent({
+        type: 'workbench:show-result',
+        detail: { candidateToken: 'preferred-private', imageIndex: 2 },
+    });
+    await flushRenderer();
+
+    assert.deepEqual(calls.filter(([method]) => method === 'preview'), [
+        ['preview', 1], ['preview', 2], ['preview', 3],
+    ]);
+    assert.ok(byText(card, 'p', '후보 2 · 이번 결과'));
+    assert.ok(byText(card, 'p', '후보 1'));
+    assert.ok(byText(card, 'p', '후보 3'));
+    await byAttribute(card, 'button', 'aria-label', '후보 3 이 이미지 선택').dispatchEvent({ type: 'click' });
+    assert.deepEqual(calls.find(([method]) => method === 'connect'), ['connect', {
+        taskToken: 'task-private', candidateToken: 'preferred-private', imageIndex: 3,
+    }]);
+    assert.doesNotMatch(card.textContent, /task-private|preferred-private|prompt/);
+});
+
+test('image result connector expands only its open task card and composes with suggestion expansion', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageTaskCard } = await import('../src/components/pipeline/ImageTaskCard.js');
+    const task = {
+        task_token: 'layout-task', kind: 'scene_image', sequence: 6, label: '레이아웃 장면',
+        prompt: 'prompt', status: '준비', result_token: '', reference_task_ids: [],
+    };
+    const props = {
+        task,
+        resultWorkspace: { candidates: [{
+            candidate_token: 'layout-result', created_at: '2026-07-17T12:00:00Z', image_count: 3,
+        }] },
+        onLoadCandidatePreview: async ({ candidateToken, imageIndex }) => ({
+            ready: true, candidate_token: candidateToken, image_index: imageIndex,
+            preview: { mime_type: 'image/png', base64: Buffer.from(`layout-${imageIndex}`).toString('base64') },
+        }),
+    };
+    const card = ImageTaskCard(props);
+    assert.doesNotMatch(card.className, /lg:col-span-2|xl:col-span-3/);
+    await byText(card, 'button', 'DST 결과 연결').dispatchEvent({ type: 'click' });
+    assert.match(card.className, /lg:col-span-2/);
+    assert.match(card.className, /xl:col-span-3/);
+    await byText(card, 'button', '결과 연결 닫기').dispatchEvent({ type: 'click' });
+    assert.doesNotMatch(card.className, /lg:col-span-2|xl:col-span-3/);
+
+    const suggestionCard = ImageTaskCard({ ...props, agentRequest: { status: 'suggestion_ready' } });
+    assert.match(suggestionCard.className, /lg:col-span-2/);
+    assert.match(suggestionCard.className, /xl:col-span-3/);
+});
+
+test('MOCK: pending DST connect is single-flight and restores controls without stale bundle feedback', async (t) => {
+    const calls = [];
+    let resolveConnect;
+    const connectResult = new Promise((resolve) => { resolveConnect = resolve; });
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageResultConnector } = await import('../src/components/pipeline/ImageResultConnector.js');
+    const connector = ImageResultConnector({
+        task: { task_token: 'pending-task', sequence: 7, label: '대기 장면' },
+        workspace: { candidates: [
+            { candidate_token: 'bundle-a', created_at: '2026-07-17T12:00:00Z', image_count: 2 },
+            { candidate_token: 'bundle-b', created_at: '2026-07-17T13:00:00Z', image_count: 1 },
+        ] },
+        onLoadPreview: async ({ candidateToken, imageIndex }) => ({
+            ready: true, candidate_token: candidateToken, image_index: imageIndex,
+            preview: { mime_type: 'image/png', base64: Buffer.from(`${candidateToken}-${imageIndex}`).toString('base64') },
+        }),
+        onRefresh: () => calls.push(['refresh']),
+        onConnect: async (payload) => { calls.push(['connect', payload]); return connectResult; },
+    });
+    await flushRenderer();
+    const oldSelect = byAttribute(connector, 'select', 'aria-label', '대기 장면 DST 결과');
+    const pendingClick = byAttribute(connector, 'button', 'aria-label', '후보 1 이 이미지 선택')
+        .dispatchEvent({ type: 'click' });
+    await flushRenderer();
+
+    const pendingSelect = byAttribute(connector, 'select', 'aria-label', '대기 장면 DST 결과');
+    assert.equal(pendingSelect.disabled, true);
+    assert.equal(byText(connector, 'button', '결과 새로고침').disabled, true);
+    assert.equal(findAll(connector, 'button').filter((button) => button.textContent === '이 이미지 선택')
+        .every((button) => button.disabled), true);
+    await byAttribute(connector, 'button', 'aria-label', '후보 2 이 이미지 선택').dispatchEvent({ type: 'click' });
+    oldSelect.value = 'bundle-b';
+    await oldSelect.dispatchEvent({ type: 'change' });
+    await byText(connector, 'button', '결과 새로고침').dispatchEvent({ type: 'click' });
+    assert.equal(calls.filter(([method]) => method === 'connect').length, 1);
+    assert.equal(calls.filter(([method]) => method === 'refresh').length, 0);
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '대기 장면 DST 결과').value, 'bundle-a');
+
+    resolveConnect({ ok: true });
+    await pendingClick;
+    await flushRenderer();
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '대기 장면 DST 결과').disabled, false);
+    assert.equal(byText(connector, 'button', '결과 새로고침').disabled, false);
+    assert.equal(findAll(connector, 'button').filter((button) => button.textContent === '이 이미지 선택')
+        .every((button) => !button.disabled), true);
+    assert.match(connector.textContent, /작업에 연결했습니다/);
+    assert.doesNotMatch(connector.textContent, /연결하지 못했습니다|bundle-b/);
+});
+
+test('MOCK: a single-image DST bundle uses the same gallery choice flow', async (t) => {
+    const calls = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { ImageResultConnector } = await import('../src/components/pipeline/ImageResultConnector.js');
+    const connector = ImageResultConnector({
+        task: { task_token: 'single-task', sequence: 5, label: '한 장면' },
+        workspace: { candidates: [{ candidate_token: 'single-result', created_at: '2026-07-17T11:00:00Z', image_count: 1 }] },
+        onLoadPreview: async ({ candidateToken, imageIndex }) => {
+            calls.push({ candidateToken, imageIndex });
+            return {
+                ready: true, candidate_token: candidateToken, image_index: imageIndex,
+                preview: { mime_type: 'image/png', base64: Buffer.from('single').toString('base64') },
+            };
+        },
+    });
+    await flushRenderer();
+    assert.deepEqual(calls, [{ candidateToken: 'single-result', imageIndex: 1 }]);
+    assert.ok(byAttribute(connector, 'img', 'alt', '후보 1 미리보기'));
+    assert.equal(findAll(connector, 'button').filter((button) => button.textContent === '이 이미지 선택').length, 1);
 });
 
 test('video preparation workbench keeps scene order, direct controls, local result review, and retry selection simple', async (t) => {
@@ -3641,7 +3894,7 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
 
     await byText(studio, 'button', 'DST 결과 연결').dispatchEvent({ type: 'click' });
     await flushRenderer();
-    await byText(studio, 'button', '이 결과 연결').dispatchEvent({ type: 'click' });
+    await byText(studio, 'button', '이 이미지 선택').dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.deepEqual(calls.find(([method]) => method === 'connect')[1], {
         task_token: 'task_'.concat('a'.repeat(64)), candidate_token: 'candidate-safe', image_index: 1,
