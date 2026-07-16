@@ -383,7 +383,8 @@ test('next-stage controls and review use counts require a connected reviewed res
     const videoDecision = [{ task_token: pendingVideo.task_token, decision: 'use' }];
     const pendingImagePanel = GenerationPreparationPanel({
         state: {}, config: { productionRoot: '' }, imagePlanTasks: [pendingImage],
-        imagePlanState: { tasks: [pendingImage], review_decisions: imageDecision }, onOpenImageNext() {},
+        imagePlanState: { tasks: [pendingImage], review_decisions: imageDecision },
+        onOpenImageResultReview() {}, onOpenImageNext() {},
     });
     const pendingVideoPanel = VideoPreparationPanel({
         videoPlanTasks: [pendingVideo], videoPlanState: { tasks: [pendingVideo], review_decisions: videoDecision },
@@ -395,6 +396,7 @@ test('next-stage controls and review use counts require a connected reviewed res
     });
 
     assert.equal(byText(pendingImagePanel, 'button', '영상 작업으로'), null);
+    assert.equal(byText(pendingImagePanel, 'button', '결과 검토로'), null);
     assert.equal(byText(pendingVideoPanel, 'button', '클립 선택으로'), null);
     assert.match(pendingGates.textContent, /사용 0\/1 · 확인 1 · 다시 0/);
 
@@ -416,6 +418,18 @@ test('next-stage controls and review use counts require a connected reviewed res
     assert.ok(byText(readyImagePanel, 'button', '영상 작업으로'));
     assert.ok(byText(readyVideoPanel, 'button', '클립 선택으로'));
     assert.match(readyGates.textContent, /사용 1\/1 · 확인 0 · 다시 0/);
+
+    const reviewCalls = [];
+    const reviewImagePanel = GenerationPreparationPanel({
+        state: {}, config: { productionRoot: '' }, imagePlanTasks: [connectedImage],
+        imagePlanState: { tasks: [connectedImage], review_decisions: [] },
+        onOpenImageResultReview: () => reviewCalls.push('review'), onOpenImageNext() {},
+    });
+    const reviewButton = byText(reviewImagePanel, 'button', '결과 검토로');
+    assert.ok(reviewButton, 'a connected unreviewed image exposes the review action without opening details');
+    await reviewButton.dispatchEvent({ type: 'click' });
+    assert.deepEqual(reviewCalls, ['review']);
+    assert.equal(byText(reviewImagePanel, 'button', '영상 작업으로'), null);
 });
 
 async function flushRenderer() {

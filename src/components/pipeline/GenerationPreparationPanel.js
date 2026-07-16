@@ -17,6 +17,9 @@ export function GenerationPreparationPanel({
     const allApproved = tasks.length > 0 && tasks.every((task) => (
         task.status === '결과연결' && Boolean(task.result_token) && task.review_decision === 'use'
     ));
+    const needsResultReview = tasks.some((task) => (
+        Boolean(task.result_token) && task.review_decision !== 'use'
+    ));
     const nextText = progress.next
         ? `${progress.next.sequence}. ${progress.next.label}`
         : allApproved ? '영상 작업으로 이동' : tasks.length ? '결과 검토' : '설계 먼저 완성';
@@ -46,6 +49,9 @@ export function GenerationPreparationPanel({
                     disabled: busy || !tasks.length,
                     onClick: () => onPrepareImagePlan?.(tasks),
                 }),
+                needsResultReview && typeof onOpenImageResultReview === 'function'
+                    ? actionButton('결과 검토로', { variant: 'muted', onClick: onOpenImageResultReview })
+                    : null,
                 allApproved && typeof onOpenImageNext === 'function'
                     ? actionButton('영상 작업으로', { variant: 'muted', onClick: onOpenImageNext })
                     : null,

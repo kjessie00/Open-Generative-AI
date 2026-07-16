@@ -99,6 +99,7 @@ function exactPaths(userDataPath, runToken = '') {
         referencesRoot: path.join(runRoot, REFERENCES_DIRECTORY),
         referencesManifestPath: path.join(runRoot, REFERENCES_DIRECTORY, REFERENCES_MANIFEST_FILE),
         outputsRoot: path.join(runRoot, OUTPUTS_DIRECTORY),
+        flowPreflightRoot: path.join(runRoot, 'flow-preflight'),
     };
 }
 
@@ -137,6 +138,11 @@ function ensureReferencesDirectory(paths) {
 function executionOutputPath(paths, taskToken) {
     if (!TASK_TOKEN.test(taskToken || '')) throw failure('EXECUTION_TASK_TOKEN_INVALID');
     return path.join(paths.outputsRoot, `${taskToken}.mp4`);
+}
+
+function flowPreflightOutputDirectory(paths, taskToken) {
+    if (!TASK_TOKEN.test(taskToken || '')) throw failure('EXECUTION_TASK_TOKEN_INVALID');
+    return path.join(paths.flowPreflightRoot, taskToken);
 }
 
 function replicateClaimPath(paths, taskToken) {
@@ -516,6 +522,14 @@ function stageExecutionOutputs(selection, context = {}, referencesByTask = new M
     if (selection.manifest.lane !== 'video') return new Map();
     ensureRunDirectories(selection.paths);
     ensureDirectory(selection.paths.outputsRoot, selection.paths.runRoot);
+    const flowTasks = selection.manifest.tasks.filter((task) => task.provider === 'flow');
+    if (flowTasks.length) {
+        ensureDirectory(selection.paths.flowPreflightRoot, selection.paths.runRoot);
+        flowTasks.forEach((task) => ensureDirectory(
+            flowPreflightOutputDirectory(selection.paths, task.task_token),
+            selection.paths.flowPreflightRoot,
+        ));
+    }
     const expectedNames = new Set(selection.manifest.tasks
         .filter((task) => task.provider === 'replicate')
         .map((task) => `${task.task_token}.claim.json`));
@@ -862,16 +876,29 @@ function baseFromPlan(state, lane, settings) {
     if (!availablePreparation(state)) return null;
     const selected = new Set(state.preparation.task_tokens);
     if (selected.size !== state.preparation.task_count) throw failure('EXECUTION_PREPARATION_INVALID');
-    const source = state.tasks.filter((task) => selected.has(task.task_token));
+    const source = state.tasks.filter((task) => selected.has(task.task_token))
+        .sort((left, right) => left.sequence - right.sequence);
     if (!source.length || source.length !== selected.size) throw failure('EXECUTION_PREPARATION_STALE');
+    const taskBySequence = new Map(state.tasks.map((task) => [task.sequence, task]));
     const resultByTask = new Map(state.tasks.map((task) => [task.task_token, task.result_token || '']));
     const tasks = source.map((task) => {
-        const referenceTaskTokens = lane === 'image'
-            ? Array.isArray(task.reference_task_ids) ? task.reference_task_ids : []
-            : [task.reference_image_task_token].filter(Boolean);
-        const referenceResultTokens = lane === 'image'
-            ? referenceTaskTokens.map((token) => resultByTask.get(token)).filter(Boolean)
-            : [task.reference_image_result_token].filter(Boolean);
+        let referenceTaskTokens;
+        let referenceResultTokens;
+        if (lane === 'image') {
+            referenceTaskTokens = Array.isArray(task.reference_task_ids) ? task.reference_task_ids : [];
+            referenceResultTokens = referenceTaskTokens.map((token) => resultByTask.get(token)).filter(Boolean);
+        } else if (task.provider === 'flow') {
+            const nextTask = taskBySequence.get(task.sequence + 1);
+            referenceTaskTokens = nextTask
+                ? [task.reference_image_task_token, nextTask.reference_image_task_token]
+                : [];
+            referenceResultTokens = nextTask
+                ? [task.reference_image_result_token, nextTask.reference_image_result_token]
+                : [];
+        } else {
+            referenceTaskTokens = [task.reference_image_task_token].filter(Boolean);
+            referenceResultTokens = [task.reference_image_result_token].filter(Boolean);
+        }
         const duration = lane === 'video' ? settings.sceneDurations.get(task.source_id) : 0;
         if (lane === 'video' && (!Number.isFinite(duration) || duration <= 0 || duration > 60)) {
             throw failure('EXECUTION_DURATION_REQUIRED');
@@ -1199,10 +1226,17 @@ function providerReadiness(task, context = {}) {
         };
     }
     if (task.provider === 'flow') {
-        const installed = regularFile(runtime.flowText) && regularFile(runtime.flowRefs);
+        const installed = regularFile(runtime.flowPython) && realDirectory(runtime.flowRoot)
+            && regularFile(runtime.flowText) && regularFile(runtime.flowRefs);
+        const runtimeContext = Boolean(context.runtimePaths?.flowCdpUrl
+            || process.env.OPEN_GENERATIVE_AI_FLOW_CDP_URL || process.env.FLOW_CDP_URL);
         return {
-            provider_readiness: installed ? 'reference_contract_blocked' : 'runtime_missing',
-            provider_status_label: installed ? '참조 방식 준비 필요' : '플로우 도구 준비 필요',
+            provider_readiness: installed
+                ? (runtimeContext ? 'preview_ready' : 'runtime_context_required')
+                : 'runtime_missing',
+            provider_status_label: installed
+                ? (runtimeContext ? '플로우 작업 확인 가능' : '플로우 작업창 연결 필요')
+                : '플로우 도구 준비 필요',
         };
     }
     if (task.provider === 'grok') {
@@ -1279,6 +1313,8 @@ function publicSelections(selections, context = {}) {
             const providerPreview = providerExecutionPreview.buildProviderExecutionPreview({
                 ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
                 output_path: outputTargets.get(task.task_token) || '',
+                flow_output_dir: selection.prepared && task.provider === 'flow'
+                    ? flowPreflightOutputDirectory(selection.paths, task.task_token) : '',
             }, context);
             let executionResultBinding = null;
             if (receipt?.status === 'succeeded' && task.lane === 'video' && task.provider === 'replicate') {
@@ -1398,6 +1434,18 @@ function executionPreview(task) {
             reason: 'video_reference_count_required',
             user_status: '영상 참조 이미지 구성을 다시 확인해야 합니다.',
             next_action: '영상 작업에서 참조 이미지를 0장 또는 2장으로 맞추세요.',
+            output_kind: 'video',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
+    if (!resultAvailable && previewBlockers.includes('FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED')) {
+        return {
+            mode: 'setup_required',
+            status_label: '작업창 연결 필요',
+            reason: 'provider_runtime_context_required',
+            user_status: '플로우 작업창 연결을 확인해야 합니다.',
+            next_action: '설정에서 현재 플로우 작업창 연결을 확인하세요.',
             output_kind: 'video',
             output_count: 1,
             preview_only: true,
@@ -2053,6 +2101,8 @@ function inspectExecutionHandoff(context = {}, options = {}) {
                 provider_execution_preview: providerExecutionPreview.buildProviderExecutionPreview({
                     ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
                     output_path: outputPath,
+                    flow_output_dir: task.provider === 'flow'
+                        ? flowPreflightOutputDirectory(selection.paths, task.task_token) : '',
                 }, context),
             };
             if (task.provider === 'replicate') {

@@ -54,6 +54,31 @@ test('connected media with a pending decision points to result review', () => {
     assert.deepEqual(display.nextAction, { id: 'result-review', label: '결과 검토', tab: 'storyboard' });
 });
 
+test('connected images require a quality decision before video work is offered', () => {
+    const image = connectedTask('image-1', 1, '주인공');
+    const queuedVideo = {
+        task_token: 'video-1', kind: 'scene_video', sequence: 1,
+        label: '첫 장면', status: '준비', result_token: '',
+    };
+    const base = {
+        executionState: { tasks: [] },
+        imagePlanState: { tasks: [image], review_decisions: [] },
+        videoPlanState: { tasks: [queuedVideo], review_decisions: [] },
+    };
+
+    const pending = deriveExecutionDisplayState(base);
+    assert.deepEqual(pending.nextAction, { id: 'result-review', label: '결과 검토', tab: 'storyboard' });
+
+    const retry = deriveExecutionDisplayState({
+        ...base,
+        imagePlanState: {
+            tasks: [{ ...image, status: '재제작' }],
+            review_decisions: [{ task_token: image.task_token, decision: 'retry' }],
+        },
+    });
+    assert.deepEqual(retry.nextAction, { id: 'result-review', label: '결과 검토', tab: 'storyboard' });
+});
+
 test('execution receipts remain authoritative when they contain tasks', () => {
     const receipt = {
         task_token: 'receipt-1', lane: 'image', sequence: 1, label: '인물', status: 'running', progress: 25,

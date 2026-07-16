@@ -6,6 +6,10 @@ const PREVIEW_SCHEMA = 'film_pipeline.provider_execution_preview.v1';
 const DEFAULT_RUNTIME_PATHS = Object.freeze({
     dstPython: '/Users/jessiek/StudioProjects/deepSearchTeam/.venv/bin/python',
     dstModule: '/Users/jessiek/StudioProjects/deepSearchTeam/dst',
+    flowPython: '/Users/jessiek/StudioProjects/google_labs_flow_auto/venv/bin/python',
+    flowRoot: '/Users/jessiek/StudioProjects/google_labs_flow_auto',
+    flowText: '/Users/jessiek/StudioProjects/google_labs_flow_auto/scripts/flow_cdp_video_text_smoke.py',
+    flowRefs: '/Users/jessiek/StudioProjects/google_labs_flow_auto/scripts/flow_cdp_video_refs_smoke.py',
     grokPython: '/Users/jessiek/.pyenv/versions/3.11.7/bin/python3',
     grokCli: '/Users/jessiek/StudioProjects/grok-auto/grok-browser/grok_imagine_bot.py',
     grokRoot: '/Users/jessiek/StudioProjects/grok-auto/grok-browser',
@@ -121,15 +125,93 @@ function dstPreview(task, runtime) {
     }));
 }
 
-function flowPreview(task) {
+function privateFlowOutputDirectory(task) {
+    try {
+        if (!TASK_TOKEN.test(task.task_token || '') || typeof task.flow_output_dir !== 'string'
+            || !path.isAbsolute(task.flow_output_dir) || path.normalize(task.flow_output_dir) !== task.flow_output_dir
+            || path.basename(task.flow_output_dir) !== task.task_token) return '';
+        const root = path.dirname(task.flow_output_dir);
+        const runRoot = path.dirname(root);
+        const rootStats = fs.lstatSync(root);
+        const outputStats = fs.lstatSync(task.flow_output_dir);
+        if (path.basename(root) !== 'flow-preflight' || !/^run_[a-f0-9]{64}$/.test(path.basename(runRoot))
+            || !rootStats.isDirectory() || rootStats.isSymbolicLink() || (rootStats.mode & 0o777) !== 0o700
+            || !outputStats.isDirectory() || outputStats.isSymbolicLink() || (outputStats.mode & 0o777) !== 0o700
+            || fs.realpathSync.native(root) !== root || fs.realpathSync.native(task.flow_output_dir) !== task.flow_output_dir) {
+            return '';
+        }
+        return task.flow_output_dir;
+    } catch { return ''; }
+}
+
+function privateFlowRuntime(runtime) {
+    const python = resolvedFile(runtime.flowPython);
+    const root = resolvedDirectory(runtime.flowRoot);
+    const textScript = resolvedFile(runtime.flowText);
+    const refsScript = resolvedFile(runtime.flowRefs);
+    if (!python || !root || !textScript || !refsScript
+        || path.dirname(textScript) !== path.join(root, 'scripts')
+        || path.dirname(refsScript) !== path.join(root, 'scripts')
+        || path.basename(textScript) !== 'flow_cdp_video_text_smoke.py'
+        || path.basename(refsScript) !== 'flow_cdp_video_refs_smoke.py') return null;
+    return { python, root, textScript, refsScript };
+}
+
+function loopbackCdpUrl(value) {
+    try {
+        const parsed = new URL(value);
+        return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname)
+            && /^\d{1,5}$/.test(parsed.port) && Number(parsed.port) > 0 && Number(parsed.port) <= 65535
+            && ['/', ''].includes(parsed.pathname) && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+    } catch { return false; }
+}
+
+function flowProjectUrl(value) {
+    if (!value) return true;
+    try {
+        const parsed = new URL(value);
+        return parsed.protocol === 'https:' && parsed.hostname === 'labs.google'
+            && parsed.pathname.startsWith('/fx/') && !parsed.username && !parsed.password && !parsed.hash;
+    } catch { return false; }
+}
+
+function flowPreview(task, runtime) {
     const referenceCount = task.reference_result_tokens.length;
     if (![0, 2].includes(referenceCount)) {
         return blocked(task, 'flow', 'FLOW_REFERENCE_COUNT_MUST_BE_ZERO_OR_TWO');
     }
-    if (referenceCount === 2 && task.reference_files.length !== 2) {
+    if (task.reference_files.length !== referenceCount
+        || task.reference_files.some((reference, index) => (
+            reference.result_token !== task.reference_result_tokens[index]
+        ))) {
         return blocked(task, 'flow', 'FLOW_REFERENCE_STAGING_REQUIRED');
     }
-    return blocked(task, 'flow', 'FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED');
+    const resolvedRuntime = privateFlowRuntime(runtime);
+    if (!resolvedRuntime) return blocked(task, 'flow', 'FLOW_RUNTIME_MISSING');
+    if (!loopbackCdpUrl(runtime.flowCdpUrl) || !flowProjectUrl(runtime.flowProjectUrl)) {
+        return blocked(task, 'flow', 'FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED');
+    }
+    if (!['9:16', '16:9'].includes(task.aspect_ratio)) {
+        return blocked(task, 'flow', 'FLOW_ASPECT_RATIO_UNSUPPORTED');
+    }
+    const outputDirectory = privateFlowOutputDirectory(task);
+    if (!outputDirectory) return blocked(task, 'flow', 'FLOW_OUTPUT_STAGING_REQUIRED');
+    const script = referenceCount === 2 ? resolvedRuntime.refsScript : resolvedRuntime.textScript;
+    const args = [script];
+    task.reference_files.forEach((reference) => args.push('--image', reference.path));
+    args.push(
+        '--prompt', task.prompt,
+        '--aspect-ratio', task.aspect_ratio,
+        '--batch-size', '1',
+        '--model', 'Omni Flash',
+        '--outdir', outputDirectory,
+        '--no-submit',
+    );
+    return contract(task, 'flow', 'preview_ready', [], commandSpec({
+        command: resolvedRuntime.python,
+        args,
+        cwd: resolvedRuntime.root,
+    }));
 }
 
 function grokOutputPath(task) {
@@ -281,7 +363,14 @@ function replicatePreview(task) {
 }
 
 function buildProviderExecutionPreview(task, context = {}) {
-    const runtime = { ...DEFAULT_RUNTIME_PATHS, ...(context.runtimePaths || {}) };
+    const runtime = {
+        ...DEFAULT_RUNTIME_PATHS,
+        ...(context.runtimePaths || {}),
+        flowCdpUrl: context.runtimePaths?.flowCdpUrl
+            || process.env.OPEN_GENERATIVE_AI_FLOW_CDP_URL || process.env.FLOW_CDP_URL || '',
+        flowProjectUrl: context.runtimePaths?.flowProjectUrl
+            || process.env.OPEN_GENERATIVE_AI_FLOW_PROJECT_URL || process.env.FLOW_PROJECT_URL || '',
+    };
     const normalized = {
         ...task,
         reference_result_tokens: Array.isArray(task?.reference_result_tokens)
@@ -289,9 +378,10 @@ function buildProviderExecutionPreview(task, context = {}) {
         reference_files: Array.isArray(task?.reference_files)
             ? task.reference_files.map(resolvedReferenceFile).filter(Boolean) : [],
         output_path: typeof task?.output_path === 'string' ? task.output_path : '',
+        flow_output_dir: typeof task?.flow_output_dir === 'string' ? task.flow_output_dir : '',
     };
     if (normalized.lane === 'image') return dstPreview(normalized, runtime);
-    if (normalized.provider === 'flow') return flowPreview(normalized);
+    if (normalized.provider === 'flow') return flowPreview(normalized, runtime);
     if (normalized.provider === 'grok') return grokPreview(normalized, runtime);
     if (normalized.provider === 'replicate') return replicatePreview(normalized);
     const blocker = normalized.provider === 'bytedance'

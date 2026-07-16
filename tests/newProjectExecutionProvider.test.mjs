@@ -100,7 +100,9 @@ test('MOCK: current image and video preparations become lane-private revision-bo
     assert.deepEqual(initial.tasks.map((task) => task.provider_label), ['DST 이미지', '플로우']);
     assert.deepEqual(initial.tasks.map((task) => task.status_label), ['대기', '대기']);
     assert.equal(initial.tasks.every((task) => task.result_received === false), true);
-    assert.equal(initial.tasks.every((task) => task.execution_preview?.mode === 'result_only'), true);
+    assert.deepEqual(initial.tasks.map((task) => task.execution_preview?.mode), [
+        'result_only', 'setup_required',
+    ]);
     assert.deepEqual(initial.tasks.map((task) => task.execution_preview?.output_kind), ['image', 'video']);
     assert.equal(initial.tasks.every((task) => task.execution_preview?.preview_only === true), true);
     assert.doesNotMatch(JSON.stringify(initial.tasks.map((task) => task.execution_preview)),
@@ -494,7 +496,39 @@ function board() {
     };
 }
 
-test('provider execution previews build exact private DST and Grok commands while live submission stays blocked', (t) => {
+function twoSceneBoard() {
+    const value = board();
+    return {
+        ...value,
+        scenes: [
+            value.scenes[0],
+            {
+                id: 'scene_02', title: '다음 판단', dramatic_beat: '안전한 선택을 한다.', characters: ['hero'],
+                location_id: 'site', duration: 5, first_frame: '비가 그친 현장',
+                action: '주인공이 안전 장비를 확인한다.', camera: '느린 돌리 인',
+                lighting: '따뜻한 아침빛', audio_sfx_dialogue: '물방울과 숨소리',
+            },
+        ],
+    };
+}
+
+function threeSceneBoard() {
+    const value = twoSceneBoard();
+    return {
+        ...value,
+        scenes: [
+            ...value.scenes,
+            {
+                id: 'scene_03', title: '마지막 기준', dramatic_beat: '선택을 기준으로 남긴다.', characters: ['hero'],
+                location_id: 'site', duration: 5, first_frame: '정돈된 안전 장비',
+                action: '주인공이 점검표에 서명한다.', camera: '고정된 미디엄 숏',
+                lighting: '맑은 낮빛', audio_sfx_dialogue: '종이 넘기는 소리',
+            },
+        ],
+    };
+}
+
+test('provider execution previews build exact private DST, Flow, and Grok commands while live submission stays blocked', (t) => {
     const parts = fixture(t, 'open-ga-provider-preview-');
     const runtimeRoot = path.join(parts.base, 'runtime');
     const dstModule = path.join(runtimeRoot, 'dst');
@@ -503,6 +537,11 @@ test('provider execution previews build exact private DST and Grok commands whil
     const grokPythonTarget = path.join(runtimeRoot, 'python3.11');
     const grokPython = path.join(runtimeRoot, 'python3');
     const grokCli = path.join(grokRoot, 'grok_imagine_bot.py');
+    const flowRoot = path.join(runtimeRoot, 'flow');
+    const flowScripts = path.join(flowRoot, 'scripts');
+    const flowPython = path.join(flowRoot, 'python');
+    const flowText = path.join(flowScripts, 'flow_cdp_video_text_smoke.py');
+    const flowRefs = path.join(flowScripts, 'flow_cdp_video_refs_smoke.py');
     const outputsRoot = path.join(parts.base, 'outputs');
     fs.mkdirSync(dstModule, { recursive: true, mode: 0o700 });
     fs.writeFileSync(dstPython, '#!/bin/sh\n', { mode: 0o700 });
@@ -511,6 +550,10 @@ test('provider execution previews build exact private DST and Grok commands whil
     fs.writeFileSync(grokPythonTarget, '#!/bin/sh\n', { mode: 0o700 });
     fs.symlinkSync(grokPythonTarget, grokPython);
     fs.writeFileSync(grokCli, '# grok fixture\n', { mode: 0o600 });
+    fs.mkdirSync(flowScripts, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(flowPython, '#!/bin/sh\n', { mode: 0o700 });
+    fs.writeFileSync(flowText, '# flow text fixture\n', { mode: 0o600 });
+    fs.writeFileSync(flowRefs, '# flow refs fixture\n', { mode: 0o600 });
     const context = { runtimePaths: { dstPython, dstModule, grokPython, grokCli, grokRoot } };
     const task = {
         lane: 'image', kind: 'character_sheet', provider: 'dst_image',
@@ -570,6 +613,49 @@ test('provider execution previews build exact private DST and Grok commands whil
         reference_files: stagedReferences, duration_seconds: 5,
     }, context);
     assert.deepEqual(flowStaged.blockers, ['FLOW_PRIVATE_RUNTIME_CONTEXT_REQUIRED']);
+
+    const flowTaskToken = `task_${'7'.repeat(64)}`;
+    const flowRunRoot = path.join(parts.base, `run_${'9'.repeat(64)}`);
+    const flowPreflightRoot = path.join(flowRunRoot, 'flow-preflight');
+    const flowOutputDir = path.join(flowPreflightRoot, flowTaskToken);
+    fs.mkdirSync(flowRunRoot, { mode: 0o700 });
+    fs.mkdirSync(flowPreflightRoot, { mode: 0o700 });
+    fs.mkdirSync(flowOutputDir, { mode: 0o700 });
+    const flowContext = { runtimePaths: {
+        ...context.runtimePaths, flowPython, flowRoot, flowText, flowRefs,
+        flowCdpUrl: 'http://127.0.0.1:9224',
+    } };
+    const flowReady = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'flow', prompt: '움직임',
+        task_token: flowTaskToken, flow_output_dir: flowOutputDir,
+        aspect_ratio: '9:16', reference_result_tokens: stagedReferences.map((item) => item.result_token),
+        reference_files: stagedReferences, duration_seconds: 5,
+    }, flowContext);
+    assert.equal(flowReady.readiness, 'preview_ready');
+    assert.deepEqual(flowReady.blockers, []);
+    assert.equal(flowReady.command_spec.command, flowPython);
+    assert.equal(flowReady.command_spec.cwd, flowRoot);
+    assert.deepEqual(flowReady.command_spec.args, [
+        flowRefs,
+        '--image', stagedPaths[0], '--image', stagedPaths[1],
+        '--prompt', '움직임', '--aspect-ratio', '9:16', '--batch-size', '1',
+        '--model', 'Omni Flash', '--outdir', flowOutputDir, '--no-submit',
+    ]);
+    assert.equal(flowReady.command_spec.shell, false);
+    assert.equal(flowReady.command_spec.preview_only, true);
+    assert.equal(flowReady.command_spec.live_submit_allowed, false);
+    assert.equal(flowReady.command_spec.args.includes('--submit'), false);
+
+    const flowTextReady = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'flow', prompt: '마지막 움직임',
+        task_token: flowTaskToken, flow_output_dir: flowOutputDir,
+        aspect_ratio: '16:9', reference_result_tokens: [], reference_files: [], duration_seconds: 5,
+    }, flowContext);
+    assert.equal(flowTextReady.readiness, 'preview_ready');
+    assert.deepEqual(flowTextReady.command_spec.args, [
+        flowText, '--prompt', '마지막 움직임', '--aspect-ratio', '16:9',
+        '--batch-size', '1', '--model', 'Omni Flash', '--outdir', flowOutputDir, '--no-submit',
+    ]);
 
     const grokTaskToken = `task_${'8'.repeat(64)}`;
     const grokOutput = path.join(outputsRoot, `${grokTaskToken}.mp4`);
@@ -990,11 +1076,11 @@ test('MOCK: DST scene references stage as immutable typed run inputs and recover
     });
 });
 
-function setupActualPlans(t, videoProvider = 'flow') {
+function setupActualPlans(t, videoProvider = 'flow', savedBoard = board()) {
     const parts = fixture(t, 'open-ga-execution-cli-');
     const empty = designProvider.getNewProjectDesignState(parts);
     designProvider.saveNewProjectDesignBoard({
-        board: board(), expected_planning_revision_sha256: empty.planning_revision_sha256,
+        board: savedBoard, expected_planning_revision_sha256: empty.planning_revision_sha256,
         expected_design_revision_sha256: empty.revision_sha256,
     }, parts);
     const preview = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -1027,18 +1113,20 @@ function setupActualPlans(t, videoProvider = 'flow') {
             expected_image_plan_revision_sha256: image.revision_sha256,
         }, imageContext);
     }
-    const scene = image.tasks.find((task) => task.kind === 'scene_image');
-    image = imagePlanProvider.connectNewProjectImageResult({
-        task_token: scene.task_token, candidate_token: 'local-fixture', image_index: 1,
-        expected_design_revision_sha256: image.design_revision_sha256,
-        expected_image_plan_revision_sha256: image.revision_sha256,
-    }, imageContext).state;
-    image = imagePlanProvider.saveNewProjectImageReviewDecision({
-        task_token: scene.task_token,
-        decision: 'use',
-        expected_design_revision_sha256: image.design_revision_sha256,
-        expected_image_plan_revision_sha256: image.revision_sha256,
-    }, imageContext);
+    const sceneTasks = image.tasks.filter((task) => task.kind === 'scene_image');
+    for (let index = 0; index < sceneTasks.length; index += 1) {
+        image = imagePlanProvider.connectNewProjectImageResult({
+            task_token: sceneTasks[index].task_token, candidate_token: `local-scene-${index + 1}`, image_index: index + 1,
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, imageContext).state;
+        image = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: sceneTasks[index].task_token,
+            decision: 'use',
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, imageContext);
+    }
     let video = videoPlanProvider.getNewProjectVideoPlan(parts);
     const videoTasks = video.tasks.map((task) => ({
         ...task,
@@ -1059,9 +1147,146 @@ function setupActualPlans(t, videoProvider = 'flow') {
     assert.equal(execution.prepared, false, 'new video lane awaits materialization');
     assert.equal(execution.tasks.filter((task) => task.lane === 'image').length, 0,
         'accepted image results leave only the video lane to execute');
-    assert.equal(execution.tasks.filter((task) => task.lane === 'video').length, 1);
+    assert.equal(execution.tasks.filter((task) => task.lane === 'video').length, savedBoard.scenes.length);
     return { ...parts, execution };
 }
+
+test('Flow video handoff uses current plus next scene references except the final scene while Grok and Replicate keep one', (t) => {
+    for (const provider of ['flow', 'grok', 'replicate']) {
+        const parts = setupActualPlans(t, provider, twoSceneBoard());
+        if (provider === 'flow') {
+            const flowRoot = path.join(parts.base, 'flow-runtime');
+            const scriptsRoot = path.join(flowRoot, 'scripts');
+            const flowPython = path.join(flowRoot, 'python');
+            const flowText = path.join(scriptsRoot, 'flow_cdp_video_text_smoke.py');
+            const flowRefs = path.join(scriptsRoot, 'flow_cdp_video_refs_smoke.py');
+            fs.mkdirSync(scriptsRoot, { recursive: true, mode: 0o700 });
+            fs.writeFileSync(flowPython, '#!/bin/sh\n', { mode: 0o700 });
+            fs.writeFileSync(flowText, '# flow text fixture\n', { mode: 0o600 });
+            fs.writeFileSync(flowRefs, '# flow refs fixture\n', { mode: 0o600 });
+            parts.runtimePaths = {
+                flowPython, flowRoot, flowText, flowRefs, flowCdpUrl: 'http://127.0.0.1:9224',
+            };
+        }
+        const initial = executionProvider.getNewProjectExecutionState(parts);
+        executionProvider.prepareNewProjectExecution({
+            expected_revision_sha256: initial.revision_sha256,
+            new_attempt: false,
+        }, parts);
+        const tasks = executionProvider.inspectExecutionHandoff(parts, { new_attempt: false }).tasks
+            .filter((task) => task.lane === 'video')
+            .sort((left, right) => left.sequence - right.sequence);
+        const image = imagePlanProvider.getNewProjectImagePlan(parts);
+        const sceneReferences = image.tasks.filter((task) => task.kind === 'scene_image')
+            .sort((left, right) => left.sequence - right.sequence);
+
+        assert.equal(tasks.length, 2);
+        if (provider === 'flow') {
+            assert.deepEqual(tasks.map((task) => task.reference_task_tokens), [
+                sceneReferences.map((task) => task.task_token),
+                [],
+            ]);
+            assert.deepEqual(tasks.map((task) => task.reference_result_tokens), [
+                sceneReferences.map((task) => task.result_token),
+                [],
+            ]);
+            assert.deepEqual(tasks.map((task) => task.reference_files.length), [2, 0]);
+            assert.equal(new Set(tasks[0].reference_result_tokens).size, 2);
+            assert.deepEqual(tasks.map((task) => task.provider_execution_preview.readiness), [
+                'preview_ready', 'preview_ready',
+            ]);
+            assert.equal(tasks.every((task) => (
+                task.provider_execution_preview.command_spec.args.includes('--no-submit')
+                && !task.provider_execution_preview.command_spec.args.includes('--submit')
+            )), true);
+            assert.deepEqual(tasks.map((task) => (
+                task.provider_execution_preview.command_spec.args.filter((value) => value === '--image').length
+            )), [2, 0]);
+            assert.equal(tasks.every((task) => {
+                const args = task.provider_execution_preview.command_spec.args;
+                const outputDir = args[args.indexOf('--outdir') + 1];
+                return fs.lstatSync(outputDir).isDirectory()
+                    && (fs.lstatSync(outputDir).mode & 0o777) === 0o700;
+            }), true);
+            const publicTasks = executionProvider.getNewProjectExecutionState(parts).tasks;
+            assert.equal(publicTasks.every((task) => task.execution_preview.mode === 'preview_ready'), true);
+            assert.doesNotMatch(JSON.stringify(publicTasks), /flow-preflight|127\.0\.0\.1|--no-submit|\/tmp\//i);
+        } else {
+            assert.deepEqual(tasks.map((task) => task.reference_task_tokens),
+                sceneReferences.map((task) => [task.task_token]));
+            assert.deepEqual(tasks.map((task) => task.reference_result_tokens),
+                sceneReferences.map((task) => [task.result_token]));
+            assert.deepEqual(tasks.map((task) => task.reference_files.length), [1, 1]);
+        }
+    }
+});
+
+test('Flow retry subsets keep the storyboard next scene instead of the next selected retry', (t) => {
+    const parts = setupActualPlans(t, 'flow', threeSceneBoard());
+    const bytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(32, 0x61),
+    ]);
+    const context = {
+        ...parts,
+        getVideoResultImportWorkspace: () => ({
+            status: 'ready', blockers: [], candidates: [{
+                candidate_token: 'flow-subset-result', provider: 'flow',
+                duration_seconds: 5, width: 1080, height: 1920,
+            }],
+        }),
+        copyVideoResultCandidateToPrivateFile: ({ destinationPath }) => {
+            fs.writeFileSync(destinationPath, bytes, { mode: 0o600, flag: 'wx' });
+            return {
+                provider: 'flow', source_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+                byte_length: bytes.byteLength, duration_seconds: 5, width: 1080, height: 1920,
+                provenance_kind: 'mock_receipt',
+            };
+        },
+    };
+    let video = videoPlanProvider.getNewProjectVideoPlan(context);
+    const middle = video.tasks[1];
+    video = videoPlanProvider.connectNewProjectVideoResult({
+        task_token: middle.task_token,
+        candidate_token: 'flow-subset-result',
+        expected_design_revision_sha256: video.design_revision_sha256,
+        expected_image_plan_revision_sha256: video.image_plan_revision_sha256,
+        expected_video_plan_revision_sha256: video.revision_sha256,
+    }, context).state;
+    video = videoPlanProvider.saveNewProjectVideoReviewDecision({
+        task_token: middle.task_token,
+        decision: 'use',
+        expected_design_revision_sha256: video.design_revision_sha256,
+        expected_image_plan_revision_sha256: video.image_plan_revision_sha256,
+        expected_video_plan_revision_sha256: video.revision_sha256,
+    }, context);
+    video = videoPlanProvider.prepareNewProjectVideoPlan({
+        expected_design_revision_sha256: video.design_revision_sha256,
+        expected_image_plan_revision_sha256: video.image_plan_revision_sha256,
+        expected_video_plan_revision_sha256: video.revision_sha256,
+    }, context).state;
+    assert.deepEqual(video.preparation.task_tokens, [video.tasks[0].task_token, video.tasks[2].task_token]);
+
+    const initial = executionProvider.getNewProjectExecutionState(context);
+    executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: initial.revision_sha256,
+        new_attempt: false,
+    }, context);
+    const tasks = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks
+        .sort((left, right) => left.sequence - right.sequence);
+    const image = imagePlanProvider.getNewProjectImagePlan(context);
+    const sceneReferences = image.tasks.filter((task) => task.kind === 'scene_image')
+        .sort((left, right) => left.sequence - right.sequence);
+
+    assert.deepEqual(tasks.map((task) => task.sequence), [1, 3]);
+    assert.deepEqual(tasks[0].reference_task_tokens, [
+        sceneReferences[0].task_token, sceneReferences[1].task_token,
+    ]);
+    assert.deepEqual(tasks[0].reference_result_tokens, [
+        sceneReferences[0].result_token, sceneReferences[1].result_token,
+    ]);
+    assert.deepEqual(tasks[1].reference_task_tokens, []);
+    assert.deepEqual(tasks.map((task) => task.reference_files.length), [2, 0]);
+});
 
 function spawnInspect(userDataPath) {
     return new Promise((resolve) => {
@@ -2402,12 +2627,13 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
     assert.equal(videoTask.duration_seconds, 5);
     assert.equal(videoTask.source_id, 'scene_01');
     assert.match(videoTask.prompt, /주인공이 사다리차를 붙든다/);
+    assert.equal(videoTask.reference_files.length, 0);
     const publicVideo = executionProvider.getNewProjectExecutionState(parts).tasks
         .find((task) => task.lane === 'video');
     assert.deepEqual(publicVideo.execution_preview, {
-        mode: 'setup_required', status_label: '준비 필요', reason: 'video_reference_count_required',
-        user_status: '영상 참조 이미지 구성을 다시 확인해야 합니다.',
-        next_action: '영상 작업에서 참조 이미지를 0장 또는 2장으로 맞추세요.',
+        mode: 'setup_required', status_label: '작업창 연결 필요', reason: 'provider_runtime_context_required',
+        user_status: '플로우 작업창 연결을 확인해야 합니다.',
+        next_action: '설정에서 현재 플로우 작업창 연결을 확인하세요.',
         output_kind: 'video', output_count: 1, preview_only: true,
     });
     assert.doesNotMatch(JSON.stringify(publicVideo.execution_preview), /FLOW_|flow|\/Users\//i);

@@ -150,11 +150,11 @@ function overlayExecutionTasks(receiptTasks, imagePlan, videoPlan) {
 }
 
 function nextExecutionAction(tasks) {
-    const active = tasks.find((task) => task.status === 'failed')
-        || tasks.find((task) => task.status === 'running')
-        || tasks.find((task) => task.status === 'queued')
-        || tasks.find((task) => task.result_match_status !== 'connected');
-    if (active) {
+    const activeTask = (laneTasks) => laneTasks.find((task) => task.status === 'failed')
+        || laneTasks.find((task) => task.status === 'running')
+        || laneTasks.find((task) => task.status === 'queued')
+        || laneTasks.find((task) => task.result_match_status !== 'connected');
+    const workItem = (active) => {
         const kind = active.lane === 'video' ? 'video' : 'image';
         return Object.freeze({
             id: 'work-item',
@@ -163,12 +163,19 @@ function nextExecutionAction(tasks) {
             kind,
             sequence: active.sequence,
         });
-    }
+    };
     const imageTasks = tasks.filter((task) => task.lane === 'image');
     const videoTasks = tasks.filter((task) => task.lane === 'video');
     if (!imageTasks.length) return Object.freeze({ id: 'image-work', label: '이미지 작업 준비', tab: 'assets' });
+    const activeImage = activeTask(imageTasks);
+    if (activeImage) return workItem(activeImage);
+    if (!imageTasks.every((task) => task.quality_decision === 'use')) {
+        return Object.freeze({ id: 'result-review', label: '결과 검토', tab: 'storyboard' });
+    }
     if (!videoTasks.length) return Object.freeze({ id: 'video-work', label: '영상 작업 준비', tab: 'videos' });
-    if (!tasks.every((task) => task.quality_decision === 'use')) {
+    const activeVideo = activeTask(videoTasks);
+    if (activeVideo) return workItem(activeVideo);
+    if (!videoTasks.every((task) => task.quality_decision === 'use')) {
         return Object.freeze({ id: 'result-review', label: '결과 검토', tab: 'storyboard' });
     }
     return Object.freeze({ id: 'clip-selection', label: '클립 선택', tab: 'qa' });
