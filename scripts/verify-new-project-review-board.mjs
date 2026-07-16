@@ -159,6 +159,28 @@ if (mode === 'seed') {
     }
     writeReceipt('seed.json', receipt);
     process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
+} else if (mode === 'verify-image') {
+    const imageState = imagePlanProvider.getNewProjectImagePlan(context);
+    const videoState = videoPlanProvider.getNewProjectVideoPlan(context);
+    const imageRetry = imageState.tasks.filter((task) => task.status === '재제작');
+    const receipt = {
+        mode,
+        image_count: imageState.tasks.length,
+        image_result_count: imageState.tasks.filter((task) => task.result_token).length,
+        image_retry_count: imageRetry.length,
+        selected_image_label: imageRetry[0]?.label || '',
+        video_status: videoState.status,
+        video_blockers: videoState.blockers,
+        external_call_performed: false, model_called: false, generation_executed: false,
+        provider_generation_calls: 0,
+    };
+    if (receipt.image_count !== 3 || receipt.image_result_count !== 3 || receipt.image_retry_count !== 1
+        || receipt.selected_image_label !== '장면 이미지 · 재회' || receipt.video_status !== 'blocked'
+        || !receipt.video_blockers.includes('VIDEO_PLAN_REFERENCE_IMAGE_REQUIRED')) {
+        throw new Error(`REVIEW_BOARD_IMAGE_VERIFICATION_FAILED:${JSON.stringify(receipt)}`);
+    }
+    writeReceipt('result.json', receipt);
+    process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 } else if (mode === 'verify') {
     const imageState = imagePlanProvider.getNewProjectImagePlan(context);
     const videoState = videoPlanProvider.getNewProjectVideoPlan(context);

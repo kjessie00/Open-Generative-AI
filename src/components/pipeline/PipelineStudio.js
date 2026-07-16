@@ -253,6 +253,7 @@ export function PipelineStudio() {
     let newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('loading');
     let newProjectVideoResultPreviews = {};
     let newProjectMediaReviewFilter = 'all';
+    let newProjectMediaReviewRetryNotice = '';
     let newProjectExecutionState = emptyNewProjectExecutionState('loading');
     let newProjectExecutionNotice = '';
     let newProjectExecutionRefreshing = false;
@@ -614,6 +615,7 @@ export function PipelineStudio() {
                 videoResultWorkspace: newProjectVideoResultWorkspace,
                 videoResultPreviews: newProjectVideoResultPreviews,
                 newProjectMediaReviewFilter,
+                mediaReviewRetryNotice: newProjectMediaReviewRetryNotice,
                 onNewProjectMediaReviewFilterChange: (value) => { newProjectMediaReviewFilter = value; },
                 executionState: newProjectExecutionState,
                 executionNotice: newProjectExecutionNotice,
@@ -1096,6 +1098,7 @@ export function PipelineStudio() {
                         : task);
                     newProjectImagePlanTasks = nextTasks;
                     newProjectImagePlanNotice = '다시 만들 항목을 저장하는 중…';
+                    newProjectMediaReviewRetryNotice = '다시 만들기 선택을 저장하는 중…';
                     render();
                     try {
                         const result = await pipelineClient.saveNewProjectImageRetrySelection({
@@ -1107,10 +1110,15 @@ export function PipelineStudio() {
                         if (!nextState?.ok) throw new Error('IMAGE_RETRY_SAVE_FAILED');
                         newProjectImagePlanState = nextState;
                         newProjectImagePlanTasks = structuredClone(nextState.tasks);
+                        await refreshNewProjectVideoPlan();
                         newProjectImagePlanNotice = selected ? '다시 만들기로 선택했습니다.' : '다시 만들기 선택을 해제했습니다.';
+                        newProjectMediaReviewRetryNotice = selected
+                            ? '다시 만들기 선택을 저장했습니다.'
+                            : '다시 만들기 선택 해제를 저장했습니다.';
                     } catch {
                         newProjectImagePlanTasks = previous;
                         newProjectImagePlanNotice = '다시 만들 선택을 저장하지 못했습니다.';
+                        newProjectMediaReviewRetryNotice = '선택을 저장하지 못했습니다. 다시 선택하세요.';
                     }
                     render();
                 },
@@ -1305,6 +1313,7 @@ export function PipelineStudio() {
                         : task);
                     newProjectVideoPlanTasks = nextTasks;
                     newProjectVideoPlanNotice = '다시 만들 항목을 저장하는 중…';
+                    newProjectMediaReviewRetryNotice = '다시 만들기 선택을 저장하는 중…';
                     render();
                     try {
                         const result = await pipelineClient.saveNewProjectVideoRetrySelection({
@@ -1318,9 +1327,13 @@ export function PipelineStudio() {
                         newProjectVideoPlanState = nextState;
                         newProjectVideoPlanTasks = structuredClone(nextState.tasks);
                         newProjectVideoPlanNotice = selected ? '다시 만들기로 선택했습니다.' : '다시 만들기 선택을 해제했습니다.';
+                        newProjectMediaReviewRetryNotice = selected
+                            ? '다시 만들기 선택을 저장했습니다.'
+                            : '다시 만들기 선택 해제를 저장했습니다.';
                     } catch {
                         newProjectVideoPlanTasks = previous;
                         newProjectVideoPlanNotice = '다시 만들 선택을 저장하지 못했습니다.';
+                        newProjectMediaReviewRetryNotice = '선택을 저장하지 못했습니다. 다시 선택하세요.';
                     }
                     render();
                 },

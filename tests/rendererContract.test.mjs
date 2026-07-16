@@ -740,6 +740,13 @@ test('new-project media review keeps reference sheets and scene image-video pair
     assert.equal(findAll(board, 'video').some((video) => video.attributes.get('src')?.includes('/private/')), false);
     assert.equal(findAll(board, 'span').filter((node) => node.className.includes('text-[11px]')).length, 0, 'new review must not add badges');
     assert.doesNotMatch(board.textContent, /private-|revision_sha256|GROK_PRIVATE_CODE|\/private\/|private-provider-code/);
+    assert.match(board.textContent, /다음 할 일: 이미지 1개 다시 만들기 준비/);
+    assert.match(board.textContent, /이미지를 다시 만든 뒤 영상 검토를 이어가세요/);
+    const imageRetryAction = byText(board, 'button', '이미지 작업 열기');
+    assert.match(imageRetryAction.className, /min-h-11/);
+    await imageRetryAction.dispatchEvent({ type: 'click' });
+    assert.deepEqual(opened, [{ kind: 'image', sequence: 2 }]);
+    opened.length = 0;
 
     const characterCard = findAll(board, 'article').find((card) => card.textContent.includes('인물 시트 · 지아'));
     await byText(characterCard, 'button', '작업 열기').dispatchEvent({ type: 'click' });
@@ -761,6 +768,21 @@ test('new-project media review keeps reference sheets and scene image-video pair
     assert.deepEqual(opened.at(-1), { kind: 'video', sequence: 2 });
     assert.deepEqual(retries.at(-1), ['video', 'private-video-2', false]);
     assert.doesNotMatch(board.textContent, /private-|GROK_PRIVATE_CODE|\/private\//);
+
+    const videoOnlyOpened = [];
+    const videoOnly = NewProjectMediaReviewBoard({
+        designBoard: { scenes: [{ id: 'scene_02', title: '두 번째 장면' }] },
+        imagePlanTasks: imageTasks.map((task) => ({ ...task, status: task.result_token ? '결과연결' : '준비' })),
+        videoPlanTasks: [videoTasks[0]],
+        retryNotice: '선택을 저장하지 못했습니다. 다시 선택하세요.',
+        onOpenWorkItem: (payload) => videoOnlyOpened.push(payload),
+    });
+    assert.match(videoOnly.textContent, /다음 할 일: 영상 1개 다시 만들기 준비/);
+    assert.match(videoOnly.textContent, /선택을 저장하지 못했습니다\. 다시 선택하세요/);
+    assert.equal(byText(videoOnly, 'button', '이미지 작업 열기'), null);
+    await byText(videoOnly, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
+    assert.deepEqual(videoOnlyOpened, [{ kind: 'video', sequence: 2 }]);
+    assert.doesNotMatch(videoOnly.textContent, /private-|GROK_PRIVATE_CODE|\/private\//);
 });
 
 test('MOCK DST result import exposes only image retry targets and uses opaque plan confirmation', async (t) => {
@@ -3095,6 +3117,7 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
     const calls = [];
     const designRevision = 'd'.repeat(64);
     let planRevision = '1'.repeat(64);
+    let failRetrySave = false;
     let tasks = [{
         task_token: 'task_'.concat('a'.repeat(64)), kind: 'scene_image', source_id: 'scene_01', sequence: 1,
         label: '첫 장면', prompt: '초기 프롬프트', reference_task_ids: [], status: '준비', result_token: '',
@@ -3112,6 +3135,10 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
             return { ok: true, status: 'restored', board: { characters: [], locations: [], scenes: [] }, revision_sha256: designRevision, planning_revision_sha256: 'p'.repeat(64), collaboration: { recent_requests: [] }, blockers: [] };
         },
         async getNewProjectImagePlan() { calls.push(['getPlan']); return state(); },
+        async getNewProjectVideoPlan() {
+            calls.push(['getVideoPlan']);
+            return { ok: true, status: 'restored', tasks: [], blockers: [] };
+        },
         async getNewProjectImageResultWorkspace() {
             calls.push(['getResults']);
             return { ok: true, status: 'ready', candidates: [{ candidate_token: 'candidate-safe', created_at: '2026-07-16T06:00:00.000Z', image_count: 1 }], blockers: [] };
@@ -3143,6 +3170,7 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
         },
         async saveNewProjectImageRetrySelection(payload) {
             calls.push(['retry', structuredClone(payload)]);
+            if (failRetrySave) throw new Error('private-image-retry-failure');
             tasks = tasks.map((task) => ({ ...task, status: payload.task_tokens.includes(task.task_token) ? '재제작' : '결과연결' }));
             planRevision = '4'.repeat(64);
             return state('saved');
@@ -3185,6 +3213,7 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
     assert.ok(byAttribute(studio, 'img', 'alt', '첫 장면 연결 결과'));
 
     const retry = byAttribute(studio, 'input', 'aria-label', '첫 장면 다시 만들기');
+    const videoPlanReadsBeforeRetry = calls.filter(([method]) => method === 'getVideoPlan').length;
     retry.checked = true;
     await retry.dispatchEvent({ type: 'change' });
     await flushRenderer();
@@ -3193,10 +3222,21 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
         expected_design_revision_sha256: designRevision,
         expected_image_plan_revision_sha256: '3'.repeat(64),
     });
+    assert.equal(calls.filter(([method]) => method === 'getVideoPlan').length, videoPlanReadsBeforeRetry + 1);
     assert.match(studio.textContent, /다시 만들기로 선택했습니다/);
     await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'storyboard' } });
     assert.ok(byText(studio, 'h2', '새 프로젝트 결과 검토'));
     assert.ok(byAttribute(studio, 'img', 'alt', '첫 장면 결과'));
+    assert.match(studio.textContent, /다음 할 일: 이미지 1개 다시 만들기 준비/);
+    assert.match(studio.textContent, /이미지를 다시 만든 뒤 영상 검토를 이어가세요/);
+    await byText(studio, 'button', '이미지 작업 열기').dispatchEvent({ type: 'click' });
+    assert.ok(byText(studio, 'h2', '이미지 작업'));
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'storyboard' } });
+    failRetrySave = true;
+    await byText(studio, 'button', '선택 해제').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.match(studio.textContent, /선택을 저장하지 못했습니다\. 다시 선택하세요/);
+    assert.doesNotMatch(studio.textContent, /private-image-retry-failure|task_[a-f0-9]+/);
 });
 
 test('PipelineStudio saves, prepares, connects, and retries video tasks with exact revision-bound payloads', async (t) => {
@@ -3311,6 +3351,10 @@ test('PipelineStudio saves, prepares, connects, and retries video tasks with exa
     await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'storyboard' } });
     assert.ok(byText(studio, 'h2', '새 프로젝트 결과 검토'));
     assert.ok(findAll(studio, 'video').some((video) => video.attributes.get('src')?.startsWith('blob:')));
+    assert.match(studio.textContent, /다음 할 일: 영상 1개 다시 만들기 준비/);
+    await byText(studio, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
+    assert.ok(byText(studio, 'h2', '영상 작업'));
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'storyboard' } });
     const retryFilter = byText(studio, 'button', '다시 만들기');
     await retryFilter.dispatchEvent({ type: 'click' });
     await byText(studio, 'button', '선택 해제').dispatchEvent({ type: 'click' });

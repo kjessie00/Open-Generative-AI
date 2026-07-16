@@ -59,6 +59,7 @@ export function StoryboardPanel({
     onToggleImageRetry,
     onToggleVideoRetry,
     onOpenWorkItem,
+    mediaReviewRetryNotice,
     newProjectMediaReviewFilter,
     onNewProjectMediaReviewFilterChange,
 }) {
@@ -213,6 +214,7 @@ export function StoryboardPanel({
                 onToggleImageRetry,
                 onToggleVideoRetry,
                 onOpenWorkItem,
+                retryNotice: mediaReviewRetryNotice,
                 activeFilter: newProjectMediaReviewFilter,
                 onFilterChange: onNewProjectMediaReviewFilterChange,
             }),

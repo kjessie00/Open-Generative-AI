@@ -131,6 +131,7 @@ export function NewProjectMediaReviewBoard({
     onToggleImageRetry,
     onToggleVideoRetry,
     onOpenWorkItem,
+    retryNotice = '',
     activeFilter = 'all',
     onFilterChange,
 }) {
@@ -149,7 +150,9 @@ export function NewProjectMediaReviewBoard({
         const locationTasks = visibleImages.filter((task) => task.kind === 'location_sheet');
         const rows = sceneRows(designBoard, visibleImages, visibleVideos)
             .filter((row) => filter === 'all' || row.image || row.video);
-        const retryCount = [...imageTasks, ...videoTasks].filter((task) => task.status === '재제작').length;
+        const retryImages = imageTasks.filter((task) => task.status === '재제작');
+        const retryVideos = videoTasks.filter((task) => task.status === '재제작');
+        const retryCount = retryImages.length + retryVideos.length;
         const filters = el('div', {
             className: 'flex flex-wrap gap-2',
             attrs: { role: 'group', 'aria-label': '새 프로젝트 결과 필터' },
@@ -184,6 +187,32 @@ export function NewProjectMediaReviewBoard({
             ]),
         ]));
 
+        const retryLane = retryImages.length ? 'image' : retryVideos.length ? 'video' : '';
+        const retryTasks = retryLane === 'image' ? retryImages : retryVideos;
+        const nextAction = retryLane === 'image'
+            ? `다음 할 일: 이미지 ${retryImages.length}개 다시 만들기 준비`
+            : retryLane === 'video' ? `다음 할 일: 영상 ${retryVideos.length}개 다시 만들기 준비` : '';
+        const retryActionBand = retryLane || retryNotice ? el('section', {
+            className: 'flex min-w-0 flex-col gap-2 rounded-md border border-white/10 bg-white/[0.035] p-3 sm:flex-row sm:items-center sm:justify-between',
+            attrs: { 'aria-label': '다시 만들기 다음 행동' },
+        }, [
+            el('div', { className: 'min-w-0' }, [
+                nextAction ? el('p', { text: nextAction, className: 'text-sm font-semibold leading-6 text-white' }) : null,
+                retryImages.length ? el('p', {
+                    text: '이미지를 다시 만든 뒤 영상 검토를 이어가세요.',
+                    className: 'text-xs leading-5 text-secondary',
+                }) : null,
+                retryNotice ? el('p', {
+                    text: retryNotice,
+                    className: `text-xs leading-5 ${retryNotice.includes('못했습니다') ? 'text-amber-100' : 'text-secondary'}`,
+                    attrs: { role: retryNotice.includes('못했습니다') ? 'alert' : 'status', 'aria-live': 'polite' },
+                }) : null,
+            ].filter(Boolean)),
+            retryLane ? actionButton(retryLane === 'image' ? '이미지 작업 열기' : '영상 작업 열기', {
+                onClick: () => onOpenWorkItem?.({ kind: retryLane, sequence: retryTasks[0].sequence }),
+            }) : null,
+        ].filter(Boolean)) : null;
+
         root.replaceChildren(...[
             el('header', {}, [
                 el('h2', { text: '새 프로젝트 결과 검토', className: 'text-lg font-bold text-white', attrs: { id: 'new-project-media-review-title' } }),
@@ -191,6 +220,7 @@ export function NewProjectMediaReviewBoard({
                 el('p', { text: `다시 만들기 ${retryCount}개 선택`, className: 'mt-1 text-xs leading-5 text-secondary', attrs: { role: 'status', 'aria-live': 'polite' } }),
             ]),
             filters,
+            retryActionBand,
             referenceSection('인물 기준', '등장인물의 외형과 의상 기준입니다.', characterTasks, imageResultPreviews, onToggleImageRetry, onOpenWorkItem, render),
             referenceSection('장소 기준', '장면 전체에서 유지할 공간과 조명 기준입니다.', locationTasks, imageResultPreviews, onToggleImageRetry, onOpenWorkItem, render),
             ...sceneSections,
