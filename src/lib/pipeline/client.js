@@ -407,6 +407,7 @@ function unavailableFinalRenderState() {
         selected_count: 0, selected_duration_seconds: 0, output_duration_seconds: 0,
         fresh_probe_verified: false, has_video: false, has_audio: false, preview_ready: false,
         executed: false, output_quality_approved: false, generation_executed: false,
+        review_version: '', review_decision: 'pending', review_ready: false, human_review_recorded: false,
         legacy_production_modified: false, canonical_delivery_modified: false,
         notice: '데스크탑 앱에서 최종 편집 준비를 먼저 저장하세요.',
     };
@@ -434,6 +435,14 @@ export async function getNewProjectFinalRenderPreview() {
     const bridge = getBridge();
     if (typeof bridge?.getNewProjectFinalRenderPreview === 'function') return bridge.getNewProjectFinalRenderPreview();
     return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+}
+
+export async function saveNewProjectFinalReviewDecision(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectFinalReviewDecision === 'function') {
+        return bridge.saveNewProjectFinalReviewDecision(payload);
+    }
+    return unavailableFinalRenderState();
 }
 
 export async function enqueueVideoPromptAgentRequest(payload) {
@@ -846,6 +855,7 @@ export const pipelineClient = Object.freeze({
     planNewProjectFinalRender,
     executeNewProjectFinalRender,
     getNewProjectFinalRenderPreview,
+    saveNewProjectFinalReviewDecision,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

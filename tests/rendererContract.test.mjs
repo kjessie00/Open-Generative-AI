@@ -888,7 +888,7 @@ test('blocked final stitch points back to clip selection without badges', async 
     assert.equal(findAll(panel, 'button').every((button) => button.className.includes('min-h-11')), true);
 });
 
-test('MOCK: one Korean click renders and restores a pathless native review video without quality approval', async (t) => {
+test('MOCK: rendered review video saves use or retry decisions and opens result review without internal data', async (t) => {
     const calls = [];
     const stitched = {
         ok: true, status: 'restored', revision: `handoff_${'a'.repeat(64)}`, staged: true,
@@ -901,6 +901,7 @@ test('MOCK: one Korean click renders and restores a pathless native review video
         selected_duration_seconds: 0.6, output_duration_seconds: 0, fresh_probe_verified: false,
         has_video: false, has_audio: false, preview_ready: false, executed: false,
         output_quality_approved: false, generation_executed: false,
+        review_version: '', review_decision: 'pending', review_ready: false, human_review_recorded: false,
         legacy_production_modified: false, canonical_delivery_modified: false,
         notice: '선택한 구간으로 검토용 영상을 만들 수 있습니다.',
     };
@@ -908,7 +909,9 @@ test('MOCK: one Korean click renders and restores a pathless native review video
         ...ready, status: 'already_current', can_render: false, rendered: true,
         output_duration_seconds: 0.6, fresh_probe_verified: true, has_video: true,
         has_audio: true, preview_ready: true, executed: true,
-        notice: '검토용 영상이 준비되었습니다. 영상 품질은 아직 승인되지 않았습니다.',
+        review_version: 'a'.repeat(64), review_decision: 'pending', review_ready: true,
+        human_review_recorded: false,
+        notice: '검토용 영상이 준비되었습니다. 사용할지 직접 확인해 주세요.',
     };
     const bridge = {
         async getNewProjectDraftState() {
@@ -929,6 +932,16 @@ test('MOCK: one Korean click renders and restores a pathless native review video
             const bytes = Buffer.from('mock-video');
             return { ready: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64') };
         },
+        async saveNewProjectFinalReviewDecision(payload) {
+            calls.push(['saveReview', structuredClone(payload)]);
+            return {
+                ...structuredClone(rendered),
+                review_version: payload.decision === 'use' ? 'b'.repeat(64) : 'c'.repeat(64),
+                review_decision: payload.decision,
+                human_review_recorded: true,
+                output_quality_approved: payload.decision === 'use',
+            };
+        },
     };
     const { restore } = installDeterministicDom(bridge);
     t.after(restore);
@@ -946,12 +959,35 @@ test('MOCK: one Korean click renders and restores a pathless native review video
     assert.ok(video);
     assert.equal(video.attributes.get('controls'), 'true');
     assert.match(video.attributes.get('src'), /^blob:/);
-    assert.match(studio.textContent, /파일과 재생 길이만 확인했습니다\. 내용과 영상 품질은 아직 승인되지 않았습니다/);
+    assert.match(video.className, /max-h-\[46vh\]/);
+    assert.match(video.className, /object-contain/);
+    assert.match(video.parentNode.parentNode.className, /grid-cols-1/);
+    assert.match(video.parentNode.parentNode.className, /lg:grid-cols-\[minmax\(0,1\.15fr\)_minmax\(260px,0\.85fr\)\]/);
+    assert.match(video.parentNode.parentNode.className, /min-w-0/);
+    assert.match(studio.textContent, /파일과 재생 길이만 확인했습니다\. 영상을 보고 사용할지 결정하세요/);
+    assert.match(studio.textContent, /확인 필요/);
+    assert.equal(byText(studio, 'button', '이 영상 사용').attributes.get('aria-pressed'), 'false');
+    await byText(studio, 'button', '이 영상 사용').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.filter(([method]) => method === 'saveReview')[0], [
+        'saveReview', { decision: 'use', expected_review_version: 'a'.repeat(64) },
+    ]);
+    assert.match(studio.textContent, /사용하기로 확인함/);
+    assert.equal(byText(studio, 'button', '이 영상 사용').attributes.get('aria-pressed'), 'true');
+    await byText(studio, 'button', '다시 만들기').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.filter(([method]) => method === 'saveReview')[1], [
+        'saveReview', { decision: 'retry', expected_review_version: 'b'.repeat(64) },
+    ]);
+    assert.match(studio.textContent, /다시 만들기로 선택됨/);
+    assert.equal(byText(studio, 'button', '다시 만들기').attributes.get('aria-pressed'), 'true');
+    assert.equal(findAll(studio, 'button').filter((button) => ['이 영상 사용', '다시 만들기', '결과 검토 열기'].includes(button.textContent))
+        .every((button) => button.className.includes('min-h-11')), true);
     assert.match(studio.textContent, /준비됨 · 검토용 영상 생성 완료/);
     assert.doesNotMatch(studio.textContent.split('기존 제작 마감 결과')[0],
         /opaque-final-plan|sha256|source_path|task_|result_|revision|run_id|payload|argv|FINAL_RENDER|ffmpeg|python/i);
-    assert.equal(findAll(studio, 'button').filter((button) => button.textContent.includes('검토용 영상'))
-        .every((button) => button.className.includes('min-h-11')), true);
+    await byText(studio, 'button', '결과 검토 열기').dispatchEvent({ type: 'click' });
+    assert.ok(byText(studio, 'h2', '스토리보드'));
 });
 
 test('PipelineStudio overview uses restored new-project clip selections instead of legacy accepted seconds', async (t) => {

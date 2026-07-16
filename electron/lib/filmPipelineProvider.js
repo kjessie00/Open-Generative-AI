@@ -1343,6 +1343,10 @@ async function getNewProjectFinalRenderPreview(options = {}) {
     return newProjectFinalRender(options).preview();
 }
 
+async function saveNewProjectFinalReviewDecision(payload, options = {}) {
+    return newProjectFinalRender(options).saveReviewDecision(payload);
+}
+
 function newProjectExecutionContext(options = {}) {
     const env = options.env || process.env;
     return {
@@ -1907,6 +1911,9 @@ function register(ipcApi = ipcMain, options = {}) {
         assertNoRendererPathArgument(pathArgument);
         return getNewProjectFinalRenderPreview(options);
     });
+    ipcApi.handle('film-pipeline:save-new-project-final-review-decision', (_, payload) => (
+        saveNewProjectFinalReviewDecision(payload, options)
+    ));
     ipcApi.handle('film-pipeline:enqueue-video-prompt-agent-request', (_, payload) => enqueueVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-video-prompt-agent-request', (_, payload) => runVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-video-prompt-agent-suggestion', (_, payload) => decideVideoPromptAgentSuggestion(payload, options));
@@ -2041,6 +2048,7 @@ module.exports = {
     planNewProjectFinalRender,
     executeNewProjectFinalRender,
     getNewProjectFinalRenderPreview,
+    saveNewProjectFinalReviewDecision,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

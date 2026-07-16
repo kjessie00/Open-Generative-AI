@@ -285,3 +285,98 @@ test('MOCK: post-render source drift removes staging and never publishes', async
     assert.equal(fs.existsSync(paths.currentPath), false);
     assert.deepEqual(fs.readdirSync(paths.runsRoot).filter((name) => name.startsWith('.staging-')), []);
 });
+
+test('MOCK: final review use and retry persist privately without mutating render evidence', async (t) => {
+    const fx = fixture(t);
+    const { paths, runRoot } = await publishReviewVideo(fx);
+    const provider = fx.makeProvider();
+    const pending = await provider.get();
+    assert.equal(pending.review_ready, true);
+    assert.equal(pending.review_decision, 'pending');
+    assert.equal(pending.human_review_recorded, false);
+    assert.equal(pending.output_quality_approved, false);
+    assert.match(pending.review_version, /^[a-f0-9]{64}$/);
+
+    const evidenceBefore = new Map(['roughcut.mp4', 'receipt.json', 'fresh_probe.json'].map((name) => (
+        [name, fs.readFileSync(path.join(runRoot, name))]
+    )));
+    const handoffPath = finalStitchProvider.exactPaths(fx.userDataPath).handoffPath;
+    const handoffBefore = fs.readFileSync(handoffPath);
+    const used = await provider.saveReviewDecision({
+        decision: 'use', expected_review_version: pending.review_version,
+    });
+    assert.equal(used.review_decision, 'use');
+    assert.equal(used.human_review_recorded, true);
+    assert.equal(used.output_quality_approved, true);
+    assert.notEqual(used.review_version, pending.review_version);
+    assert.equal(fs.lstatSync(paths.reviewPath).mode & 0o777, 0o600);
+    const document = JSON.parse(fs.readFileSync(paths.reviewPath, 'utf8'));
+    assert.equal(document.schema_version, finalRenderProvider.REVIEW_SCHEMA);
+    assert.equal(document.decision, 'use');
+
+    const restored = await fx.makeProvider().get();
+    assert.equal(restored.review_decision, 'use');
+    assert.equal(restored.output_quality_approved, true);
+    const retried = await fx.makeProvider().saveReviewDecision({
+        decision: 'retry', expected_review_version: restored.review_version,
+    });
+    assert.equal(retried.review_decision, 'retry');
+    assert.equal(retried.human_review_recorded, true);
+    assert.equal(retried.output_quality_approved, false);
+    assert.equal((await fx.makeProvider().get()).review_decision, 'retry');
+
+    for (const [name, before] of evidenceBefore) {
+        assert.deepEqual(fs.readFileSync(path.join(runRoot, name)), before);
+    }
+    assert.deepEqual(fs.readFileSync(handoffPath), handoffBefore);
+    assert.equal(fs.existsSync(path.join(fx.base, 'production')), false);
+    assert.equal(fs.existsSync(paths.reviewLockPath), false);
+});
+
+test('MOCK: final review becomes pending when its bound upstream snapshot changes', async (t) => {
+    const fx = fixture(t);
+    await publishReviewVideo(fx);
+    const provider = fx.makeProvider();
+    const pending = await provider.get();
+    await provider.saveReviewDecision({ decision: 'use', expected_review_version: pending.review_version });
+
+    fx.input.clips[0].reason = '다시 검토할 구간';
+    const changed = finalStitchProvider.getNewProjectFinalStitch(fx.stitchContext);
+    finalStitchProvider.stageNewProjectFinalStitch({ expected_revision: changed.revision }, fx.stitchContext);
+    const stale = await fx.makeProvider().get();
+    assert.equal(stale.rendered, false);
+    assert.equal(stale.review_ready, false);
+    assert.equal(stale.review_decision, 'pending');
+    assert.equal(stale.human_review_recorded, false);
+    assert.equal(stale.output_quality_approved, false);
+});
+
+test('MOCK: final review rejects stale versions, malformed files, and symlinks', async (t) => {
+    const stale = fixture(t);
+    let published = await publishReviewVideo(stale);
+    let provider = stale.makeProvider();
+    const pending = await provider.get();
+    await provider.saveReviewDecision({ decision: 'use', expected_review_version: pending.review_version });
+    await assert.rejects(provider.saveReviewDecision({
+        decision: 'retry', expected_review_version: pending.review_version,
+    }), { code: 'FINAL_REVIEW_STALE_VERSION' });
+    await assert.rejects(provider.saveReviewDecision({
+        decision: 'retry', expected_review_version: (await provider.get()).review_version, path: '/tmp/injected',
+    }), { code: 'FINAL_REVIEW_ENVELOPE_INVALID' });
+
+    const malformed = fixture(t);
+    published = await publishReviewVideo(malformed);
+    fs.writeFileSync(published.paths.reviewPath, '{bad json\n', { mode: 0o600 });
+    assert.equal((await malformed.makeProvider().get()).status, 'blocked');
+    await assert.rejects(malformed.makeProvider().saveReviewDecision({
+        decision: 'use', expected_review_version: 'a'.repeat(64),
+    }));
+
+    const symlink = fixture(t);
+    published = await publishReviewVideo(symlink);
+    const outside = path.join(symlink.base, 'outside-review.json');
+    fs.writeFileSync(outside, '{}\n', { mode: 0o600 });
+    fs.symlinkSync(outside, published.paths.reviewPath);
+    assert.equal((await symlink.makeProvider().get()).status, 'blocked');
+    assert.equal(fs.lstatSync(published.paths.reviewPath).isSymbolicLink(), true);
+});

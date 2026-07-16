@@ -8,6 +8,7 @@ const { createFixedRoughcutRuntime } = require('./finishingWorkbenchProvider');
 const RECEIPT_SCHEMA = 'film_pipeline.new_project_final_render_receipt.v1';
 const PROBE_SCHEMA = 'film_pipeline.new_project_final_render_probe.v1';
 const POINTER_SCHEMA = 'film_pipeline.new_project_final_render_pointer.v1';
+const REVIEW_SCHEMA = 'film_pipeline.new_project_final_review.v1';
 const PLAN_TTL_MS = 2 * 60 * 1000;
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 const RUN_PATTERN = /^[a-f0-9]{24}$/;
@@ -52,6 +53,8 @@ function pathsFor(userDataPath) {
         runsRoot,
         currentPath: path.join(runsRoot, 'current.json'),
         lockPath: path.join(runsRoot, '.render.lock'),
+        reviewPath: path.join(runsRoot, 'review-decision.json'),
+        reviewLockPath: path.join(runsRoot, '.review.lock'),
     };
 }
 
@@ -152,6 +155,21 @@ function writeAtomic(target, buffer, parent, randomBytes) {
     } finally { try { fs.unlinkSync(temporary); } catch { /* renamed */ } }
 }
 
+function writeReviewAtomic(target, buffer, parent, randomBytes) {
+    assertPrivateDirectory(parent, 'FINAL_REVIEW_DIRECTORY_UNSAFE');
+    const temporary = path.join(parent, `.review-${randomBytes(12).toString('hex')}.tmp`);
+    writeExclusive(temporary, buffer);
+    try {
+        let existing;
+        try { existing = fs.lstatSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (existing && (!existing.isFile() || existing.isSymbolicLink() || (existing.mode & 0o777) !== 0o600)) {
+            throw failure('FINAL_REVIEW_FILE_UNSAFE');
+        }
+        fs.renameSync(temporary, target);
+        fsyncDirectory(parent);
+    } finally { try { fs.unlinkSync(temporary); } catch { /* renamed */ } }
+}
+
 function fsyncDirectory(target) {
     const descriptor = fs.openSync(target, fs.constants.O_RDONLY);
     try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
@@ -183,8 +201,54 @@ function inputIdentity(staged, runtimeInspection) {
     return { snapshotId, runId: snapshotId.slice(0, 24) };
 }
 
-function publicState(inspection, current, status = 'ready', executed = false) {
+function pendingReview(inspection, current) {
+    if (!current?.valid) {
+        return { review_version: '', review_decision: 'pending', review_ready: false, human_review_recorded: false };
+    }
+    return {
+        review_version: sha256(stableJson({
+            schema_version: REVIEW_SCHEMA,
+            snapshot_id: inspection.snapshotId,
+            receipt_sha256: current.receiptSha256,
+            decision: 'pending',
+        })),
+        review_decision: 'pending',
+        review_ready: true,
+        human_review_recorded: false,
+    };
+}
+
+function inspectReview(paths, inspection, current) {
+    const pending = pendingReview(inspection, current);
+    if (!current?.valid) return pending;
+    try { fs.lstatSync(paths.reviewPath); } catch (error) {
+        if (error.code === 'ENOENT') return pending;
+        throw error;
+    }
+    const read = readStableFile(paths.reviewPath, MAX_JSON_BYTES, 'FINAL_REVIEW');
+    let document;
+    try { document = JSON.parse(read.buffer.toString('utf8')); } catch { throw failure('FINAL_REVIEW_INVALID'); }
+    exactKeys(document, [
+        'schema_version', 'snapshot_id', 'receipt_sha256', 'decision', 'updated_at',
+    ], 'FINAL_REVIEW_INVALID');
+    if (document.schema_version !== REVIEW_SCHEMA
+        || !/^[a-f0-9]{64}$/.test(document.snapshot_id)
+        || !/^[a-f0-9]{64}$/.test(document.receipt_sha256)
+        || !['use', 'retry'].includes(document.decision)
+        || !Number.isFinite(Date.parse(document.updated_at))) throw failure('FINAL_REVIEW_INVALID');
+    if (document.snapshot_id !== inspection.snapshotId
+        || document.receipt_sha256 !== current.receiptSha256) return pending;
+    return {
+        review_version: read.sha256,
+        review_decision: document.decision,
+        review_ready: true,
+        human_review_recorded: true,
+    };
+}
+
+function publicState(inspection, current, review, status = 'ready', executed = false) {
     const rendered = current?.valid === true;
+    const reviewState = review || pendingReview(inspection, current);
     return {
         ok: true,
         status: rendered ? 'already_current' : status,
@@ -198,12 +262,17 @@ function publicState(inspection, current, status = 'ready', executed = false) {
         has_audio: rendered,
         preview_ready: rendered && current.outputSize <= MAX_PREVIEW_BYTES,
         executed,
-        output_quality_approved: false,
+        ...reviewState,
+        output_quality_approved: reviewState.review_decision === 'use',
         generation_executed: false,
         legacy_production_modified: false,
         canonical_delivery_modified: false,
-        notice: rendered
-            ? '검토용 영상이 준비되었습니다. 영상 품질은 아직 승인되지 않았습니다.'
+        notice: rendered && reviewState.review_decision === 'use'
+            ? '이 검토용 영상을 사용하기로 확인했습니다.'
+            : rendered && reviewState.review_decision === 'retry'
+                ? '다시 만들기로 선택했습니다. 결과 검토에서 수정할 장면을 확인하세요.'
+                : rendered
+                    ? '검토용 영상이 준비되었습니다. 사용할지 직접 확인해 주세요.'
             : '선택한 구간으로 검토용 영상을 만들 수 있습니다.',
     };
 }
@@ -222,6 +291,10 @@ function blockedState() {
         has_audio: false,
         preview_ready: false,
         executed: false,
+        review_version: '',
+        review_decision: 'pending',
+        review_ready: false,
+        human_review_recorded: false,
         output_quality_approved: false,
         generation_executed: false,
         legacy_production_modified: false,
@@ -407,13 +480,14 @@ function createNewProjectFinalRenderProvider(options = {}) {
         if (!current.valid && fs.existsSync(paths.runsRoot) && fs.existsSync(orphanRoot)) {
             current = await recoverOrphan(value);
         }
-        return { inspection, paths, current };
+        const review = inspectReview(paths, inspection, current);
+        return { inspection, paths, current, review };
     }
 
     async function get() {
         try {
             const value = await inspect();
-            return publicState(value.inspection, value.current);
+            return publicState(value.inspection, value.current, value.review);
         } catch (error) {
             context.onInternalError(error);
             return blockedState();
@@ -426,7 +500,7 @@ function createNewProjectFinalRenderProvider(options = {}) {
             context.onInternalError(error);
             return { ...blockedState(), ready: false, plan_token: '', expires_at: '' };
         }
-        const state = publicState(value.inspection, value.current);
+        const state = publicState(value.inspection, value.current, value.review);
         if (value.current.valid) return { ...state, ready: false, plan_token: '', expires_at: '' };
         const createdAtMs = context.nowMs();
         const expiresAtMs = createdAtMs + context.planTtlMs;
@@ -460,7 +534,7 @@ function createNewProjectFinalRenderProvider(options = {}) {
         if (value.inspection.snapshotId !== planned.snapshotId || value.inspection.runId !== planned.runId) {
             throw failure('FINAL_RENDER_INPUT_CHANGED');
         }
-        if (value.current.valid) return publicState(value.inspection, value.current, 'already_current', false);
+        if (value.current.valid) return publicState(value.inspection, value.current, value.review, 'already_current', false);
 
         assertPrivateDirectory(value.paths.stitchRoot, 'FINAL_RENDER_DIRECTORY_UNSAFE');
         ensureDirectory(value.paths.runsRoot, value.paths.stitchRoot, 'FINAL_RENDER_DIRECTORY_UNSAFE');
@@ -476,7 +550,7 @@ function createNewProjectFinalRenderProvider(options = {}) {
         try {
             value = await inspect();
             if (value.inspection.snapshotId !== planned.snapshotId || value.current.valid) {
-                if (value.current.valid) return publicState(value.inspection, value.current, 'already_current', false);
+                if (value.current.valid) return publicState(value.inspection, value.current, value.review, 'already_current', false);
                 throw failure('FINAL_RENDER_INPUT_CHANGED');
             }
             if (fs.existsSync(runRoot)) throw failure('FINAL_RENDER_TARGET_EXISTS');
@@ -563,7 +637,7 @@ function createNewProjectFinalRenderProvider(options = {}) {
                 value.paths.runsRoot, context.randomBytes);
             const verified = await inspect();
             if (!verified.current.valid) throw failure('FINAL_RENDER_PUBLICATION_FAILED');
-            return publicState(verified.inspection, verified.current, 'already_current', true);
+            return publicState(verified.inspection, verified.current, verified.review, 'already_current', true);
         } catch (error) {
             if (!published) {
                 try { fs.rmSync(stagingRoot, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -595,7 +669,47 @@ function createNewProjectFinalRenderProvider(options = {}) {
         }
     }
 
-    return Object.freeze({ get, plan, execute, preview });
+    async function saveReviewDecision(payload) {
+        exactKeys(payload, ['decision', 'expected_review_version'], 'FINAL_REVIEW_ENVELOPE_INVALID');
+        if (!['use', 'retry'].includes(payload.decision)
+            || typeof payload.expected_review_version !== 'string'
+            || !/^[a-f0-9]{64}$/.test(payload.expected_review_version)) {
+            throw failure('FINAL_REVIEW_ENVELOPE_INVALID');
+        }
+        let value = await inspect();
+        if (!value.current.valid || !value.review.review_ready) throw failure('FINAL_REVIEW_NOT_READY');
+        if (value.review.review_version !== payload.expected_review_version) throw failure('FINAL_REVIEW_STALE_VERSION');
+        let lock;
+        try {
+            lock = fs.openSync(value.paths.reviewLockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT
+                | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+        } catch { throw failure('FINAL_REVIEW_BUSY'); }
+        try {
+            value = await inspect();
+            if (!value.current.valid || value.review.review_version !== payload.expected_review_version) {
+                throw failure('FINAL_REVIEW_STALE_VERSION');
+            }
+            const document = {
+                schema_version: REVIEW_SCHEMA,
+                snapshot_id: value.inspection.snapshotId,
+                receipt_sha256: value.current.receiptSha256,
+                decision: payload.decision,
+                updated_at: context.now().toISOString(),
+            };
+            writeReviewAtomic(value.paths.reviewPath, Buffer.from(`${JSON.stringify(document, null, 2)}\n`),
+                value.paths.runsRoot, context.randomBytes);
+            const verified = await inspect();
+            if (!verified.current.valid || verified.review.review_decision !== payload.decision
+                || !verified.review.human_review_recorded) throw failure('FINAL_REVIEW_INPUT_CHANGED');
+            return publicState(verified.inspection, verified.current, verified.review);
+        } finally {
+            try { if (lock !== undefined) fs.closeSync(lock); } catch { /* best effort */ }
+            try { fs.unlinkSync(value.paths.reviewLockPath); } catch { /* best effort */ }
+            try { fsyncDirectory(value.paths.runsRoot); } catch { /* best effort */ }
+        }
+    }
+
+    return Object.freeze({ get, plan, execute, preview, saveReviewDecision });
 }
 
 module.exports = {
@@ -604,4 +718,5 @@ module.exports = {
     RECEIPT_SCHEMA,
     PROBE_SCHEMA,
     POINTER_SCHEMA,
+    REVIEW_SCHEMA,
 };

@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     planNewProjectFinalRender: () => ipcRenderer.invoke('film-pipeline:plan-new-project-final-render'),
     executeNewProjectFinalRender: (payload) => ipcRenderer.invoke('film-pipeline:execute-new-project-final-render', payload),
     getNewProjectFinalRenderPreview: () => ipcRenderer.invoke('film-pipeline:get-new-project-final-render-preview'),
+    saveNewProjectFinalReviewDecision: (payload) => ipcRenderer.invoke('film-pipeline:save-new-project-final-review-decision', payload),
     enqueueVideoPromptAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:enqueue-video-prompt-agent-request', payload),
     runVideoPromptAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:run-video-prompt-agent-request', payload),
     decideVideoPromptAgentSuggestion: (payload) => ipcRenderer.invoke('film-pipeline:decide-video-prompt-agent-suggestion', payload),

@@ -195,6 +195,7 @@ function emptyNewProjectFinalRenderState(status = 'loading') {
         selected_duration_seconds: 0, output_duration_seconds: 0,
         fresh_probe_verified: false, has_video: false, has_audio: false, preview_ready: false,
         executed: false, output_quality_approved: false, generation_executed: false,
+        review_version: '', review_decision: 'pending', review_ready: false, human_review_recorded: false,
         legacy_production_modified: false, canonical_delivery_modified: false,
         notice: '',
     };
@@ -831,6 +832,24 @@ export function PipelineStudio() {
                     } catch {
                         newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
                         newProjectFinalRenderNotice = '검토용 영상을 만들지 못했습니다. 준비 상태를 새로고침해 주세요.';
+                    }
+                    render();
+                },
+                onSaveNewProjectFinalReviewDecision: async (decision) => {
+                    newProjectFinalRenderNotice = '결정을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectFinalReviewDecision({
+                            decision,
+                            expected_review_version: newProjectFinalRenderState.review_version,
+                        });
+                        if (!result?.rendered || !result?.human_review_recorded) throw new Error('FINAL_REVIEW_SAVE_FAILED');
+                        newProjectFinalRenderState = result;
+                        newProjectFinalRenderNotice = decision === 'use'
+                            ? '이 영상을 사용하기로 저장했습니다.'
+                            : '다시 만들기로 저장했습니다. 결과 검토에서 수정할 장면을 확인하세요.';
+                    } catch {
+                        newProjectFinalRenderNotice = '결정을 저장하지 못했습니다. 최신 상태를 확인하고 다시 선택하세요.';
                     }
                     render();
                 },

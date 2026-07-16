@@ -248,6 +248,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'saveNewProjectClipSelection',
         'saveNewProjectDesignBoard',
         'saveNewProjectDraft',
+        'saveNewProjectFinalReviewDecision',
         'saveNewProjectImagePlan',
         'saveNewProjectImageRetrySelection',
         'saveNewProjectImageReviewDecision',
@@ -313,6 +314,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.planNewProjectFinalRender();
     await bridge.executeNewProjectFinalRender({ planToken: 'opaque', confirmed: true, projectId: 'test-project' });
     await bridge.getNewProjectFinalRenderPreview();
+    await bridge.saveNewProjectFinalReviewDecision({ decision: 'use', expected_review_version: 'a'.repeat(64) });
     await bridge.getNewProjectExecutionState();
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
@@ -382,6 +384,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:plan-new-project-final-render',
             'film-pipeline:execute-new-project-final-render',
             'film-pipeline:get-new-project-final-render-preview',
+            'film-pipeline:save-new-project-final-review-decision',
             'film-pipeline:get-new-project-execution-state',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
@@ -467,6 +470,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:execute-new-project-final-render')[1],
         [{ planToken: 'opaque', confirmed: true, projectId: 'test-project' }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:save-new-project-final-review-decision')[1],
+        [{ decision: 'use', expected_review_version: 'a'.repeat(64) }],
     );
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:execute-finishing-run')[1],

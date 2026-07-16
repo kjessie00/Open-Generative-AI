@@ -142,6 +142,8 @@ export function FinalReportPanel({
     onRefreshNewProjectFinalStitch,
     onRenderNewProjectFinal,
     onOpenNewProjectClipSelection,
+    onSaveNewProjectFinalReviewDecision,
+    onOpenNewProjectResultReview,
 }) {
     const finalReport = state.finalReport || {};
     const canonicalHandoff = state.canonicalHandoff || {};
@@ -284,6 +286,8 @@ export function FinalReportPanel({
             onRefresh: onRefreshNewProjectFinalStitch,
             onRender: onRenderNewProjectFinal,
             onOpenClipSelection: onOpenNewProjectClipSelection,
+            onSaveReviewDecision: onSaveNewProjectFinalReviewDecision,
+            onOpenResultReview: onOpenNewProjectResultReview,
         }) : null,
         el('details', { className: 'rounded-lg border border-white/10 bg-white/[0.02] px-4' }, [
             el('summary', { text: '기존 제작 마감 결과', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),

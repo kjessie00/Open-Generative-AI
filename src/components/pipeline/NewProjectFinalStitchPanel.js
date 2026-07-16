@@ -15,6 +15,8 @@ export function NewProjectFinalStitchPanel({
     onRefresh,
     onRender,
     onOpenClipSelection,
+    onSaveReviewDecision,
+    onOpenResultReview,
 }) {
     const status = state?.status || 'loading';
     const heading = el('div', { className: 'flex flex-wrap items-start justify-between gap-3' }, [
@@ -35,19 +37,57 @@ export function NewProjectFinalStitchPanel({
         emptyState('모든 장면에서 사용할 구간을 먼저 선택하세요.'),
         actionButton('클립 선택 열기', { variant: 'muted', onClick: onOpenClipSelection }),
     ]);
+    const reviewDecision = renderState?.review_decision || 'pending';
+    const reviewLabel = reviewDecision === 'use'
+        ? '사용하기로 확인함'
+        : reviewDecision === 'retry' ? '다시 만들기로 선택됨' : '확인 필요';
+    const decisionButton = (label, decision, variant = 'primary') => el('button', {
+        text: label,
+        onClick: () => onSaveReviewDecision?.(decision),
+        className: `ui-action-button min-h-11 rounded-md border px-3 py-2 text-xs font-semibold transition-colors ${variant === 'muted'
+            ? 'border-white/10 bg-white/[0.04] text-secondary'
+            : 'border-cyan-400/20 bg-cyan-400/10 text-cyan-100'} hover:bg-white/10`,
+        attrs: { type: 'button', 'aria-pressed': reviewDecision === decision ? 'true' : 'false' },
+    });
     const renderArea = !state.staged ? null : renderState?.rendered ? card([
         el('p', {
             text: `검토용 영상 ${duration(renderState.output_duration_seconds)}초`,
             className: 'text-sm font-semibold text-white', attrs: { role: 'status' },
         }),
-        previewSource ? el('video', {
-            className: 'mt-3 w-full max-w-3xl rounded-lg bg-black',
-            attrs: { src: previewSource, controls: true, preload: 'metadata', 'aria-label': '검토용 영상' },
-        }) : el('p', { text: '영상을 불러오는 중입니다.', className: 'mt-2 text-sm text-secondary' }),
-        el('p', {
-            text: '파일과 재생 길이만 확인했습니다. 내용과 영상 품질은 아직 승인되지 않았습니다.',
-            className: 'mt-3 text-sm leading-6 text-secondary',
-        }),
+        el('div', {
+            className: 'mt-3 grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)] lg:items-start',
+        }, [
+            el('div', { className: 'min-w-0' }, [
+                previewSource ? el('video', {
+                    className: 'mx-auto max-h-[46vh] w-full rounded-lg bg-black object-contain lg:max-h-[52vh]',
+                    attrs: { src: previewSource, controls: true, preload: 'metadata', 'aria-label': '검토용 영상' },
+                }) : el('p', { text: '영상을 불러오는 중입니다.', className: 'text-sm text-secondary' }),
+            ]),
+            el('div', { className: 'min-w-0' }, [
+                el('p', {
+                    text: reviewDecision === 'use'
+                        ? '이 영상의 내용과 품질을 확인하고 사용하기로 저장했습니다.'
+                        : reviewDecision === 'retry'
+                            ? '현재 영상은 보관하고, 결과 검토에서 수정할 장면을 다시 고릅니다.'
+                            : '파일과 재생 길이만 확인했습니다. 영상을 보고 사용할지 결정하세요.',
+                    className: 'text-sm leading-6 text-secondary',
+                }),
+                el('div', { className: 'mt-3 rounded-md border border-white/10 bg-black/20 p-3' }, [
+                    el('p', {
+                        text: reviewLabel,
+                        className: 'text-sm font-semibold text-white',
+                        attrs: { role: 'status', 'aria-live': 'polite' },
+                    }),
+                    el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
+                        decisionButton('이 영상 사용', 'use'),
+                        decisionButton('다시 만들기', 'retry', 'muted'),
+                        reviewDecision === 'retry'
+                            ? actionButton('결과 검토 열기', { variant: 'muted', onClick: onOpenResultReview })
+                            : null,
+                    ]),
+                ]),
+            ]),
+        ]),
     ]) : card([
         el('p', {
             text: renderState?.status === 'rendering'
