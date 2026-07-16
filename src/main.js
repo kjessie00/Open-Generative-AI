@@ -1,5 +1,9 @@
 import './style.css';
 import { Header } from './components/Header.js';
+import { setLang } from './lib/i18n.js';
+
+// This local cinematic workbench is Korean-first regardless of legacy locale state.
+setLang('ko-KR', { reload: false });
 
 const app = document.querySelector('#app');
 let contentArea;
