@@ -9,6 +9,7 @@ const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const dstBundleImportProvider = require('./dstBundleImportProvider');
 const videoResultImportProvider = require('./videoResultImportProvider');
 const providerExecutionPreview = require('./newProjectProviderExecutionPreview');
+const replicateExecutionAdapter = require('./replicateExecutionAdapter');
 
 const LEGACY_MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v1';
 const MANIFEST_SCHEMA = 'film_pipeline.new_project_execution.v2';
@@ -26,8 +27,16 @@ const MAX_RECEIPT_BYTES = 64 * 1024;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const MAX_REFERENCES_MANIFEST_BYTES = 1024 * 1024;
 const MAX_OUTPUT_CLAIM_BYTES = 8 * 1024;
+const MAX_REPLICATE_SUBMISSION_BYTES = 8 * 1024;
+const MAX_REPLICATE_COMPLETION_BYTES = 8 * 1024;
+const MAX_REPLICATE_UNCERTAIN_BYTES = 4 * 1024;
+const REPLICATE_LOCK_TTL_MS = 15 * 60 * 1000;
+const REPLICATE_LOCK_TIME_SKEW_MS = 2000;
 const REPLICATE_CLAIM_SCHEMA = 'film_pipeline.replicate_output_claim.v1';
 const REPLICATE_DOWNLOAD_RESULT_SCHEMA = 'film_pipeline.replicate_download_result.v1';
+const REPLICATE_SUBMISSION_SCHEMA = 'film_pipeline.replicate_submission.v1';
+const REPLICATE_COMPLETION_SCHEMA = 'film_pipeline.replicate_completion.v1';
+const REPLICATE_UNCERTAIN_SCHEMA = 'film_pipeline.replicate_uncertain_submission.v1';
 const SHA256 = /^[a-f0-9]{64}$/;
 const TASK_TOKEN = /^task_[a-f0-9]{64}$/;
 const PREPARATION_TOKEN = /^preparation_[a-f0-9]{64}$/;
@@ -135,6 +144,200 @@ function replicateClaimPath(paths, taskToken) {
     return path.join(paths.outputsRoot, `${taskToken}.claim.json`);
 }
 
+function replicateSubmissionPath(paths, taskToken) {
+    if (!TASK_TOKEN.test(taskToken || '')) throw failure('EXECUTION_TASK_TOKEN_INVALID');
+    return path.join(paths.outputsRoot, `${taskToken}.replicate-submission.json`);
+}
+
+function replicateCompletionPath(paths, taskToken) {
+    if (!TASK_TOKEN.test(taskToken || '')) throw failure('EXECUTION_TASK_TOKEN_INVALID');
+    return path.join(paths.outputsRoot, `${taskToken}.replicate-completion.json`);
+}
+
+function validateReplicateSubmission(value, expectedBinding) {
+    exactKeys(value, [
+        'schema_version', 'run_revision_sha256', 'task_token', 'request_revision_sha256',
+        'output_claim_sha256', 'prediction_id', 'get_url', 'submitted_at',
+    ], 'EXECUTION_REPLICATE_SUBMISSION_INVALID');
+    if (value.schema_version !== REPLICATE_SUBMISSION_SCHEMA
+        || value.run_revision_sha256 !== expectedBinding.run_revision_sha256
+        || value.task_token !== expectedBinding.task_token
+        || value.request_revision_sha256 !== expectedBinding.request_revision_sha256
+        || value.output_claim_sha256 !== expectedBinding.output_claim_sha256
+        || !/^[A-Za-z0-9_-]{1,160}$/.test(value.prediction_id || '')
+        || typeof value.get_url !== 'string' || Buffer.byteLength(value.get_url, 'utf8') > 2048
+        || typeof value.submitted_at !== 'string' || Buffer.byteLength(value.submitted_at, 'utf8') > 64
+        || !Number.isFinite(Date.parse(value.submitted_at))) {
+        throw failure('EXECUTION_REPLICATE_SUBMISSION_INVALID');
+    }
+    return value;
+}
+
+function loadReplicateSubmission(selection, task, expectedBinding, { missing = true } = {}) {
+    try {
+        const value = JSON.parse(readPrivate(
+            replicateSubmissionPath(selection.paths, task.task_token),
+            MAX_REPLICATE_SUBMISSION_BYTES,
+            'EXECUTION_REPLICATE_SUBMISSION_MISSING',
+        ).toString('utf8'));
+        return validateReplicateSubmission(value, expectedBinding);
+    } catch (error) {
+        if (missing && error.code === 'EXECUTION_REPLICATE_SUBMISSION_MISSING') return null;
+        if (error.code) throw error;
+        throw failure('EXECUTION_REPLICATE_SUBMISSION_INVALID');
+    }
+}
+
+function publishReplicateSubmission(selection, task, binding, submission) {
+    const record = validateReplicateSubmission({
+        schema_version: REPLICATE_SUBMISSION_SCHEMA,
+        ...binding,
+        prediction_id: submission.prediction_id,
+        get_url: submission.get_url,
+        submitted_at: submission.submitted_at,
+    }, binding);
+    const submissionPath = replicateSubmissionPath(selection.paths, task.task_token);
+    try {
+        privateWrite(submissionPath, Buffer.from(`${JSON.stringify(record, null, 2)}\n`), { exclusive: true });
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+    }
+    const loaded = loadReplicateSubmission(selection, task, binding, { missing: false });
+    if (JSON.stringify(loaded) !== JSON.stringify(record)) {
+        throw failure('EXECUTION_REPLICATE_SUBMISSION_CONFLICT');
+    }
+    return loaded;
+}
+
+function loadReplicateCompletion(selection, task, binding, { missing = true } = {}) {
+    try {
+        const value = JSON.parse(readPrivate(
+            replicateCompletionPath(selection.paths, task.task_token),
+            MAX_REPLICATE_COMPLETION_BYTES,
+            'EXECUTION_REPLICATE_COMPLETION_MISSING',
+        ).toString('utf8'));
+        exactKeys(value, [
+            'schema_version', 'run_revision_sha256', 'task_token', 'request_revision_sha256',
+            'output_claim_sha256', 'prediction_id', 'completed_at',
+            'output_url_sha256', 'recorded_at',
+        ], 'EXECUTION_REPLICATE_COMPLETION_INVALID');
+        if (value.schema_version !== REPLICATE_COMPLETION_SCHEMA
+            || value.run_revision_sha256 !== binding.run_revision_sha256
+            || value.task_token !== binding.task_token
+            || value.request_revision_sha256 !== binding.request_revision_sha256
+            || value.output_claim_sha256 !== binding.output_claim_sha256
+            || !/^[A-Za-z0-9_-]{1,160}$/.test(value.prediction_id || '')
+            || !SHA256.test(value.output_url_sha256 || '')
+            || typeof value.completed_at !== 'string' || Buffer.byteLength(value.completed_at, 'utf8') > 64
+            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value.completed_at)
+            || !Number.isFinite(Date.parse(value.completed_at))
+            || typeof value.recorded_at !== 'string' || Buffer.byteLength(value.recorded_at, 'utf8') > 64
+            || !Number.isFinite(Date.parse(value.recorded_at))) {
+            throw failure('EXECUTION_REPLICATE_COMPLETION_INVALID');
+        }
+        return value;
+    } catch (error) {
+        if (missing && error.code === 'EXECUTION_REPLICATE_COMPLETION_MISSING') return null;
+        if (error.code) throw error;
+        throw failure('EXECUTION_REPLICATE_COMPLETION_INVALID');
+    }
+}
+
+function publishReplicateCompletionRecord(selection, task, binding, value) {
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(value?.prediction_id || '')
+        || typeof value.output_url !== 'string' || !value.output_url
+        || typeof value.completed_at !== 'string' || !Number.isFinite(Date.parse(value.completed_at))) {
+        throw failure('EXECUTION_REPLICATE_COMPLETION_INVALID');
+    }
+    const expected = {
+        schema_version: REPLICATE_COMPLETION_SCHEMA,
+        ...binding,
+        prediction_id: value.prediction_id,
+        completed_at: value.completed_at,
+        output_url_sha256: sha256(value.output_url),
+    };
+    const existing = loadReplicateCompletion(selection, task, binding);
+    if (existing) {
+        const comparable = ({ recorded_at: ignored, ...record }) => record;
+        if (JSON.stringify(comparable(existing)) !== JSON.stringify(expected)) {
+            throw failure('EXECUTION_REPLICATE_COMPLETION_CONFLICT');
+        }
+        return existing;
+    }
+    const record = { ...expected, recorded_at: new Date().toISOString() };
+    try {
+        privateWrite(
+            replicateCompletionPath(selection.paths, task.task_token),
+            Buffer.from(`${JSON.stringify(record, null, 2)}\n`),
+            { exclusive: true },
+        );
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+    }
+    const loaded = loadReplicateCompletion(selection, task, binding, { missing: false });
+    const comparable = ({ recorded_at: ignored, ...stored }) => stored;
+    if (JSON.stringify(comparable(loaded)) !== JSON.stringify(expected)) {
+        throw failure('EXECUTION_REPLICATE_COMPLETION_CONFLICT');
+    }
+    return loaded;
+}
+
+function replicateUncertainPath(selection, task, requestRevision) {
+    if (!TASK_TOKEN.test(task.task_token || '') || !SHA256.test(requestRevision || '')) {
+        throw failure('EXECUTION_REPLICATE_UNCERTAIN_INVALID');
+    }
+    return path.join(selection.paths.root,
+        `.replicate-uncertain-${task.task_token}-${requestRevision.slice(0, 24)}.json`);
+}
+
+function loadReplicateUncertain(selection, task, requestRevision, { missing = true } = {}) {
+    try {
+        const value = JSON.parse(readPrivate(
+            replicateUncertainPath(selection, task, requestRevision),
+            MAX_REPLICATE_UNCERTAIN_BYTES,
+            'EXECUTION_REPLICATE_UNCERTAIN_MISSING',
+        ).toString('utf8'));
+        exactKeys(value, [
+            'schema_version', 'task_token', 'request_revision_sha256',
+            'uncertain_run_revision_sha256', 'created_at',
+        ], 'EXECUTION_REPLICATE_UNCERTAIN_INVALID');
+        if (value.schema_version !== REPLICATE_UNCERTAIN_SCHEMA
+            || value.task_token !== task.task_token
+            || value.request_revision_sha256 !== requestRevision
+            || !SHA256.test(value.uncertain_run_revision_sha256 || '')
+            || typeof value.created_at !== 'string' || !Number.isFinite(Date.parse(value.created_at))) {
+            throw failure('EXECUTION_REPLICATE_UNCERTAIN_INVALID');
+        }
+        return value;
+    } catch (error) {
+        if (missing && error.code === 'EXECUTION_REPLICATE_UNCERTAIN_MISSING') return null;
+        if (error.code) throw error;
+        throw failure('EXECUTION_REPLICATE_UNCERTAIN_INVALID');
+    }
+}
+
+function publishReplicateUncertain(selection, task, requestRevision) {
+    const existing = loadReplicateUncertain(selection, task, requestRevision);
+    if (existing) return existing;
+    const record = {
+        schema_version: REPLICATE_UNCERTAIN_SCHEMA,
+        task_token: task.task_token,
+        request_revision_sha256: requestRevision,
+        uncertain_run_revision_sha256: selection.manifest.run_revision_sha256,
+        created_at: new Date().toISOString(),
+    };
+    try {
+        privateWrite(
+            replicateUncertainPath(selection, task, requestRevision),
+            Buffer.from(`${JSON.stringify(record, null, 2)}\n`),
+            { exclusive: true },
+        );
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+    }
+    return loadReplicateUncertain(selection, task, requestRevision, { missing: false });
+}
+
 function replicateRequestPreview(selection, task, referencesByTask, outputPath, context) {
     const preview = providerExecutionPreview.buildProviderExecutionPreview({
         ...task,
@@ -224,9 +427,15 @@ function loadExecutionOutputTargets(selection, context = {}, referencesByTask = 
     if (selection.manifest.lane !== 'video') return new Map();
     assertPrivateDirectory(selection.paths.outputsRoot, 'EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
     const targets = new Map();
-    const expectedNames = new Set(selection.manifest.tasks
+    const requiredNames = new Set(selection.manifest.tasks
         .filter((task) => task.provider === 'replicate')
         .map((task) => `${task.task_token}.claim.json`));
+    const allowedNames = new Set(requiredNames);
+    selection.manifest.tasks.filter((task) => task.provider === 'replicate')
+        .forEach((task) => {
+            allowedNames.add(`${task.task_token}.replicate-submission.json`);
+            allowedNames.add(`${task.task_token}.replicate-completion.json`);
+        });
     for (const task of selection.manifest.tasks) {
         const target = executionOutputPath(selection.paths, task.task_token);
         try {
@@ -243,8 +452,10 @@ function loadExecutionOutputTargets(selection, context = {}, referencesByTask = 
         targets.set(task.task_token, target);
     }
     const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
-    if (entries.length !== expectedNames.size || entries.some((entry) => !entry.isFile()
-        || entry.isSymbolicLink() || !expectedNames.has(entry.name))) {
+    const present = new Set(entries.map((entry) => entry.name));
+    if ([...requiredNames].some((name) => !present.has(name))
+        || entries.some((entry) => !entry.isFile()
+            || entry.isSymbolicLink() || !allowedNames.has(entry.name))) {
         throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
     }
     return targets;
@@ -260,6 +471,8 @@ function replicateDownloadedOutputsPrepared(selection, context, referencesByTask
         const outputPath = executionOutputPath(selection.paths, task.task_token);
         if (task.provider === 'replicate') {
             allowedNames.add(`${task.task_token}.claim.json`);
+            allowedNames.add(`${task.task_token}.replicate-submission.json`);
+            allowedNames.add(`${task.task_token}.replicate-completion.json`);
             allowedNames.add(outputName);
             const preview = replicateRequestPreview(selection, task, referencesByTask, outputPath, context);
             loadReplicateClaim(selection, task,
@@ -306,6 +519,11 @@ function stageExecutionOutputs(selection, context = {}, referencesByTask = new M
     const expectedNames = new Set(selection.manifest.tasks
         .filter((task) => task.provider === 'replicate')
         .map((task) => `${task.task_token}.claim.json`));
+    selection.manifest.tasks.filter((task) => task.provider === 'replicate')
+        .forEach((task) => {
+            expectedNames.add(`${task.task_token}.replicate-submission.json`);
+            expectedNames.add(`${task.task_token}.replicate-completion.json`);
+        });
     const outputNames = new Set(selection.manifest.tasks
         .map((task) => `${task.task_token}.mp4`));
     const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
@@ -580,6 +798,37 @@ function stageExecutionReferences(selection, context) {
     return loadReferenceCommit(selection.paths, selection.manifest);
 }
 
+function recoverReplicateOrphanPartials(selection, context) {
+    if (selection.manifest.lane !== 'video') return;
+    let lock;
+    try { lock = loadReplicateExecutionLock(selection.paths, context); }
+    catch { return; }
+    if (!lock?.recoverable) return;
+    const tasks = new Map(selection.manifest.tasks
+        .filter((task) => task.provider === 'replicate')
+        .map((task) => [
+            `.${task.task_token}.mp4.${lock.record.pid}.${lock.record.owner_nonce}.partial`, task,
+        ]));
+    const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+        const task = tasks.get(entry.name);
+        if (!task) continue;
+        const binding = replicateExecutionBinding(selection, task, context);
+        if (!loadReplicateSubmission(selection, task, binding)) continue;
+        const partialPath = path.join(selection.paths.outputsRoot, entry.name);
+        const before = fs.lstatSync(partialPath);
+        if (!entry.isFile() || entry.isSymbolicLink() || !before.isFile() || before.isSymbolicLink()
+            || (before.mode & 0o777) !== 0o600 || before.nlink < 1 || before.nlink > 2
+            || fs.realpathSync.native(partialPath) !== partialPath) {
+            throw failure('EXECUTION_REPLICATE_PARTIAL_UNSAFE');
+        }
+        const after = fs.lstatSync(partialPath);
+        if (!sameFile(before, after)) throw failure('EXECUTION_REPLICATE_PARTIAL_UNSAFE');
+        fs.unlinkSync(partialPath);
+        fsyncDirectory(selection.paths.outputsRoot);
+    }
+}
+
 function selectionPrepared(selection, context = {}) {
     try {
         let referencesByTask = new Map();
@@ -593,6 +842,7 @@ function selectionPrepared(selection, context = {}) {
                 loadReferenceCommit(selection.paths, selection.manifest),
             );
         }
+        recoverReplicateOrphanPartials(selection, context);
         try {
             loadExecutionOutputTargets(selection, context, referencesByTask);
             return true;
@@ -615,7 +865,7 @@ function baseFromPlan(state, lane, settings) {
     const source = state.tasks.filter((task) => selected.has(task.task_token));
     if (!source.length || source.length !== selected.size) throw failure('EXECUTION_PREPARATION_STALE');
     const resultByTask = new Map(state.tasks.map((task) => [task.task_token, task.result_token || '']));
-    const tasks = source.map((task, index) => {
+    const tasks = source.map((task) => {
         const referenceTaskTokens = lane === 'image'
             ? Array.isArray(task.reference_task_ids) ? task.reference_task_ids : []
             : [task.reference_image_task_token].filter(Boolean);
@@ -630,7 +880,7 @@ function baseFromPlan(state, lane, settings) {
         if (task.prompt.includes(conflictingAspect)) throw failure('EXECUTION_ASPECT_PROMPT_CONFLICT');
         return {
             task_token: task.task_token, lane, kind: task.kind, source_id: task.source_id,
-            sequence: index + 1, label: task.label,
+            sequence: task.sequence, label: task.label,
             provider: lane === 'image' ? 'dst_image' : task.provider,
             provider_label: lane === 'image' ? 'DST 이미지' : task.provider_label,
             prompt: task.prompt, preparation_token: state.preparation.preparation_token,
@@ -705,14 +955,15 @@ function manifestFor(base, attempt, createdAt = new Date().toISOString()) {
     return manifest;
 }
 
-function validateTask(task, lane, index, schema) {
+function validateTask(task, lane, schema) {
     const expected = [
         'task_token', 'lane', 'kind', 'sequence', 'label', 'provider', 'provider_label',
         'prompt', 'preparation_token', 'reference_task_tokens', 'reference_result_tokens',
     ];
     if (schema === MANIFEST_SCHEMA) expected.push('source_id', 'duration_seconds');
     exactKeys(task, expected, 'EXECUTION_MANIFEST_INVALID');
-    if (!TASK_TOKEN.test(task.task_token || '') || task.lane !== lane || task.sequence !== index + 1
+    if (!TASK_TOKEN.test(task.task_token || '') || task.lane !== lane
+        || !Number.isSafeInteger(task.sequence) || task.sequence < 1
         || !PREPARATION_TOKEN.test(task.preparation_token || '')) throw failure('EXECUTION_MANIFEST_INVALID');
     text(task.kind, 64, 'EXECUTION_MANIFEST_INVALID');
     if (schema === MANIFEST_SCHEMA) text(task.source_id, 128, 'EXECUTION_MANIFEST_INVALID');
@@ -765,7 +1016,12 @@ function validateManifest(value) {
         || !['9:16', '16:9'].includes(value.aspect_ratio))) {
         throw failure('EXECUTION_MANIFEST_INVALID');
     }
-    value.tasks.forEach((task, index) => validateTask(task, value.lane, index, schema));
+    let priorSequence = 0;
+    value.tasks.forEach((task) => {
+        validateTask(task, value.lane, schema);
+        if (task.sequence <= priorSequence) throw failure('EXECUTION_MANIFEST_INVALID');
+        priorSequence = task.sequence;
+    });
     const baseRevision = sha256(JSON.stringify(preparationBase(value, schema)));
     const runRevision = sha256(JSON.stringify(schema === LEGACY_MANIFEST_SCHEMA
         ? { preparation_revision_sha256: baseRevision, attempt: value.attempt }
@@ -1314,6 +1570,361 @@ function acquireLock(paths) {
     };
 }
 
+function replicateLockTtl(context = {}) {
+    if (context.replicateLoopbackTestOnly === true
+        && Number.isInteger(context.replicateTestLockTtlMs)
+        && context.replicateTestLockTtlMs >= 30
+        && context.replicateTestLockTtlMs <= 60 * 1000) {
+        return context.replicateTestLockTtlMs;
+    }
+    return REPLICATE_LOCK_TTL_MS;
+}
+
+function loadReplicateExecutionLock(paths, context = {}, { missing = true } = {}) {
+    const lockPath = path.join(paths.runRoot, '.replicate-execute.lock');
+    let before;
+    try { before = fs.lstatSync(lockPath); } catch (error) {
+        if (missing && error.code === 'ENOENT') return null;
+        throw error;
+    }
+    if (!before.isFile() || before.isSymbolicLink() || (before.mode & 0o777) !== 0o600
+        || fs.realpathSync.native(lockPath) !== lockPath) {
+        throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+    }
+    let record;
+    let bytes;
+    try {
+        bytes = readPrivate(lockPath, 1024, 'EXECUTION_REPLICATE_LOCK_MISSING');
+        record = JSON.parse(bytes.toString('utf8'));
+    }
+    catch (error) { if (error.code) throw error; throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE'); }
+    exactKeys(record, ['pid', 'owner_nonce', 'created_at'], 'EXECUTION_REPLICATE_LOCK_UNSAFE');
+    const createdAt = Date.parse(record.created_at);
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 0
+        || typeof record.owner_nonce !== 'string' || !/^[a-f0-9]{32}$/.test(record.owner_nonce)
+        || typeof record.created_at !== 'string' || !Number.isFinite(createdAt)) {
+        throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+    }
+    const after = fs.lstatSync(lockPath);
+    const now = Date.now();
+    if (!sameFile(before, after)
+        || after.mtimeMs < createdAt - REPLICATE_LOCK_TIME_SKEW_MS
+        || after.mtimeMs > now + REPLICATE_LOCK_TIME_SKEW_MS) {
+        throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+    }
+    let alive = record.pid === process.pid;
+    if (!alive) {
+        try { process.kill(record.pid, 0); alive = true; }
+        catch (error) { if (error.code !== 'ESRCH') alive = true; }
+    }
+    return {
+        path: lockPath,
+        stats: after,
+        bytes,
+        record,
+        recoverable: !alive || after.mtimeMs + replicateLockTtl(context) <= now,
+    };
+}
+
+function acquireReplicateExecutionLock(paths, context = {}) {
+    const lockPath = path.join(paths.runRoot, '.replicate-execute.lock');
+    const ownerNonce = crypto.randomBytes(16).toString('hex');
+    const createdAt = new Date();
+    const lockRecord = {
+        pid: process.pid,
+        owner_nonce: ownerNonce,
+        created_at: createdAt.toISOString(),
+    };
+    const create = () => {
+        let descriptor;
+        let created = false;
+        try {
+            descriptor = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT
+                | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+            created = true;
+            fs.writeFileSync(descriptor,
+                `${JSON.stringify(lockRecord)}\n`);
+            fs.fsyncSync(descriptor);
+            fsyncDirectory(paths.runRoot);
+            return descriptor;
+        } catch (error) {
+            if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch { /* already closed */ }
+            if (created) {
+                try { fs.unlinkSync(lockPath); fsyncDirectory(paths.runRoot); } catch { /* best effort */ }
+            }
+            throw error;
+        }
+    };
+    const recoverStale = () => {
+        const lock = loadReplicateExecutionLock(paths, context, { missing: false });
+        if (!lock.recoverable) return false;
+        const after = fs.lstatSync(lockPath);
+        if (!sameFile(lock.stats, after)) throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+        fs.unlinkSync(lockPath);
+        fsyncDirectory(paths.runRoot);
+        return true;
+    };
+    let descriptor;
+    try { descriptor = create(); } catch (error) {
+        if (error.code !== 'EEXIST' || !recoverStale()) {
+            if (error.code === 'EEXIST') throw failure('EXECUTION_REPLICATE_ALREADY_RUNNING');
+            throw error;
+        }
+        try { descriptor = create(); } catch (retryError) {
+            if (retryError.code === 'EEXIST') throw failure('EXECUTION_REPLICATE_ALREADY_RUNNING');
+            throw retryError;
+        }
+    }
+    const identity = fs.fstatSync(descriptor);
+    let released = false;
+    const heartbeat = () => {
+        if (released) throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+        const current = loadReplicateExecutionLock(paths, context, { missing: false });
+        const opened = fs.fstatSync(descriptor);
+        if (identity.dev !== current.stats.dev || identity.ino !== current.stats.ino
+            || identity.dev !== opened.dev || identity.ino !== opened.ino
+            || (opened.mode & 0o777) !== 0o600
+            || current.record.pid !== process.pid
+            || current.record.owner_nonce !== ownerNonce
+            || current.record.created_at !== lockRecord.created_at) {
+            throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+        }
+        const immutableBytes = readPrivate(lockPath, 1024, 'EXECUTION_REPLICATE_LOCK_MISSING');
+        if (!immutableBytes.equals(current.bytes)) throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+        fs.futimesSync(descriptor, opened.atime, new Date());
+        fs.fsyncSync(descriptor);
+        fsyncDirectory(paths.runRoot);
+        const verified = loadReplicateExecutionLock(paths, context, { missing: false });
+        const verifiedOpened = fs.fstatSync(descriptor);
+        if (identity.dev !== verified.stats.dev || identity.ino !== verified.stats.ino
+            || identity.dev !== verifiedOpened.dev || identity.ino !== verifiedOpened.ino
+            || (verified.stats.mode & 0o777) !== 0o600
+            || verified.record.owner_nonce !== ownerNonce
+            || !verified.bytes.equals(immutableBytes)) {
+            throw failure('EXECUTION_REPLICATE_LOCK_UNSAFE');
+        }
+    };
+    const release = () => {
+        released = true;
+        try { fs.closeSync(descriptor); } finally {
+            try {
+                const current = fs.lstatSync(lockPath);
+                if (current.dev === identity.dev && current.ino === identity.ino) {
+                    fs.unlinkSync(lockPath);
+                    fsyncDirectory(paths.runRoot);
+                }
+            } catch { /* best-effort unlock */ }
+        }
+    };
+    release.ownerNonce = ownerNonce;
+    release.heartbeat = heartbeat;
+    release.heartbeatIntervalMs = Math.max(10, Math.floor(replicateLockTtl(context) / 3));
+    return release;
+}
+
+function nextReceiptTimestamp(receipt) {
+    const now = Date.now();
+    const prior = receipt ? Date.parse(receipt.reported_at) : 0;
+    return new Date(Math.max(now, prior + 1)).toISOString();
+}
+
+function replicateRunningReceipt(selection, task, prior, values = {}) {
+    return {
+        schema_version: RECEIPT_SCHEMA,
+        run_revision_sha256: selection.manifest.run_revision_sha256,
+        task_token: task.task_token,
+        status: 'running',
+        progress: Math.max(prior?.progress || 0, values.progress || 1),
+        failure_code: '', result_received: false, result_locator: '',
+        external_call_performed: values.external_call_performed ?? prior?.external_call_performed ?? false,
+        model_called: values.model_called ?? prior?.model_called ?? false,
+        generation_executed: values.generation_executed ?? prior?.generation_executed ?? false,
+        reported_at: nextReceiptTimestamp(prior),
+    };
+}
+
+function replicateFailedReceipt(selection, task, prior, code, values = {}) {
+    return {
+        schema_version: RECEIPT_SCHEMA,
+        run_revision_sha256: selection.manifest.run_revision_sha256,
+        task_token: task.task_token,
+        status: 'failed', progress: prior?.progress || 1,
+        failure_code: FAILURE_CODES.has(code) ? code : 'RESULT_INVALID',
+        result_received: false, result_locator: '',
+        external_call_performed: values.external_call_performed ?? prior?.external_call_performed ?? false,
+        model_called: values.model_called ?? prior?.model_called ?? false,
+        generation_executed: values.generation_executed ?? prior?.generation_executed ?? false,
+        reported_at: nextReceiptTimestamp(prior),
+    };
+}
+
+function publishReplicateCompletion(selection, task, resultLocator, context) {
+    const prior = loadReceipt(selection.paths, task.task_token, { missing: false });
+    const completed = publishExecutionReceipt({
+        schema_version: RECEIPT_SCHEMA,
+        run_revision_sha256: selection.manifest.run_revision_sha256,
+        task_token: task.task_token,
+        status: 'succeeded', progress: 100, failure_code: '', result_received: true,
+        result_locator: resultLocator,
+        external_call_performed: true, model_called: true, generation_executed: true,
+        reported_at: nextReceiptTimestamp(prior),
+    }, context);
+    return { ok: true, status: 'succeeded', state: completed.state };
+}
+
+async function executeNextReplicateTask(payload, context = {}) {
+    exactKeys(payload, ['expected_revision_sha256', 'confirm_live'], 'EXECUTION_REPLICATE_EXECUTE_SHAPE_INVALID');
+    if (payload.confirm_live !== true || !SHA256.test(payload.expected_revision_sha256 || '')) {
+        throw failure('EXECUTION_REPLICATE_LIVE_CONFIRMATION_REQUIRED');
+    }
+    const selections = selectLanes(context);
+    const current = publicSelections(selections, context);
+    if (current.revision_sha256 !== payload.expected_revision_sha256) throw failure('EXECUTION_REVISION_STALE');
+    const selection = selections.find((item) => item.manifest.lane === 'video');
+    if (selection && !selection.prepared) {
+        const lock = loadReplicateExecutionLock(selection.paths, context);
+        if (lock && !lock.recoverable) throw failure('EXECUTION_REPLICATE_ALREADY_RUNNING');
+    }
+    if (!selection?.prepared) throw failure('EXECUTION_PREPARATION_REQUIRED');
+    const receipts = laneReceipts(selection);
+    const taskIndex = receipts.findIndex((item) => !item || !['succeeded', 'failed'].includes(item.status));
+    if (taskIndex < 0) throw failure('EXECUTION_REPLICATE_TASK_NOT_AVAILABLE');
+    const task = selection.manifest.tasks[taskIndex];
+    if (task.provider !== 'replicate') throw failure('EXECUTION_REPLICATE_TASK_NOT_NEXT');
+
+    const release = acquireReplicateExecutionLock(selection.paths, context);
+    let running = receipts[taskIndex];
+    let submission = null;
+    let requestRevision = '';
+    try {
+        const outputPath = executionOutputPath(selection.paths, task.task_token);
+        let outputExists = false;
+        try {
+            fs.lstatSync(outputPath);
+            outputExists = true;
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        const referencesByTask = referenceFilesByTask(
+            selection.manifest,
+            loadReferenceCommit(selection.paths, selection.manifest),
+        );
+        const preview = replicateRequestPreview(selection, task, referencesByTask, outputPath, context);
+        requestRevision = preview.request_spec.request_revision_sha256;
+        const binding = replicateExecutionBinding(selection, task, context);
+        submission = loadReplicateSubmission(selection, task, binding);
+        const completion = submission ? loadReplicateCompletion(selection, task, binding) : null;
+        if (completion && completion.prediction_id !== submission.prediction_id) {
+            throw failure('EXECUTION_REPLICATE_COMPLETION_CONFLICT');
+        }
+        if (loadReplicateUncertain(selection, task, requestRevision)) {
+            throw failure('EXECUTION_REPLICATE_SUBMISSION_UNCERTAIN');
+        }
+        if (outputExists && !submission) throw failure('RESULT_INVALID');
+
+        let canonicalResult = null;
+        if (submission) {
+            const resolver = context.resolvePublishedReplicateExecutionResult
+                || videoResultImportProvider.resolvePublishedReplicateExecutionResult;
+            canonicalResult = resolver({
+                prediction_id: submission.prediction_id,
+                execution_binding: binding,
+            }, context);
+        }
+        const localCompletionAvailable = Boolean(canonicalResult)
+            || (Boolean(submission) && Boolean(completion) && outputExists);
+        if (!localCompletionAvailable
+            && (typeof context.replicateApiToken !== 'string' || !context.replicateApiToken.trim()
+                || context.replicateApiToken.includes('\0'))) throw failure('AUTH_REQUIRED');
+
+        let allowSubmit = false;
+        if (!running) {
+            const started = publishExecutionReceipt(
+                replicateRunningReceipt(selection, task, null), context,
+            );
+            allowSubmit = started.already_published === false;
+            running = loadReceipt(selection.paths, task.task_token, { missing: false });
+        } else if (running.status !== 'running') {
+            throw failure('EXECUTION_REPLICATE_TASK_NOT_AVAILABLE');
+        }
+        if (!submission && !allowSubmit) throw failure('EXECUTION_REPLICATE_SUBMISSION_MISSING');
+
+        if (canonicalResult) {
+            return publishReplicateCompletion(
+                selection, task, canonicalResult.result_locator, context,
+            );
+        }
+        if (submission && completion && outputExists) {
+            const published = publishReplicateResultReceipt({
+                schema_version: REPLICATE_DOWNLOAD_RESULT_SCHEMA,
+                run_revision_sha256: selection.manifest.run_revision_sha256,
+                task_token: task.task_token,
+                prediction_id: submission.prediction_id,
+                status: 'succeeded',
+                completed_at: completion.completed_at,
+            }, context);
+            return publishReplicateCompletion(selection, task, published.result_locator, context);
+        }
+
+        const result = await replicateExecutionAdapter.executeReplicatePrediction({
+            requestSpec: preview.request_spec,
+            apiToken: context.replicateApiToken,
+            priorSubmission: submission,
+            allowSubmit,
+            outputPath,
+            persistSubmission: async (value) => {
+                submission = publishReplicateSubmission(selection, task, binding, value);
+            },
+            persistSucceeded: async (value) => {
+                publishReplicateCompletionRecord(selection, task, binding, value);
+            },
+            onStatus: async (status) => {
+                if (!['starting', 'processing'].includes(status)) return;
+                const prior = loadReceipt(selection.paths, task.task_token, { missing: false });
+                const progress = status === 'processing' ? 60 : 15;
+                publishExecutionReceipt(replicateRunningReceipt(selection, task, prior, {
+                    progress,
+                    external_call_performed: true,
+                    model_called: true,
+                    generation_executed: true,
+                }), context);
+            },
+            heartbeat: release.heartbeat,
+            heartbeatIntervalMs: release.heartbeatIntervalMs,
+        }, { ...context, replicateExecutionOwnerNonce: release.ownerNonce });
+        const publishedResult = publishReplicateResultReceipt({
+            schema_version: REPLICATE_DOWNLOAD_RESULT_SCHEMA,
+            run_revision_sha256: selection.manifest.run_revision_sha256,
+            task_token: task.task_token,
+            prediction_id: result.prediction_id,
+            status: 'succeeded',
+            completed_at: result.completed_at,
+        }, context);
+        return publishReplicateCompletion(selection, task, publishedResult.result_locator, context);
+    } catch (error) {
+        if (!submission && requestRevision && error.externalCallPerformed === true
+            && error.definitiveRejection !== true) {
+            try { publishReplicateUncertain(selection, task, requestRevision); }
+            catch { /* the receipt still fails closed below */ }
+        }
+        const prior = loadReceipt(selection.paths, task.task_token);
+        if (submission && error.definitivePredictionTerminal !== true) throw error;
+        if (prior?.status === 'running') {
+            const accepted = Boolean(submission) || prior.model_called === true;
+            try {
+                publishExecutionReceipt(replicateFailedReceipt(selection, task, prior, error.code, {
+                    external_call_performed: error.externalCallPerformed === true
+                        || prior.external_call_performed || accepted,
+                    model_called: error.modelCalled === true || prior.model_called || accepted,
+                    generation_executed: error.generationExecuted === true
+                        || prior.generation_executed || accepted,
+                }), context);
+            } catch { /* retain the original safe execution error */ }
+        }
+        throw error;
+    } finally { release(); }
+}
+
 function assertSelectedRun(receipt, context) {
     const paths = exactPaths(context.userDataPath, `run_${receipt.run_revision_sha256}`);
     const manifest = loadManifest(paths);
@@ -1480,12 +2091,15 @@ module.exports = {
     REFERENCES_SCHEMA,
     REPLICATE_CLAIM_SCHEMA,
     REPLICATE_DOWNLOAD_RESULT_SCHEMA,
+    REPLICATE_SUBMISSION_SCHEMA,
+    REPLICATE_COMPLETION_SCHEMA,
     STATUS_LABELS,
     FAILURE_CODES,
     FAILURE_LABELS,
     exactPaths,
     getNewProjectExecutionState,
     prepareNewProjectExecution,
+    executeNextReplicateTask,
     publishReplicateResultReceipt,
     publishExecutionReceipt,
     inspectExecutionHandoff,

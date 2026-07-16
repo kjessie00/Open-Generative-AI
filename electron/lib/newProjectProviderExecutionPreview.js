@@ -259,8 +259,8 @@ function replicatePreview(task) {
         model_slug: REPLICATE_MODEL,
         method: 'POST',
         url: REPLICATE_URL,
-        header_names: ['Authorization', 'Content-Type', 'Prefer'],
-        headers: { 'Content-Type': 'application/json', Prefer: 'wait' },
+        header_names: ['Authorization', 'Content-Type'],
+        headers: { 'Content-Type': 'application/json' },
         authorization_env: 'REPLICATE_API_TOKEN',
         body: {
             input: {

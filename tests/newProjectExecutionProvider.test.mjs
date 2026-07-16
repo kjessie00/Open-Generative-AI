@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -140,6 +141,36 @@ test('MOCK: current image and video preparations become lane-private revision-bo
     assert.throws(() => executionProvider.prepareNewProjectExecution({
         expected_revision_sha256: 'f'.repeat(64), new_attempt: false,
     }, context), { code: 'EXECUTION_REVISION_STALE' });
+});
+
+test('MOCK: a retry subset preserves the original plan sequence instead of becoming item one', (t) => {
+    const parts = fixture(t, 'open-ga-execution-subset-sequence-');
+    const states = fakeStates();
+    const original = states.image.tasks[0];
+    states.image.tasks = [1, 2, 3].map((sequence) => ({
+        ...original,
+        task_token: `task_${String(sequence).repeat(64)}`,
+        sequence,
+        source_id: `scene_0${sequence}`,
+        label: `장면 이미지 · 장면 ${sequence}`,
+        prompt: `9:16 장면 ${sequence}`,
+    }));
+    states.image.preparation = {
+        status: 'queued', preparation_token: `preparation_${'3'.repeat(64)}`,
+        task_count: 1, task_tokens: [states.image.tasks[2].task_token],
+    };
+    states.video = { ok: false, status: 'blocked', tasks: [], blockers: ['VIDEO_NOT_READY'], preparation: { status: 'empty' } };
+    const context = fakeContext(parts, states);
+    let state = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(state.tasks.length, 1);
+    assert.equal(state.tasks[0].sequence, 3);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    assert.equal(state.tasks[0].sequence, 3);
+    const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    assert.equal(handoff.tasks[0].sequence, 3);
+    assert.equal(handoff.tasks[0].task_token, states.image.tasks[2].task_token);
 });
 
 test('MOCK: renderer staging accepts only the current revision and never exposes retry or execution controls', (t) => {
@@ -409,6 +440,41 @@ test('legacy v1 manifests remain readable history but never become an active exe
     assert.equal(fs.statSync(paths.manifestPath).mtimeMs, beforeMtime);
 });
 
+test('a correctly hashed manifest still rejects duplicate or non-increasing lane sequences', (t) => {
+    const parts = fixture(t, 'open-ga-execution-sequence-invalid-');
+    const preparationToken = `preparation_${'8'.repeat(64)}`;
+    const task = (digit) => ({
+        task_token: `task_${digit.repeat(64)}`, lane: 'image', kind: 'scene_image', sequence: 1,
+        label: `이전 장면 ${digit}`, provider: 'dst_image', provider_label: 'DST 이미지', prompt: '이전 프롬프트',
+        preparation_token: preparationToken, reference_task_tokens: [], reference_result_tokens: [],
+    });
+    const base = {
+        lane: 'image', design_revision_sha256: 'a'.repeat(64), image_plan_revision_sha256: 'b'.repeat(64),
+        video_plan_revision_sha256: '', preparation_token: preparationToken, tasks: [task('6'), task('7')],
+    };
+    const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const preparationRevision = digest(base);
+    const runRevision = digest({ preparation_revision_sha256: preparationRevision, attempt: 1 });
+    const manifest = {
+        schema_version: executionProvider.LEGACY_MANIFEST_SCHEMA,
+        run_token: `run_${runRevision}`, run_revision_sha256: runRevision,
+        preparation_revision_sha256: preparationRevision, attempt: 1, ...base,
+        external_call_performed: false, model_called: false, generation_executed: false,
+        created_at: '2026-07-15T00:00:00.000Z',
+    };
+    const paths = executionProvider.exactPaths(parts.userDataPath, manifest.run_token);
+    fs.mkdirSync(paths.receiptsRoot, { recursive: true, mode: 0o700 });
+    [paths.root, paths.runsRoot, paths.runRoot, paths.receiptsRoot]
+        .forEach((directory) => fs.chmodSync(directory, 0o700));
+    fs.writeFileSync(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    const states = fakeStates();
+    states.image.preparation = { status: 'empty', task_count: 0, task_tokens: [] };
+    states.video.preparation = { status: 'empty', task_count: 0, task_tokens: [] };
+    const history = executionProvider.getNewProjectExecutionHistory(fakeContext(parts, states));
+    assert.equal(history.ok, false);
+    assert.deepEqual(history.blockers, ['EXECUTION_MANIFEST_INVALID']);
+});
+
 function board() {
     return {
         characters: [{
@@ -619,8 +685,8 @@ test('provider execution previews build exact private DST and Grok commands whil
     assert.equal(replicate.request_spec.method, 'POST');
     assert.equal(replicate.request_spec.url,
         'https://api.replicate.com/v1/models/bytedance/seedance-1-pro/predictions');
-    assert.deepEqual(replicate.request_spec.header_names, ['Authorization', 'Content-Type', 'Prefer']);
-    assert.deepEqual(replicate.request_spec.headers, { 'Content-Type': 'application/json', Prefer: 'wait' });
+    assert.deepEqual(replicate.request_spec.header_names, ['Authorization', 'Content-Type']);
+    assert.deepEqual(replicate.request_spec.headers, { 'Content-Type': 'application/json' });
     assert.equal(replicate.request_spec.authorization_env, 'REPLICATE_API_TOKEN');
     assert.deepEqual(Object.keys(replicate.request_spec.body.input), [
         'prompt', 'image', 'duration', 'resolution', 'fps', 'camera_fixed',
@@ -1010,6 +1076,76 @@ function spawnInspect(userDataPath) {
     });
 }
 
+function crashResumeContext(parts, suffix) {
+    const replicateReceiptResultsRoot = path.join(parts.base, `${suffix}-replicate-receipts`);
+    fs.mkdirSync(replicateReceiptResultsRoot, { recursive: true });
+    return {
+        ...parts,
+        replicateReceiptResultsRoot,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestPollAttempts: 5,
+        replicateTestPollIntervalMs: 0,
+        replicateTestRequestTimeoutMs: 1000,
+        tokenSecret: Buffer.alloc(32, 61),
+        runProcessFn: () => ({
+            status: 0, signal: null,
+            stdout: JSON.stringify({
+                format: { format_name: 'mov,mp4', duration: '5' },
+                streams: [{ codec_type: 'video', width: 1080, height: 1920 }],
+            }),
+            stderr: '',
+        }),
+    };
+}
+
+function stageReplicateCrashResume(context, predictionId, getUrl, completion = null) {
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks
+        .find((item) => item.provider === 'replicate');
+    executionProvider.publishExecutionReceipt(receipt({ revision_sha256: task.run_revision_sha256 }, task, {
+        progress: 15,
+        external_call_performed: true,
+        model_called: true,
+        generation_executed: true,
+        reported_at: '2026-07-17T03:30:00.000Z',
+    }), context);
+    const claimBytes = fs.readFileSync(task.output_claim_path);
+    const sidecar = {
+        schema_version: executionProvider.REPLICATE_SUBMISSION_SCHEMA,
+        run_revision_sha256: task.run_revision_sha256,
+        task_token: task.task_token,
+        request_revision_sha256: task.provider_execution_preview.request_spec.request_revision_sha256,
+        output_claim_sha256: crypto.createHash('sha256').update(claimBytes).digest('hex'),
+        prediction_id: predictionId,
+        get_url: getUrl,
+        submitted_at: '2026-07-17T03:29:00.000Z',
+    };
+    const sidecarPath = path.join(path.dirname(task.output_path),
+        `${task.task_token}.replicate-submission.json`);
+    fs.writeFileSync(sidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    let completionPath = '';
+    if (completion) {
+        completionPath = path.join(path.dirname(task.output_path),
+            `${task.task_token}.replicate-completion.json`);
+        fs.writeFileSync(completionPath, `${JSON.stringify({
+            schema_version: executionProvider.REPLICATE_COMPLETION_SCHEMA,
+            run_revision_sha256: task.run_revision_sha256,
+            task_token: task.task_token,
+            request_revision_sha256: task.provider_execution_preview.request_spec.request_revision_sha256,
+            output_claim_sha256: crypto.createHash('sha256').update(claimBytes).digest('hex'),
+            prediction_id: predictionId,
+            completed_at: completion.completed_at,
+            output_url_sha256: crypto.createHash('sha256').update(completion.output_url).digest('hex'),
+            recorded_at: '2026-07-17T03:29:30.000Z',
+        }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    }
+    return { state, task, sidecar, sidecarPath, completionPath };
+}
+
 test('actual local Replicate request preview claims one absent output without HTTP and stays stable under concurrent inspect', async (t) => {
     const parts = setupActualPlans(t, 'replicate');
     const initial = executionProvider.getNewProjectExecutionState(parts);
@@ -1338,8 +1474,918 @@ test('MOCK ffprobe: Replicate result metadata publishes the deterministic privat
     assert.equal(JSON.parse(rootOverrideRejected.stderr).error, 'EXECUTION_CLI_ARGUMENT_INVALID');
 });
 
+test('MOCK HTTP: main submits one Replicate prediction, polls, streams MP4, and publishes a pathless succeeded state', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'),
+        Buffer.from([0x00, 0x00, 0x02, 0x00]), Buffer.from('isomiso2', 'ascii'), Buffer.alloc(4096, 0x71),
+    ]);
+    let postCount = 0;
+    let pollCount = 0;
+    let downloadCount = 0;
+    let baseUrl = '';
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST' && request.url === '/predictions') {
+            postCount += 1;
+            assert.equal(request.headers.authorization, 'Bearer mock-token');
+            assert.equal(request.headers.prefer, undefined, 'live submit stays asynchronous and never waits in POST');
+            let body = '';
+            request.setEncoding('utf8');
+            request.on('data', (chunk) => { body += chunk; });
+            request.on('end', () => {
+                const parsed = JSON.parse(body);
+                assert.match(parsed.input.prompt, /사다리차/);
+                assert.match(parsed.input.image, /^data:image\/png;base64,/);
+                response.setHeader('content-type', 'application/json');
+                response.end(JSON.stringify({
+                    id: 'mock_prediction_001', status: 'starting',
+                    urls: { get: `${baseUrl}/predictions/mock_prediction_001` },
+                }));
+            });
+            return;
+        }
+        if (request.method === 'GET' && request.url === '/predictions/mock_prediction_001') {
+            pollCount += 1;
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify(pollCount === 1 ? {
+                id: 'mock_prediction_001', status: 'processing',
+                urls: { get: `${baseUrl}/predictions/mock_prediction_001` },
+            } : {
+                id: 'mock_prediction_001', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_prediction_001` },
+                output: `${baseUrl}/delivery/result.mp4`,
+                completed_at: '2026-07-17T03:00:00.000Z',
+            }));
+            return;
+        }
+        if (request.method === 'GET' && request.url === '/delivery/result.mp4') {
+            downloadCount += 1;
+            response.setHeader('content-type', 'video/mp4');
+            response.setHeader('content-length', String(videoBytes.byteLength));
+            response.end(videoBytes);
+            return;
+        }
+        response.statusCode = 404;
+        response.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    const replicateReceiptResultsRoot = path.join(parts.base, 'mock-http-replicate-receipts');
+    fs.mkdirSync(replicateReceiptResultsRoot, { recursive: true });
+    const context = {
+        ...parts,
+        replicateReceiptResultsRoot,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: `${baseUrl}/predictions`,
+        replicateTestPollAttempts: 5,
+        replicateTestPollIntervalMs: 0,
+        replicateTestRequestTimeoutMs: 1000,
+        tokenSecret: Buffer.alloc(32, 51),
+        runProcessFn: () => ({
+            status: 0, signal: null,
+            stdout: JSON.stringify({
+                format: { format_name: 'mov,mp4', duration: '5' },
+                streams: [{ codec_type: 'video', width: 1080, height: 1920 }],
+            }),
+            stderr: '',
+        }),
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    const privateTask = handoff.tasks.find((task) => task.provider === 'replicate');
+    const result = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(postCount, 1);
+    assert.equal(pollCount, 2);
+    assert.equal(downloadCount, 1);
+    assert.equal(fs.lstatSync(privateTask.output_path).mode & 0o777, 0o600);
+    const sidecarPath = path.join(path.dirname(privateTask.output_path),
+        `${privateTask.task_token}.replicate-submission.json`);
+    assert.equal(fs.lstatSync(sidecarPath).mode & 0o777, 0o600);
+    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+    assert.equal(sidecar.schema_version, executionProvider.REPLICATE_SUBMISSION_SCHEMA);
+    assert.equal(sidecar.prediction_id, 'mock_prediction_001');
+    assert.equal(sidecar.request_revision_sha256,
+        privateTask.provider_execution_preview.request_spec.request_revision_sha256);
+    const renderer = filmProvider.getNewProjectExecutionState(context);
+    assert.equal(renderer.tasks[0].status_label, '결과 도착');
+    assert.equal(renderer.tasks[0].result_received, true);
+    assert.doesNotMatch(JSON.stringify(renderer),
+        /mock_prediction_001|mock-token|replicate-submission|api\.replicate\.com|127\.0\.0\.1|\/private\//i);
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'EXECUTION_REPLICATE_TASK_NOT_AVAILABLE' });
+    assert.equal(postCount, 1, 'a completed run/task never submits a second POST');
+});
+
+test('MOCK HTTP: an expired Replicate lock is recovered even when its PID has been reused', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(1024, 0x46),
+    ]);
+    let baseUrl = '';
+    let postCount = 0;
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') {
+            postCount += 1;
+            response.statusCode = 500;
+            response.end();
+            return;
+        }
+        if (request.url === '/predictions/mock_stale_lock') {
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({
+                id: 'mock_stale_lock', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_stale_lock` },
+                output: `${baseUrl}/delivery/stale-lock.mp4`,
+                completed_at: '2026-07-17T03:31:00.000Z',
+            }));
+            return;
+        }
+        response.setHeader('content-type', 'video/mp4');
+        response.end(videoBytes);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = crashResumeContext(parts, 'stale-lock');
+    const staged = stageReplicateCrashResume(
+        context, 'mock_stale_lock', `${baseUrl}/predictions/mock_stale_lock`,
+    );
+    const runPaths = executionProvider.exactPaths(
+        parts.userDataPath, `run_${staged.task.run_revision_sha256}`,
+    );
+    const lockPath = path.join(runPaths.runRoot, '.replicate-execute.lock');
+    const expiredCreatedAt = new Date(Date.now() - 30 * 60 * 1000);
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+        pid: process.pid,
+        owner_nonce: 'a'.repeat(32),
+        created_at: expiredCreatedAt.toISOString(),
+    })}\n`, { mode: 0o600, flag: 'wx' });
+    fs.utimesSync(lockPath, expiredCreatedAt, expiredCreatedAt);
+    const result = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(postCount, 0);
+    assert.equal(fs.existsSync(lockPath), false);
+    assert.equal(executionProvider.getNewProjectExecutionState(context).tasks[0].status, 'succeeded');
+});
+
+test('MOCK: dead-run recovery removes only the exact sidecar-bound 0600 task partial', (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const context = crashResumeContext(parts, 'orphan-partial');
+    const staged = stageReplicateCrashResume(
+        context,
+        'mock_orphan_partial',
+        'http://127.0.0.1:9/predictions/mock_orphan_partial',
+    );
+    const runPaths = executionProvider.exactPaths(
+        parts.userDataPath, `run_${staged.task.run_revision_sha256}`,
+    );
+    const deadPid = 2147483647;
+    const ownerNonce = 'b'.repeat(32);
+    const lockPath = path.join(runPaths.runRoot, '.replicate-execute.lock');
+    const createdAt = new Date().toISOString();
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+        pid: deadPid,
+        owner_nonce: ownerNonce,
+        created_at: createdAt,
+    })}\n`, { mode: 0o600, flag: 'wx' });
+    const ownedPartial = path.join(path.dirname(staged.task.output_path),
+        `.${path.basename(staged.task.output_path)}.${deadPid}.${ownerNonce}.partial`);
+    fs.writeFileSync(ownedPartial, 'incomplete task-owned bytes', { mode: 0o600, flag: 'wx' });
+    const recovered = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(recovered.prepared, true);
+    assert.equal(fs.existsSync(ownedPartial), false);
+
+    const unrelatedPartial = path.join(path.dirname(staged.task.output_path),
+        `.${path.basename(staged.task.output_path)}.${deadPid}.${'c'.repeat(32)}.partial`);
+    fs.writeFileSync(unrelatedPartial, 'must be preserved', { mode: 0o600, flag: 'wx' });
+    const blocked = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(blocked.prepared, false);
+    assert.equal(fs.readFileSync(unrelatedPartial, 'utf8'), 'must be preserved');
+});
+
+test('MOCK HTTP: a sidecar-bound downloaded MP4 resumes with poll and publish but no POST or second download', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(1536, 0x47),
+    ]);
+    let baseUrl = '';
+    let postCount = 0;
+    let downloadCount = 0;
+    const server = http.createServer((request, response) => {
+        downloadCount += 1;
+        if (request.method === 'POST') postCount += 1;
+        if (request.url === '/predictions/mock_download_crash') {
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({
+                id: 'mock_download_crash', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_download_crash` },
+                output: `${baseUrl}/delivery/should-not-download.mp4`,
+                completed_at: '2026-07-17T03:32:00.000Z',
+            }));
+            return;
+        }
+        response.statusCode = 500;
+        response.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = { ...crashResumeContext(parts, 'download-crash'), replicateApiToken: undefined };
+    const staged = stageReplicateCrashResume(
+        context, 'mock_download_crash', `${baseUrl}/predictions/mock_download_crash`, {
+            completed_at: '2026-07-17T03:32:00.000Z',
+            output_url: `${baseUrl}/delivery/should-not-download.mp4`,
+        },
+    );
+    fs.writeFileSync(staged.task.output_path, videoBytes, { mode: 0o600, flag: 'wx' });
+    const result = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(postCount, 0);
+    assert.equal(downloadCount, 0);
+    assert.equal(fs.readFileSync(staged.task.output_path).equals(videoBytes), true);
+    const canonicalReceipt = JSON.parse(fs.readFileSync(path.join(
+        context.replicateReceiptResultsRoot, 'mock_download_crash', 'receipt.json',
+    ), 'utf8'));
+    assert.equal(canonicalReceipt.completed_at, '2026-07-17T03:32:00.000Z');
+});
+
+test('MOCK HTTP: an existing canonical Replicate result resumes only the missing completion receipt', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(2048, 0x48),
+    ]);
+    let baseUrl = '';
+    let postCount = 0;
+    let requestCount = 0;
+    const server = http.createServer((request, response) => {
+        requestCount += 1;
+        if (request.method === 'POST') postCount += 1;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({
+            id: 'mock_canonical_crash', status: 'succeeded',
+            urls: { get: `${baseUrl}/predictions/mock_canonical_crash` },
+            output: `${baseUrl}/delivery/already-canonical.mp4`,
+            completed_at: '2026-07-17T03:33:00.000Z',
+        }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = { ...crashResumeContext(parts, 'canonical-crash'), replicateApiToken: undefined };
+    const staged = stageReplicateCrashResume(
+        context, 'mock_canonical_crash', `${baseUrl}/predictions/mock_canonical_crash`,
+    );
+    fs.writeFileSync(staged.task.output_path, videoBytes, { mode: 0o600, flag: 'wx' });
+    const metadata = {
+        schema_version: executionProvider.REPLICATE_DOWNLOAD_RESULT_SCHEMA,
+        run_revision_sha256: staged.task.run_revision_sha256,
+        task_token: staged.task.task_token,
+        prediction_id: 'mock_canonical_crash',
+        status: 'succeeded',
+        completed_at: '2026-07-17T03:33:00.000Z',
+    };
+    const published = executionProvider.publishReplicateResultReceipt(metadata, context);
+    assert.equal(published.already_published, false);
+    const canonicalReceiptPath = path.join(
+        context.replicateReceiptResultsRoot, metadata.prediction_id, 'receipt.json',
+    );
+    const before = fs.readFileSync(canonicalReceiptPath);
+    const result = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(postCount, 0);
+    assert.equal(requestCount, 0);
+    assert.equal(fs.readFileSync(canonicalReceiptPath).equals(before), true);
+    assert.equal(executionProvider.getNewProjectExecutionState(context).tasks[0].status, 'succeeded');
+});
+
+test('MOCK ffprobe: local canonical recovery rejects a receipt with the wrong execution binding', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const context = { ...crashResumeContext(parts, 'canonical-binding-mismatch'), replicateApiToken: undefined };
+    const staged = stageReplicateCrashResume(
+        context,
+        'mock_canonical_mismatch',
+        'http://127.0.0.1:9/predictions/mock_canonical_mismatch',
+    );
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(1024, 0x50),
+    ]);
+    const digest = crypto.createHash('sha256').update(videoBytes).digest('hex');
+    const directory = path.join(context.replicateReceiptResultsRoot, 'mock_canonical_mismatch');
+    fs.mkdirSync(directory, { mode: 0o700 });
+    fs.writeFileSync(path.join(directory, 'result.mp4'), videoBytes, { mode: 0o600 });
+    fs.writeFileSync(path.join(directory, 'receipt.json'), `${JSON.stringify({
+        schema_version: 'film_pipeline.external_video_result.v2',
+        provider: 'replicate',
+        result_id: 'mock_canonical_mismatch',
+        status: 'succeeded',
+        output_file: 'result.mp4',
+        output_sha256: digest,
+        output_size_bytes: videoBytes.byteLength,
+        completed_at: '2026-07-17T03:33:30.000Z',
+        run_revision_sha256: staged.sidecar.run_revision_sha256,
+        task_token: `task_${'7'.repeat(64)}`,
+        request_revision_sha256: staged.sidecar.request_revision_sha256,
+        output_claim_sha256: staged.sidecar.output_claim_sha256,
+    }, null, 2)}\n`, { mode: 0o600 });
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'VIDEO_IMPORT_REPLICATE_RESOLVE_BINDING_MISMATCH' });
+    assert.equal(executionProvider.getNewProjectExecutionState(context).tasks[0].status, 'running');
+});
+
+test('MOCK HTTP: a sidecar poll 5xx stays resumable and later succeeds with GET only', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(1024, 0x49),
+    ]);
+    let baseUrl = '';
+    let predictionGets = 0;
+    let downloads = 0;
+    let posts = 0;
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') {
+            posts += 1;
+            response.statusCode = 500;
+            response.end();
+            return;
+        }
+        if (request.url === '/predictions/mock_poll_resume') {
+            predictionGets += 1;
+            if (predictionGets === 1) {
+                response.statusCode = 503;
+                response.end('{}');
+                return;
+            }
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({
+                id: 'mock_poll_resume', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_poll_resume` },
+                output: `${baseUrl}/delivery/poll-resume.mp4`,
+                completed_at: '2026-07-17T03:34:00.000Z',
+            }));
+            return;
+        }
+        downloads += 1;
+        response.setHeader('content-type', 'video/mp4');
+        response.end(videoBytes);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = crashResumeContext(parts, 'poll-resume');
+    const staged = stageReplicateCrashResume(
+        context, 'mock_poll_resume', `${baseUrl}/predictions/mock_poll_resume`,
+    );
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'PROVIDER_UNAVAILABLE' });
+    const waiting = executionProvider.getNewProjectExecutionState(context).tasks[0];
+    assert.equal(waiting.status, 'running');
+    assert.equal(posts, 0);
+    assert.equal(predictionGets, 1);
+    const waitingState = executionProvider.getNewProjectExecutionState(context);
+    assert.throws(() => executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: waitingState.revision_sha256,
+        new_attempt: true,
+    }, context), { code: 'EXECUTION_RETRY_NOT_AVAILABLE' });
+    assert.equal(posts, 0, 'a resumable sidecar run cannot open a new billable attempt');
+
+    const resumed = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    assert.equal(resumed.status, 'succeeded');
+    assert.equal(posts, 0);
+    assert.equal(predictionGets, 2);
+    assert.equal(downloads, 1);
+});
+
+test('MOCK HTTP: a malformed sidecar poll stays running, blocks retry POST, and resumes with GET only', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(1024, 0x51),
+    ]);
+    let baseUrl = '';
+    let predictionGets = 0;
+    let downloads = 0;
+    let posts = 0;
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') {
+            posts += 1;
+            response.statusCode = 500;
+            response.end();
+            return;
+        }
+        if (request.url === '/predictions/mock_malformed_resume') {
+            predictionGets += 1;
+            response.setHeader('content-type', 'application/json');
+            if (predictionGets === 1) {
+                response.end(JSON.stringify({ unexpected: true }));
+                return;
+            }
+            response.end(JSON.stringify({
+                id: 'mock_malformed_resume', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_malformed_resume` },
+                output: `${baseUrl}/delivery/malformed-resume.mp4`,
+                completed_at: '2026-07-17T03:35:00.000Z',
+            }));
+            return;
+        }
+        downloads += 1;
+        response.setHeader('content-type', 'video/mp4');
+        response.end(videoBytes);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = crashResumeContext(parts, 'malformed-resume');
+    const staged = stageReplicateCrashResume(
+        context, 'mock_malformed_resume', `${baseUrl}/predictions/mock_malformed_resume`,
+    );
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'RESULT_INVALID' });
+    const waitingState = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(waitingState.tasks[0].status, 'running');
+    assert.throws(() => executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: waitingState.revision_sha256,
+        new_attempt: true,
+    }, context), { code: 'EXECUTION_RETRY_NOT_AVAILABLE' });
+    assert.equal(posts, 0);
+
+    const resumed = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    assert.equal(resumed.status, 'succeeded');
+    assert.equal(posts, 0);
+    assert.equal(predictionGets, 2);
+    assert.equal(downloads, 1);
+});
+
+test('MOCK HTTP: only an explicit provider failed status terminates a sidecar run', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    let baseUrl = '';
+    let posts = 0;
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') posts += 1;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({
+            id: 'mock_terminal_failed', status: 'failed',
+            urls: { get: `${baseUrl}/predictions/mock_terminal_failed` },
+        }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = crashResumeContext(parts, 'terminal-failed');
+    const staged = stageReplicateCrashResume(
+        context, 'mock_terminal_failed', `${baseUrl}/predictions/mock_terminal_failed`,
+    );
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: staged.state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'GENERATION_FAILED' });
+    const failed = executionProvider.getNewProjectExecutionState(context).tasks[0];
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.failure_label, '생성 실패');
+    assert.equal(posts, 0);
+});
+
+test('MOCK HTTP: heartbeat keeps lock bytes immutable, extends mtime, and preserves its active partial', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(6144, 0x52),
+    ]);
+    let baseUrl = '';
+    let posts = 0;
+    const intervals = new Set();
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') {
+            posts += 1;
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({
+                id: 'mock_live_heartbeat', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_live_heartbeat` },
+                output: `${baseUrl}/delivery/live-heartbeat.mp4`,
+                completed_at: '2026-07-17T03:36:00.000Z',
+            }));
+            return;
+        }
+        response.statusCode = 200;
+        response.setHeader('content-type', 'video/mp4');
+        response.setHeader('content-length', String(videoBytes.byteLength));
+        let offset = 0;
+        const interval = setInterval(() => {
+            if (offset >= videoBytes.byteLength) {
+                clearInterval(interval);
+                intervals.delete(interval);
+                response.end();
+                return;
+            }
+            const end = Math.min(offset + 256, videoBytes.byteLength);
+            response.write(videoBytes.subarray(offset, end));
+            offset = end;
+        }, 20);
+        intervals.add(interval);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => {
+        for (const interval of intervals) clearInterval(interval);
+        return new Promise((resolve) => server.close(resolve));
+    });
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = {
+        ...crashResumeContext(parts, 'live-heartbeat'),
+        replicateTestSubmitUrl: `${baseUrl}/predictions`,
+        replicateTestLockTtlMs: 90,
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256,
+        new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+    const executing = executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context);
+    let partialPath = '';
+    for (let attempt = 0; attempt < 100 && !partialPath; attempt += 1) {
+        const partial = fs.readdirSync(path.dirname(task.output_path))
+            .find((name) => name.endsWith('.partial'));
+        if (partial) partialPath = path.join(path.dirname(task.output_path), partial);
+        else await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(partialPath, 'the live owner must publish a private task-owned partial');
+    const runPaths = executionProvider.exactPaths(
+        parts.userDataPath, `run_${task.run_revision_sha256}`,
+    );
+    const lockPath = path.join(runPaths.runRoot, '.replicate-execute.lock');
+    const lockBytes = fs.readFileSync(lockPath);
+    const lockMtime = fs.lstatSync(lockPath).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    const active = executionProvider.getNewProjectExecutionState(context);
+    assert.equal(fs.readFileSync(lockPath).equals(lockBytes), true,
+        'heartbeat must never rewrite the immutable lock record');
+    assert.ok(fs.lstatSync(lockPath).mtimeMs > lockMtime,
+        'heartbeat must extend only the mtime lease');
+    assert.equal(fs.existsSync(partialPath), true, 'state inspection must not delete an active partial');
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: active.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'EXECUTION_REPLICATE_ALREADY_RUNNING' });
+    assert.equal(fs.existsSync(partialPath), true, 'a rejected second executor must preserve the active partial');
+    const completed = await executing;
+    assert.equal(completed.status, 'succeeded');
+    assert.equal(posts, 1);
+});
+
+test('MOCK HTTP: a running receipt without a private submission sidecar fails closed with zero POSTs', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    let postCount = 0;
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') postCount += 1;
+        response.statusCode = 500;
+        response.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const submitUrl = `http://127.0.0.1:${server.address().port}/predictions`;
+    const context = {
+        ...parts,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: submitUrl,
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+    executionProvider.publishExecutionReceipt(receipt({ revision_sha256: task.run_revision_sha256 }, task, {
+        progress: 15, external_call_performed: true, model_called: true, generation_executed: true,
+        reported_at: '2026-07-17T03:10:00.000Z',
+    }), context);
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'EXECUTION_REPLICATE_SUBMISSION_MISSING' });
+    assert.equal(postCount, 0);
+    const failed = executionProvider.getNewProjectExecutionState(context).tasks[0];
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.failure_label, '결과 확인 필요');
+});
+
+test('MOCK HTTP: an unsafe provider poll URL is rejected, persisted nowhere, and never reaches download', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    let postCount = 0;
+    const server = http.createServer((request, response) => {
+        postCount += 1;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({
+            id: 'mock_unsafe_url', status: 'starting',
+            urls: { get: 'https://attacker.invalid/v1/predictions/mock_unsafe_url' },
+        }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const context = {
+        ...parts,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: `http://127.0.0.1:${server.address().port}/predictions`,
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'RESULT_INVALID' });
+    assert.equal(postCount, 1);
+    assert.equal(fs.existsSync(path.join(path.dirname(task.output_path),
+        `${task.task_token}.replicate-submission.json`)), false);
+    assert.equal(fs.existsSync(task.output_path), false);
+    const failed = executionProvider.getNewProjectExecutionState(context);
+    const retry = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: failed.revision_sha256, new_attempt: true,
+    }, context);
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: retry.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'EXECUTION_REPLICATE_SUBMISSION_UNCERTAIN' });
+    assert.equal(postCount, 1, 'an invalid accepted response blocks POST across an explicit new attempt');
+});
+
+test('MOCK: a preexisting private MP4 fails closed before Replicate POST or result publication', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    let postCount = 0;
+    const server = http.createServer((request, response) => {
+        postCount += 1;
+        response.statusCode = 500;
+        response.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const replicateReceiptResultsRoot = path.join(parts.base, 'preexisting-output-receipts');
+    fs.mkdirSync(replicateReceiptResultsRoot, { recursive: true });
+    const context = {
+        ...parts,
+        replicateReceiptResultsRoot,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: `http://127.0.0.1:${server.address().port}/predictions`,
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+    const untrustedMp4 = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(128, 0x44),
+    ]);
+    fs.writeFileSync(task.output_path, untrustedMp4, { mode: 0o600, flag: 'wx' });
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'RESULT_INVALID' });
+    assert.equal(postCount, 0);
+    assert.equal(fs.readFileSync(task.output_path).equals(untrustedMp4), true,
+        'an unowned preexisting file is preserved for inspection, never claimed or deleted');
+    assert.deepEqual(fs.readdirSync(replicateReceiptResultsRoot), []);
+});
+
+test('MOCK HTTP: a racing output target is never replaced by the downloaded MP4', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const downloaded = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(512, 0x53),
+    ]);
+    const racingTarget = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'), Buffer.alloc(64, 0x75),
+    ]);
+    let baseUrl = '';
+    let postCount = 0;
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') {
+            postCount += 1;
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({
+                id: 'mock_no_replace', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_no_replace` },
+                output: `${baseUrl}/delivery/result.mp4`,
+                completed_at: '2026-07-17T03:15:00.000Z',
+            }));
+            return;
+        }
+        response.setHeader('content-type', 'video/mp4');
+        response.setHeader('content-length', String(downloaded.byteLength));
+        response.end(downloaded);
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    let raced = false;
+    const context = {
+        ...parts,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: `${baseUrl}/predictions`,
+        replicateTestBeforeOutputPublish: (outputPath) => {
+            raced = true;
+            fs.writeFileSync(outputPath, racingTarget, { mode: 0o600, flag: 'wx' });
+        },
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'RESULT_INVALID' });
+    assert.equal(postCount, 1);
+    assert.equal(raced, true);
+    assert.equal(fs.readFileSync(task.output_path).equals(racingTarget), true);
+    assert.equal(fs.readdirSync(path.dirname(task.output_path)).some((name) => name.endsWith('.partial')), false);
+});
+
+test('MOCK HTTP: Replicate 401 and 429 become short safe failed states without a sidecar', async (t) => {
+    for (const [httpStatus, code, label] of [
+        [401, 'AUTH_REQUIRED', '인증 필요'],
+        [429, 'RATE_LIMITED', '요청이 많아 잠시 대기'],
+    ]) {
+        const parts = setupActualPlans(t, 'replicate');
+        let postCount = 0;
+        const server = http.createServer((request, response) => {
+            postCount += 1;
+            response.statusCode = httpStatus;
+            response.end('{}');
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const context = {
+            ...parts,
+            replicateApiToken: 'mock-token',
+            replicateLoopbackTestOnly: true,
+            replicateTestSubmitUrl: `http://127.0.0.1:${server.address().port}/predictions`,
+            replicateTestRequestTimeoutMs: 1000,
+        };
+        let state = executionProvider.getNewProjectExecutionState(context);
+        state = executionProvider.prepareNewProjectExecution({
+            expected_revision_sha256: state.revision_sha256, new_attempt: false,
+        }, context);
+        const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+        await assert.rejects(executionProvider.executeNextReplicateTask({
+            expected_revision_sha256: state.revision_sha256,
+            confirm_live: true,
+        }, context), { code });
+        assert.equal(postCount, 1);
+        assert.equal(executionProvider.getNewProjectExecutionState(context).tasks[0].failure_label, label);
+        assert.equal(fs.existsSync(path.join(path.dirname(task.output_path),
+            `${task.task_token}.replicate-submission.json`)), false);
+        const failed = executionProvider.getNewProjectExecutionState(context);
+        const retry = executionProvider.prepareNewProjectExecution({
+            expected_revision_sha256: failed.revision_sha256, new_attempt: true,
+        }, context);
+        await assert.rejects(executionProvider.executeNextReplicateTask({
+            expected_revision_sha256: retry.revision_sha256,
+            confirm_live: true,
+        }, context), { code });
+        assert.equal(postCount, 2, `${httpStatus} is a definitive rejection and permits an explicit retry POST`);
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
+test('MOCK HTTP: an oversized Replicate download is rejected before a byte is published', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    let downloadCount = 0;
+    let baseUrl = '';
+    const server = http.createServer((request, response) => {
+        if (request.method === 'POST') {
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify({
+                id: 'mock_oversized', status: 'succeeded',
+                urls: { get: `${baseUrl}/predictions/mock_oversized` },
+                output: `${baseUrl}/delivery/oversized.mp4`,
+                completed_at: '2026-07-17T03:20:00.000Z',
+            }));
+            return;
+        }
+        downloadCount += 1;
+        response.statusCode = 200;
+        response.setHeader('content-type', 'video/mp4');
+        response.setHeader('content-length', String(512 * 1024 * 1024 + 1));
+        response.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const context = {
+        ...parts,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: `${baseUrl}/predictions`,
+        replicateTestRequestTimeoutMs: 1000,
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    const task = executionProvider.inspectExecutionHandoff(context, { new_attempt: false }).tasks[0];
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'RESULT_INVALID' });
+    assert.equal(downloadCount, 1);
+    assert.equal(fs.existsSync(task.output_path), false);
+    assert.equal(fs.readdirSync(path.dirname(task.output_path)).some((name) => name.endsWith('.partial')), false);
+});
+
+test('MOCK HTTP: a stalled Replicate POST times out once and becomes provider unavailable', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    let postCount = 0;
+    const server = http.createServer((request) => {
+        postCount += 1;
+        request.resume();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const context = {
+        ...parts,
+        replicateApiToken: 'mock-token',
+        replicateLoopbackTestOnly: true,
+        replicateTestSubmitUrl: `http://127.0.0.1:${server.address().port}/predictions`,
+        replicateTestRequestTimeoutMs: 20,
+    };
+    let state = executionProvider.getNewProjectExecutionState(context);
+    state = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: state.revision_sha256, new_attempt: false,
+    }, context);
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'PROVIDER_UNAVAILABLE' });
+    assert.equal(postCount, 1);
+    const failed = executionProvider.getNewProjectExecutionState(context).tasks[0];
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.failure_label, '생성 도구 연결 불가');
+    const executionRoot = executionProvider.exactPaths(parts.userDataPath).root;
+    const uncertainFiles = fs.readdirSync(executionRoot)
+        .filter((name) => name.startsWith('.replicate-uncertain-'));
+    assert.equal(uncertainFiles.length, 1);
+    assert.equal(fs.lstatSync(path.join(executionRoot, uncertainFiles[0])).mode & 0o777, 0o600);
+    assert.doesNotMatch(fs.readFileSync(path.join(executionRoot, uncertainFiles[0]), 'utf8'), /mock-token|Bearer/);
+    const failedState = executionProvider.getNewProjectExecutionState(context);
+    const retry = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: failedState.revision_sha256, new_attempt: true,
+    }, context);
+    await assert.rejects(executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: retry.revision_sha256,
+        confirm_live: true,
+    }, context), { code: 'EXECUTION_REPLICATE_SUBMISSION_UNCERTAIN' });
+    assert.equal(postCount, 1, 'an ambiguous timeout never POSTs again, even in a new run');
+});
+
 test('actual local CLI inspects a private handoff and publishes a 0600 receipt using file IO only', (t) => {
     const parts = setupActualPlans(t);
+    const missingConfirmation = spawnSync(process.execPath, [
+        CLI, 'execute-replicate', '--user-data', parts.userDataPath,
+    ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(missingConfirmation.status, 1);
+    assert.equal(JSON.parse(missingConfirmation.stderr).error, 'EXECUTION_CLI_ARGUMENT_INVALID');
+    const noToken = spawnSync(process.execPath, [
+        CLI, 'execute-replicate', '--user-data', parts.userDataPath, '--confirm-live',
+    ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(noToken.status, 1);
+    assert.equal(JSON.parse(noToken.stderr).error, 'EXECUTION_PREPARATION_REQUIRED');
+    assert.equal(noToken.stdout, '');
     const inspected = spawnSync(process.execPath, [CLI, 'inspect', '--user-data', parts.userDataPath], {
         encoding: 'utf8', env: { PATH: process.env.PATH },
     });

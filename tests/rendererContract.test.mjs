@@ -246,6 +246,94 @@ test('new project execution panel shows short Korean progress without private me
     ]);
 });
 
+test('new project execution state safely overlays sanitized receipts by unique lane and sequence', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectExecutionPanel, deriveExecutionDisplayState } = await import('../src/components/pipeline/NewProjectExecutionPanel.js');
+    const planTask = (sequence, taskToken, label = `장면 ${sequence}`) => ({
+        task_token: taskToken, kind: 'scene_image', sequence, label, status: '준비', result_token: '',
+    });
+    const imagePlanTasks = [
+        planTask(1, 'current-running'),
+        planTask(2, 'current-result'),
+        planTask(3, 'exact-result'),
+        planTask(4, 'duplicate-plan-a'),
+        planTask(4, 'duplicate-plan-b'),
+        planTask(5, 'ambiguous-receipt'),
+        planTask(6, 'sequence-mismatch'),
+        planTask(7, 'different-token'),
+        planTask(8, 'wrong-lane'),
+    ];
+    const receiptTasks = [
+        { lane: 'image', sequence: 1, status: 'running', progress: 37, result_received: false },
+        { lane: 'image', sequence: 2, status: 'succeeded', progress: 100, result_received: true, result_match_status: 'ready', path: '/private/result.mp4', url: 'https://private.invalid/result.mp4' },
+        { task_token: 'exact-result', lane: 'image', sequence: 3, status: 'failed', progress: 19, result_received: false, failure_label: '안전한 오류' },
+        { lane: 'image', sequence: 3, status: 'running', progress: 88, result_received: false },
+        { lane: 'image', sequence: 4, status: 'running', progress: 44, result_received: false },
+        { lane: 'image', sequence: 5, status: 'running', progress: 51, result_received: false },
+        { lane: 'image', sequence: 5, status: 'succeeded', progress: 100, result_received: true },
+        { task_token: 'sequence-mismatch', lane: 'image', sequence: 60, status: 'running', progress: 60, result_received: false },
+        { task_token: 'some-other-task', lane: 'image', sequence: 7, status: 'running', progress: 70, result_received: false },
+        { lane: 'video', sequence: 8, status: 'running', progress: 80, result_received: false },
+    ];
+
+    const state = deriveExecutionDisplayState({
+        executionState: { tasks: receiptTasks },
+        imagePlanTasks,
+        videoPlanTasks: [],
+    });
+    const bySequence = (sequence) => state.tasks.filter((task) => task.lane === 'image' && task.sequence === sequence);
+
+    assert.deepEqual(bySequence(1).map(({ status, progress, result_received }) => ({ status, progress, result_received })), [
+        { status: 'running', progress: 37, result_received: false },
+    ]);
+    assert.deepEqual(bySequence(2).map(({ status, progress, result_received, result_match_status }) => ({ status, progress, result_received, result_match_status })), [
+        { status: 'succeeded', progress: 100, result_received: true, result_match_status: 'ready' },
+    ]);
+    assert.deepEqual(bySequence(3).map(({ status, progress }) => ({ status, progress })), [
+        { status: 'failed', progress: 19 },
+    ], 'the exact lane and task token match wins over the sanitized sequence candidate');
+    assert.deepEqual(bySequence(4).map(({ status, progress }) => ({ status, progress })), [
+        { status: 'queued', progress: 0 },
+        { status: 'queued', progress: 0 },
+    ], 'duplicate plan sequences are not overlaid');
+    assert.deepEqual(bySequence(5).map(({ status, progress }) => ({ status, progress })), [
+        { status: 'queued', progress: 0 },
+    ], 'duplicate receipt sequences are not overlaid');
+    assert.equal(bySequence(6)[0].status, 'queued', 'an exact token with a different sequence is not overlaid');
+    assert.equal(bySequence(7)[0].status, 'queued', 'a different non-empty receipt token cannot use sequence fallback');
+    assert.equal(bySequence(8)[0].status, 'queued', 'a receipt from a different lane is not overlaid');
+
+    const panel = NewProjectExecutionPanel({
+        executionState: { tasks: receiptTasks }, imagePlanTasks, videoPlanTasks: [],
+    });
+    assert.match(panel.textContent, /진행 중 37%|결과 도착 · 연결 준비됨/);
+    assert.doesNotMatch(panel.textContent, /current-|exact-result|duplicate-|sequence-mismatch|some-other-task|\/private\/|private\.invalid/);
+    assert.doesNotMatch(JSON.stringify(state), /\/private\/|private\.invalid/,
+        'synthetic receipt paths and URLs are not retained in derived renderer state');
+});
+
+test('subset retry receipt keeps original scene three identity in the renderer fallback', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { deriveExecutionDisplayState } = await import('../src/components/pipeline/NewProjectExecutionPanel.js');
+    const planTask = (sequence) => ({
+        task_token: `scene-${sequence}`, kind: 'scene_image', sequence,
+        label: `장면 ${sequence}`, status: '준비', result_token: '',
+    });
+    const state = deriveExecutionDisplayState({
+        executionState: {
+            tasks: [{ lane: 'image', sequence: 3, status: 'running', progress: 63, result_received: false }],
+        },
+        imagePlanTasks: [planTask(1), planTask(3)],
+        videoPlanTasks: [],
+    });
+    assert.deepEqual(state.tasks.map(({ sequence, status, progress }) => ({ sequence, status, progress })), [
+        { sequence: 1, status: 'queued', progress: 0 },
+        { sequence: 3, status: 'running', progress: 63 },
+    ]);
+});
+
 test('new project progress exposes image and video preparation next actions', async (t) => {
     const { restore } = installDeterministicDom({});
     t.after(restore);

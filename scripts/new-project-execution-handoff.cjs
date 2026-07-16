@@ -18,7 +18,7 @@ function parseArguments(argv) {
     const values = {};
     for (let index = 0; index < rest.length; index += 1) {
         const key = rest[index];
-        if (key === '--new-attempt' && !values[key]) {
+        if (['--new-attempt', '--confirm-live'].includes(key) && !values[key]) {
             values[key] = true;
             continue;
         }
@@ -30,18 +30,20 @@ function parseArguments(argv) {
         index += 1;
     }
     const userDataPath = values['--user-data'];
-    if (!['inspect', 'publish', 'publish-replicate-result'].includes(command) || typeof userDataPath !== 'string'
+    if (!['inspect', 'publish', 'publish-replicate-result', 'execute-replicate'].includes(command) || typeof userDataPath !== 'string'
         || !path.isAbsolute(userDataPath) || path.normalize(userDataPath) !== userDataPath) {
         throw cliError('EXECUTION_CLI_ARGUMENT_INVALID');
     }
     const actual = Object.keys(values).sort().join(',');
     if ((command === 'inspect' && !['--user-data', '--new-attempt,--user-data'].includes(actual))
         || (['publish', 'publish-replicate-result'].includes(command)
-            && actual !== '--input,--user-data')) {
+            && actual !== '--input,--user-data')
+        || (command === 'execute-replicate' && actual !== '--confirm-live,--user-data')) {
         throw cliError('EXECUTION_CLI_ARGUMENT_INVALID');
     }
     return {
         command, userDataPath, inputPath: values['--input'], newAttempt: values['--new-attempt'] === true,
+        confirmLive: values['--confirm-live'] === true,
     };
 }
 
@@ -111,12 +113,31 @@ function publishReplicateResult(args) {
     })}\n`);
 }
 
-try {
-    const args = parseArguments(process.argv.slice(2));
-    if (args.command === 'inspect') inspect(args);
-    else if (args.command === 'publish') publish(args);
-    else publishReplicateResult(args);
-} catch (error) {
-    process.stderr.write(`${JSON.stringify({ ok: false, error: error.code || 'EXECUTION_CLI_FAILED' })}\n`);
-    process.exitCode = 1;
+async function executeReplicate(args) {
+    const context = {
+        userDataPath: args.userDataPath,
+        replicateApiToken: process.env.REPLICATE_API_TOKEN,
+    };
+    const state = executionProvider.getNewProjectExecutionState(context);
+    if (!state.ok) throw cliError(state.blockers[0] || 'EXECUTION_STATE_BLOCKED');
+    const result = await executionProvider.executeNextReplicateTask({
+        expected_revision_sha256: state.revision_sha256,
+        confirm_live: args.confirmLive,
+    }, context);
+    process.stdout.write(`${JSON.stringify({ ok: true, status: result.status })}\n`);
 }
+
+async function main() {
+    try {
+        const args = parseArguments(process.argv.slice(2));
+        if (args.command === 'inspect') inspect(args);
+        else if (args.command === 'publish') publish(args);
+        else if (args.command === 'publish-replicate-result') publishReplicateResult(args);
+        else await executeReplicate(args);
+    } catch (error) {
+        process.stderr.write(`${JSON.stringify({ ok: false, error: error.code || 'EXECUTION_CLI_FAILED' })}\n`);
+        process.exitCode = 1;
+    }
+}
+
+main();

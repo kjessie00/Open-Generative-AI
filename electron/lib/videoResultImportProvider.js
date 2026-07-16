@@ -650,6 +650,40 @@ function publishReplicateExecutionResult(payload, context = {}) {
     }
 }
 
+function resolvePublishedReplicateExecutionResult(payload, context = {}) {
+    exactKeys(payload, ['prediction_id', 'execution_binding'],
+        'VIDEO_IMPORT_REPLICATE_RESOLVE_REQUEST_INVALID');
+    if (!REPLICATE_PREDICTION_ID_PATTERN.test(payload.prediction_id || '')) {
+        throw failure('VIDEO_IMPORT_REPLICATE_RESOLVE_REQUEST_INVALID');
+    }
+    const binding = validateExecutionBinding(payload.execution_binding);
+    const rootInfo = optionalRealDirectory(
+        receiptRoot(context, 'replicate'),
+        'VIDEO_IMPORT_REPLICATE_RESOLVE_ROOT_UNSAFE',
+    );
+    if (!rootInfo) return null;
+    try { fs.lstatSync(path.join(rootInfo.path, payload.prediction_id)); }
+    catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+    const published = inspectPublishedReplicateResult(rootInfo, payload.prediction_id, context);
+    if (published.value.schema_version !== EXTERNAL_RESULT_SCHEMA_V2
+        || published.value.run_revision_sha256 !== binding.run_revision_sha256
+        || published.value.task_token !== binding.task_token
+        || published.value.request_revision_sha256 !== binding.request_revision_sha256
+        || published.value.output_claim_sha256 !== binding.output_claim_sha256) {
+        throw failure('VIDEO_IMPORT_REPLICATE_RESOLVE_BINDING_MISMATCH');
+    }
+    return {
+        result_locator: `replicate:${payload.prediction_id}:${published.value.output_sha256}`,
+        completed_at: published.value.completed_at,
+        duration_seconds: published.candidate.probe.durationSeconds,
+        width: published.candidate.probe.width,
+        height: published.candidate.probe.height,
+    };
+}
+
 function scanCanonicalProvider(provider, context = {}) {
     const codePrefix = `VIDEO_IMPORT_${provider.toUpperCase()}_RECEIPT`;
     const rootInfo = optionalRealDirectory(receiptRoot(context, provider), `${codePrefix}_ROOT_UNSAFE`);
@@ -1878,6 +1912,7 @@ module.exports = {
     DEFAULT_PLAN_TTL_MS,
     getVideoResultImportWorkspace,
     publishReplicateExecutionResult,
+    resolvePublishedReplicateExecutionResult,
     resolveVideoExecutionResultLocator,
     resolveVideoExecutionResultLocatorForExecution,
     getVideoResultImportPreview,

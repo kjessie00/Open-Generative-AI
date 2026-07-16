@@ -92,20 +92,25 @@ imageState = imagePlanProvider.saveNewProjectImagePlan({
     expected_design_revision_sha256: imageState.design_revision_sha256,
     expected_image_plan_revision_sha256: imageState.revision_sha256,
 }, imageContext);
-imagePlanProvider.prepareNewProjectImagePlan({
-    expected_design_revision_sha256: imageState.design_revision_sha256,
-    expected_image_plan_revision_sha256: imageState.revision_sha256,
-}, imageContext);
-let imageExecution = executionProvider.getNewProjectExecutionState(context);
-imageExecution = executionProvider.prepareNewProjectExecution({
-    expected_revision_sha256: imageExecution.revision_sha256, new_attempt: false,
-}, context);
-const sceneImage = imageState.tasks.find((task) => task.kind === 'scene_image');
-imageState = imagePlanProvider.connectNewProjectImageResult({
-    task_token: sceneImage.task_token, candidate_token: 'replicate-preview-png', image_index: 1,
-    expected_design_revision_sha256: imageState.design_revision_sha256,
-    expected_image_plan_revision_sha256: imageState.revision_sha256,
-}, imageContext).state;
+const imageTasks = [
+    ...imageState.tasks.filter((task) => task.kind.endsWith('_sheet')),
+    imageState.tasks.find((task) => task.kind === 'scene_image'),
+];
+for (const [index, imageTask] of imageTasks.entries()) {
+    imageState = imagePlanProvider.connectNewProjectImageResult({
+        task_token: imageTask.task_token,
+        candidate_token: `replicate-preview-png-${index + 1}`,
+        image_index: index + 1,
+        expected_design_revision_sha256: imageState.design_revision_sha256,
+        expected_image_plan_revision_sha256: imageState.revision_sha256,
+    }, imageContext).state;
+    imageState = imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: imageTask.task_token,
+        decision: 'use',
+        expected_design_revision_sha256: imageState.design_revision_sha256,
+        expected_image_plan_revision_sha256: imageState.revision_sha256,
+    }, imageContext);
+}
 
 let videoState = videoPlanProvider.getNewProjectVideoPlan(context);
 videoState = videoPlanProvider.saveNewProjectVideoPlan({
@@ -131,8 +136,8 @@ const expectedImage = `data:image/png;base64,${png.toString('base64')}`;
 const expectedBase = {
     model_slug: 'bytedance/seedance-1-pro', method: 'POST',
     url: 'https://api.replicate.com/v1/models/bytedance/seedance-1-pro/predictions',
-    header_names: ['Authorization', 'Content-Type', 'Prefer'],
-    headers: { 'Content-Type': 'application/json', Prefer: 'wait' },
+    header_names: ['Authorization', 'Content-Type'],
+    headers: { 'Content-Type': 'application/json' },
     authorization_env: 'REPLICATE_API_TOKEN',
     body: { input: {
         prompt: task.prompt, image: expectedImage, duration: 5,

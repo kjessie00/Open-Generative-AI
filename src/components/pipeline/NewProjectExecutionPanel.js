@@ -67,29 +67,80 @@ function currentPlanLane(lane, tasks, planState) {
     };
 }
 
+function validTaskToken(task) {
+    return typeof task?.task_token === 'string' && task.task_token.length ? task.task_token : '';
+}
+
+function validSequence(task) {
+    const sequence = Number(task?.sequence);
+    return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
+}
+
+function laneSequenceKey(task) {
+    if (!['image', 'video'].includes(task?.lane)) return '';
+    const sequence = validSequence(task);
+    return sequence === null ? '' : `${task.lane}\0${sequence}`;
+}
+
 function overlayExecutionTasks(receiptTasks, imagePlan, videoPlan) {
     if (!imagePlan.authoritative && !videoPlan.authoritative) return [...receiptTasks];
-    const receiptByTask = new Map(receiptTasks.map((task) => [`${task.lane}\0${task.task_token}`, task]));
+    const receiptByTask = new Map(receiptTasks
+        .filter((task) => validTaskToken(task))
+        .map((task) => [`${task.lane}\0${task.task_token}`, task]));
+    const receiptSequenceCounts = new Map();
+    const receiptBySequence = new Map();
+    receiptTasks.forEach((task) => {
+        const key = laneSequenceKey(task);
+        if (!key) return;
+        receiptSequenceCounts.set(key, (receiptSequenceCounts.get(key) || 0) + 1);
+        receiptBySequence.set(key, task);
+    });
+    const mergeReceipt = (current, receipt) => {
+        const receiptOverlay = {};
+        [
+            'status', 'status_label', 'progress', 'failure_label', 'result_received',
+            'result_match_status', 'result_candidate_token', 'result_image_index', 'execution_preview',
+        ].forEach((field) => {
+            if (Object.prototype.hasOwnProperty.call(receipt, field)) receiptOverlay[field] = receipt[field];
+        });
+        const connected = current.result_match_status === 'connected';
+        const receiptMatch = ['ready', 'waiting'].includes(receipt.result_match_status)
+            ? receipt.result_match_status : '';
+        return {
+            ...receiptOverlay,
+            ...current,
+            status: connected ? current.status : receipt.status || current.status,
+            progress: connected ? current.progress
+                : Number.isFinite(Number(receipt.progress)) ? Number(receipt.progress) : current.progress,
+            result_received: connected ? current.result_received
+                : typeof receipt.result_received === 'boolean'
+                ? receipt.result_received : current.result_received,
+            result_match_status: connected ? 'connected' : receiptMatch,
+            quality_decision: current.quality_decision,
+        };
+    };
     const mergeLane = (lane, plan) => {
         if (!plan.authoritative) return receiptTasks.filter((task) => task.lane === lane);
+        const planSequenceCounts = new Map();
+        plan.tasks.forEach((task) => {
+            const key = laneSequenceKey(task);
+            if (key) planSequenceCounts.set(key, (planSequenceCounts.get(key) || 0) + 1);
+        });
         return plan.tasks.map((current) => {
-            const receipt = receiptByTask.get(`${lane}\0${current.task_token}`);
-            if (!receipt) return current;
-            const connected = current.result_match_status === 'connected';
-            const receiptMatch = ['ready', 'waiting'].includes(receipt.result_match_status)
-                ? receipt.result_match_status : '';
-            return {
-                ...receipt,
-                ...current,
-                status: connected ? current.status : receipt.status || current.status,
-                progress: connected ? current.progress
-                    : Number.isFinite(Number(receipt.progress)) ? Number(receipt.progress) : current.progress,
-                result_received: connected ? current.result_received
-                    : typeof receipt.result_received === 'boolean'
-                    ? receipt.result_received : current.result_received,
-                result_match_status: connected ? 'connected' : receiptMatch,
-                quality_decision: current.quality_decision,
-            };
+            const currentToken = validTaskToken(current);
+            const exactReceipt = currentToken
+                ? receiptByTask.get(`${lane}\0${currentToken}`) : null;
+            if (exactReceipt) {
+                const currentSequence = validSequence(current);
+                const receiptSequence = validSequence(exactReceipt);
+                return currentSequence !== null && receiptSequence !== null && currentSequence !== receiptSequence
+                    ? current : mergeReceipt(current, exactReceipt);
+            }
+
+            const key = laneSequenceKey(current);
+            if (!key || planSequenceCounts.get(key) !== 1 || receiptSequenceCounts.get(key) !== 1) return current;
+            const receipt = receiptBySequence.get(key);
+            return receipt && !validTaskToken(receipt) ? mergeReceipt(current, receipt) : current;
         });
     };
     return [
