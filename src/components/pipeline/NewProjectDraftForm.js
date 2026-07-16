@@ -76,7 +76,7 @@ function collaborationSection({
     const requestStatus = el('p', {
         text: view.queued
             ? '요청이 저장됐습니다 · 에이전트 작업을 다시 시작할 수 있습니다.'
-            : '직접 수정하거나 에이전트에게 맡길 수 있습니다.',
+            : '',
         className: 'text-xs leading-5 text-secondary',
         attrs: { role: 'status', 'aria-live': 'polite' },
     });
@@ -103,8 +103,7 @@ function collaborationSection({
     });
     const requestComposer = el('div', { className: 'flex min-w-0 flex-col gap-3 rounded-md border border-white/10 bg-black/20 p-3' }, [
         el('div', {}, [
-            el('h5', { text: '에이전트와 함께 수정', className: 'text-sm font-semibold text-white' }),
-            el('p', { text: '시작하면 현재 내용을 먼저 저장합니다. 이미지나 영상 생성은 실행하지 않습니다.', className: 'mt-1 text-xs leading-5 text-secondary' }),
+            el('h5', { text: '에이전트에게 요청', className: 'text-sm font-semibold text-white' }),
         ]),
         fieldShell('어떻게 바꿀까요?', requestId, requestInput),
         el('div', { className: 'flex flex-wrap gap-2' }, [
@@ -152,6 +151,7 @@ function collaborationSection({
     }, [
         el('div', { className: 'flex min-w-0 flex-col gap-3' }, [
             el('h4', { text: `${number}. ${title}`, className: 'text-base font-bold text-white', attrs: { id: `planning-${stage}-title` } }),
+            el('h5', { text: '직접 수정', className: 'text-sm font-semibold text-white' }),
             draftField.shell,
             el('div', { className: 'flex flex-wrap gap-2' }, [
                 actionButton('직접 저장', { disabled, onClick: () => onSave?.({ ...draftValue }) }),
@@ -168,6 +168,9 @@ export function NewProjectDraftForm({
 }) {
     const loading = ['loading', 'saving', 'requesting', 'copying'].includes(draftState?.status);
     const readyToCopy = draftState?.preview?.copyAllowed === true;
+    const visibleNotice = notice || (['saved', 'saving', 'requesting', 'copying', 'error'].includes(draftState?.status)
+        ? statusText(draftState?.status)
+        : '');
     const errorMessages = [...new Set([
         ...(draftState?.blockers || []),
         ...(draftState?.collaboration?.blockers || []),
@@ -184,13 +187,13 @@ export function NewProjectDraftForm({
     return card([
         el('div', {}, [
             el('h3', { text: '기획·대본 작업', className: 'text-base font-bold text-white' }),
-            el('p', { text: '직접 고치거나, 원하는 변경을 적어 에이전트가 바로 작업하게 하세요.', className: 'mt-1 text-sm leading-6 text-secondary' }),
+            el('p', { text: '직접 고치거나 원하는 변경을 에이전트에게 요청하세요. 에이전트는 기획과 대본만 다듬으며 제작·생성은 시작하지 않습니다.', className: 'mt-1 text-sm leading-6 text-secondary' }),
         ]),
-        el('p', {
-            text: notice || statusText(draftState?.status),
+        visibleNotice ? el('p', {
+            text: visibleNotice,
             className: `rounded-md border px-3 py-2 text-xs leading-5 ${draftState?.status === 'error' ? 'border-red-400/20 text-red-100' : 'border-white/10 text-secondary'}`,
             attrs: { role: draftState?.status === 'error' ? 'alert' : 'status', 'aria-live': 'polite' },
-        }),
+        }) : null,
         draftState?.status === 'error' && errorMessages.length ? el('ul', {
             className: 'flex list-disc flex-col gap-1 pl-5 text-xs leading-5 text-red-100',
             attrs: { 'aria-label': '확인할 내용' },
@@ -239,18 +242,14 @@ export function NewProjectDraftForm({
                 onDecide: onDecidePlanningAgentSuggestion,
             }),
         ]),
-        el('div', { className: 'border-t border-white/10 pt-4' }, [
-            actionButton('빌드 명령 복사', {
-                disabled: loading || !readyToCopy, variant: 'muted', onClick: () => onCopyNewProjectBuildCommand?.(),
-            }),
-            el('p', {
-                text: '에이전트는 기획과 대본만 다듬습니다. 제작이나 생성은 시작되지 않습니다.',
-                className: 'mt-2 text-xs leading-5 text-secondary',
-            }),
+        el('details', { className: 'border-t border-white/10 pt-4' }, [
+            el('summary', { text: '고급: 빌드 명령', className: 'min-h-11 cursor-pointer py-3 text-xs font-semibold text-secondary' }),
+            el('div', { className: 'mt-2 flex min-w-0 flex-col items-start gap-3' }, [
+                actionButton('빌드 명령 복사', {
+                    disabled: loading || !readyToCopy, variant: 'muted', onClick: () => onCopyNewProjectBuildCommand?.(),
+                }),
+                readyToCopy ? codeBlock(draftState.preview.shellSafeCommand) : null,
+            ].filter(Boolean)),
         ]),
-        readyToCopy ? el('details', { className: 'border-t border-white/10 pt-4' }, [
-            el('summary', { text: '빌드 명령 미리보기', className: 'min-h-11 cursor-pointer py-3 text-xs font-semibold text-white' }),
-            el('div', { className: 'mt-2' }, [codeBlock(draftState.preview.shellSafeCommand)]),
-        ]) : null,
     ].filter(Boolean), 'flex min-w-0 flex-col gap-5 border-cyan-400/20');
 }

@@ -1788,8 +1788,10 @@ test('new-project intake keeps direct edits and local agent handoffs distinct wi
     }
     assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '직접 저장').length, 2);
     assert.equal(findAll(studio, 'button').filter((button) => button.textContent.trim() === '에이전트 작업 시작').length, 2);
-    assert.match(studio.textContent, /에이전트는 기획과 대본만 다듬습니다/);
-    assert.match(studio.textContent, /빌드 명령 미리보기/);
+    assert.equal(findAll(studio, 'h5').filter((heading) => heading.textContent.trim() === '직접 수정').length, 2);
+    assert.equal(findAll(studio, 'h5').filter((heading) => heading.textContent.trim() === '에이전트에게 요청').length, 2);
+    assert.match(studio.textContent, /에이전트는 기획과 대본만 다듬으며 제작·생성은 시작하지 않습니다/);
+    assert.match(studio.textContent, /고급: 빌드 명령/);
     assert.ok(byText(studio, 'button', '새 프로젝트 초안'), 'project bar must expose direct intake navigation');
 
     const productionId = byAttribute(studio, 'input', 'id', 'new-project-production-id');
