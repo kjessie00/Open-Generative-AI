@@ -173,6 +173,14 @@ function emptyNewProjectVideoResultWorkspace(status = 'empty', blocker = '') {
     return { status, candidates: [], blockers: blocker ? [blocker] : [] };
 }
 
+function emptyNewProjectClipSelectionState(status = 'empty', blocker = '') {
+    return {
+        ok: false, status, design_revision_sha256: '', image_plan_revision_sha256: '',
+        video_plan_revision_sha256: '', revision_sha256: '', clips: [], accepted_count: 0,
+        total_count: 0, blockers: blocker ? [blocker] : [], executed: false, generation_executed: false,
+    };
+}
+
 function emptyNewProjectExecutionState(status = 'empty', blocker = '') {
     return {
         ok: false,
@@ -253,6 +261,10 @@ export function PipelineStudio() {
     let newProjectVideoPlanNotice = '';
     let newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('loading');
     let newProjectVideoResultPreviews = {};
+    let newProjectClipSelectionState = emptyNewProjectClipSelectionState('loading');
+    let newProjectClipSelections = [];
+    let newProjectClipSelectionDirty = false;
+    let newProjectClipSelectionNotice = '';
     let newProjectMediaReviewFilter = 'all';
     let newProjectMediaReviewRetryNotice = '';
     let newProjectExecutionState = emptyNewProjectExecutionState('loading');
@@ -412,6 +424,23 @@ export function PipelineStudio() {
             }
             render();
             return newProjectVideoResultWorkspace;
+        };
+
+        const refreshNewProjectClipSelection = async ({ preserveLocalEdits = false } = {}) => {
+            const local = newProjectClipSelections;
+            try {
+                const result = await pipelineClient.getNewProjectClipSelection();
+                newProjectClipSelectionState = result;
+                if (!(preserveLocalEdits && newProjectClipSelectionDirty)) {
+                    newProjectClipSelections = structuredClone(result?.clips || []);
+                    newProjectClipSelectionDirty = false;
+                } else newProjectClipSelections = local;
+                newProjectClipSelectionNotice = '';
+            } catch {
+                newProjectClipSelectionState = emptyNewProjectClipSelectionState('error', 'CLIP_SELECTION_READ_FAILED');
+                newProjectClipSelectionNotice = '클립 선택을 불러오지 못했습니다.';
+            }
+            return newProjectClipSelectionState;
         };
 
         const refreshNewProjectExecution = async () => {
@@ -577,7 +606,8 @@ export function PipelineStudio() {
             render();
         };
 
-        const guide = deriveWorkflowGuide(state);
+        const workflowState = { ...state, newProjectClipSelection: newProjectClipSelectionState };
+        const guide = deriveWorkflowGuide(workflowState);
         const activeStageId = stageForTab(activeTab)?.id || guide.activeStageId;
         const switchStage = (stageId) => {
             const stage = WORKFLOW_STAGES.find((item) => item.id === stageId);
@@ -591,7 +621,7 @@ export function PipelineStudio() {
         const panelHost = el('div', { className: 'pipeline-panel-host' });
         const panelContent = el('div', { className: 'pipeline-panel-content' }, [
             activeTab === 'overview'
-                ? WorkflowOverview({ state, onNavigate: switchTab })
+                ? WorkflowOverview({ state: workflowState, onNavigate: switchTab })
                 : renderPanel(activeTab, state, config, {
                 harnessStatus,
                 newProjectDraftState,
@@ -617,6 +647,10 @@ export function PipelineStudio() {
                 videoPlanNotice: newProjectVideoPlanNotice,
                 videoResultWorkspace: newProjectVideoResultWorkspace,
                 videoResultPreviews: newProjectVideoResultPreviews,
+                newProjectClipSelectionState,
+                newProjectClipSelections,
+                newProjectClipSelectionDirty,
+                newProjectClipSelectionNotice,
                 newProjectMediaReviewFilter,
                 mediaReviewRetryNotice: newProjectMediaReviewRetryNotice,
                 onNewProjectMediaReviewFilterChange: (value) => { newProjectMediaReviewFilter = value; },
@@ -643,6 +677,50 @@ export function PipelineStudio() {
                 },
                 onOpenLegacyQueue: () => switchTab('queue'),
                 onOpenVideoResultReview: () => switchTab('storyboard'),
+                onOpenNewProjectResultReview: () => switchTab('storyboard'),
+                onNewProjectClipSelectionChange: (taskToken, patch) => {
+                    newProjectClipSelections = newProjectClipSelections.map((clip) => (
+                        clip.task_token === taskToken ? { ...clip, ...patch } : clip
+                    ));
+                    newProjectClipSelectionDirty = true;
+                    newProjectClipSelectionNotice = '저장하지 않은 선택이 있습니다.';
+                    render();
+                },
+                onSaveNewProjectClipSelection: async () => {
+                    newProjectClipSelectionNotice = '선택을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectClipSelection({
+                            selections: newProjectClipSelections.map((clip) => ({
+                                task_token: clip.task_token,
+                                in_seconds: clip.in_seconds,
+                                out_seconds: clip.out_seconds,
+                                reason: clip.reason,
+                                reviewer_confidence: clip.reviewer_confidence,
+                            })),
+                            expected_design_revision_sha256: newProjectClipSelectionState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: newProjectClipSelectionState.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: newProjectClipSelectionState.video_plan_revision_sha256,
+                            expected_clip_selection_revision_sha256: newProjectClipSelectionState.revision_sha256,
+                        });
+                        if (!result?.ok) throw new Error('CLIP_SELECTION_SAVE_FAILED');
+                        newProjectClipSelectionState = result;
+                        newProjectClipSelections = structuredClone(result.clips || []);
+                        newProjectClipSelectionDirty = false;
+                        newProjectClipSelectionNotice = result.accepted_count === result.total_count
+                            ? '구간 선택을 완료했습니다. 다음은 5단계 마무리 준비입니다.'
+                            : `구간 ${result.accepted_count}/${result.total_count}개를 저장했습니다.`;
+                    } catch {
+                        newProjectClipSelectionNotice = '선택을 저장하지 못했습니다. 범위와 이유를 확인하세요.';
+                    }
+                    render();
+                },
+                onRefreshNewProjectClipSelection: async () => {
+                    newProjectClipSelectionNotice = '최신 선택을 확인하는 중…';
+                    render();
+                    await refreshNewProjectClipSelection({ preserveLocalEdits: true });
+                    render();
+                },
                 onNewProjectDraftChange: (field, value) => {
                     newProjectDraftValue[field] = value;
                     if (field === 'brief' || field === 'script') newProjectDraftDirty[field] = true;
@@ -1388,6 +1466,7 @@ export function PipelineStudio() {
                         newProjectVideoPlanTasks = structuredClone(nextState.tasks);
                         newProjectVideoPlanNotice = decision === 'use' ? '이 결과를 사용하기로 저장했습니다.' : '다시 만들기로 저장했습니다.';
                         newProjectMediaReviewRetryNotice = newProjectVideoPlanNotice;
+                        await refreshNewProjectClipSelection();
                     } catch {
                         newProjectVideoPlanState = previousState;
                         newProjectVideoPlanTasks = previousTasks;
@@ -1742,7 +1821,7 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, videoImportResult, executionResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, videoImportResult, executionResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
@@ -1751,6 +1830,7 @@ export function PipelineStudio() {
             pipelineClient.getNewProjectImageResultWorkspace(),
             pipelineClient.getNewProjectVideoPlan(),
             pipelineClient.getNewProjectVideoResultWorkspace(),
+            pipelineClient.getNewProjectClipSelection(),
             pipelineClient.getVideoResultImportWorkspace(),
             pipelineClient.getNewProjectExecutionState(),
         ]);
@@ -1821,6 +1901,13 @@ export function PipelineStudio() {
             newProjectVideoResultWorkspace = videoWorkspaceResult.value;
         } else {
             newProjectVideoResultWorkspace = emptyNewProjectVideoResultWorkspace('error', 'VIDEO_RESULT_WORKSPACE_READ_FAILED');
+        }
+        if (clipSelectionResult.status === 'fulfilled' && clipSelectionResult.value) {
+            newProjectClipSelectionState = clipSelectionResult.value;
+            newProjectClipSelections = structuredClone(clipSelectionResult.value.clips || []);
+            newProjectClipSelectionDirty = false;
+        } else {
+            newProjectClipSelectionState = emptyNewProjectClipSelectionState('error', 'CLIP_SELECTION_READ_FAILED');
         }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;

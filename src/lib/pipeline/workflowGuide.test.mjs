@@ -39,6 +39,17 @@ test('workflow metrics prefer normalized fileStatus and keep accepted evidence s
     assert.equal(deriveWorkflowGuide(state).activeStageId, 'finish');
 });
 
+test('new project stays at stage 4 until every clip has an explicit accepted range', () => {
+    const partial = plainFixture({
+        fileStatus: { files_found: 7, content_parsed: 3, review_passed: 2, quality_accepted: 4 },
+        newProjectClipSelection: { accepted_count: 1, total_count: 2 },
+    });
+    assert.equal(deriveWorkflowGuide(partial).activeStageId, 'select');
+    assert.equal(deriveWorkflowGuide({
+        ...partial, newProjectClipSelection: { accepted_count: 2, total_count: 2 },
+    }).activeStageId, 'finish');
+});
+
 test('five stages retain every existing work panel and exclude settings', () => {
     assert.deepEqual(WORKFLOW_STAGES.map((stage) => stage.label), ['기획·대본', '설계', '생성 준비', '클립 선택', '마무리']);
     assert.deepEqual(WORKFLOW_STAGES[0].tabs.map((tab) => tab.label), ['기획·대본']);

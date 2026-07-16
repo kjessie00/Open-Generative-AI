@@ -4,6 +4,7 @@ import { blockerList, card, dataTable, el, infoGrid, panelShell, pathList, statu
 import { p } from './copy.js';
 import { G3ReviewWorkspace } from './G3ReviewWorkspace.js';
 import { isCanonicalSelectedTakesProvenance } from '../../lib/pipeline/canonicalProvenance.js';
+import { NewProjectClipSelectionPanel } from './NewProjectClipSelectionPanel.js';
 
 function qaBadge(value) {
     return statusBadge(value ? p('ok') : p('blocked'), value ? 'PASS' : 'BLOCK');
@@ -45,6 +46,15 @@ export function QAPanel({
     g3PromotionPlan,
     onG3PromotionRefresh,
     onG3Promote,
+    newProjectClipSelectionState,
+    newProjectClipSelections,
+    newProjectClipSelectionDirty,
+    newProjectClipSelectionNotice,
+    videoResultPreviews,
+    onNewProjectClipSelectionChange,
+    onSaveNewProjectClipSelection,
+    onRefreshNewProjectClipSelection,
+    onOpenNewProjectResultReview,
 }) {
     const finalValidation = validateFinalReady(state);
     const qaRecords = state.qaRecords || [];
@@ -66,7 +76,7 @@ export function QAPanel({
         ? [BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN]
         : [];
 
-    return panelShell(p('Clip QA And Accepted Ranges'), p('Clip QA, frame samples, contact sheets, and accepted seconds. Final is blocked until output quality is proven.'), [
+    const existingQa = [
         g3Workspace ? G3ReviewWorkspace({
             workspace: g3Workspace,
             activeShotId: g3ActiveShotId,
@@ -167,6 +177,23 @@ export function QAPanel({
             pathList(qaPaths.geminiFrameReviewPaths || qaRecords.map((record) => record.gemini_frame_review_path).filter(Boolean)),
             el('h3', { text: p('Video Reviews'), className: 'mb-3 mt-5 text-sm font-bold text-white' }),
             pathList(qaPaths.videoReviewPaths || qaRecords.map((record) => record.video_review_path).filter(Boolean)),
+        ]),
+    ];
+    return panelShell('클립 선택', '사용 승인한 영상에서 실제로 쓸 구간을 선택합니다.', [
+        NewProjectClipSelectionPanel({
+            selectionState: newProjectClipSelectionState,
+            clips: newProjectClipSelections,
+            resultPreviews: videoResultPreviews,
+            dirty: newProjectClipSelectionDirty,
+            notice: newProjectClipSelectionNotice,
+            onChange: onNewProjectClipSelectionChange,
+            onSave: onSaveNewProjectClipSelection,
+            onRefresh: onRefreshNewProjectClipSelection,
+            onOpenResultReview: onOpenNewProjectResultReview,
+        }),
+        el('details', { className: 'rounded-lg border border-white/10 bg-white/[0.02] px-4' }, [
+            el('summary', { text: '기존 제작 클립 QA', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),
+            el('div', { className: 'flex flex-col gap-4 pb-4' }, existingQa),
         ]),
     ]);
 }

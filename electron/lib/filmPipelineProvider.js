@@ -7,6 +7,7 @@ const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
+const newProjectClipSelectionProvider = require('./newProjectClipSelectionProvider');
 const promptPlanAgentProvider = require('./promptPlanAgentProvider');
 const newProjectExecutionProvider = require('./newProjectExecutionProvider');
 const { defaultLocalAgentSuggestionRunner } = require('./localAgentSuggestionRunner');
@@ -1292,6 +1293,14 @@ function saveNewProjectVideoRetrySelection(payload, options = {}) {
     return newProjectVideoPlanProvider.saveNewProjectVideoRetrySelection(payload, newProjectVideoPlanContext(options));
 }
 
+function getNewProjectClipSelection(options = {}) {
+    return newProjectClipSelectionProvider.getNewProjectClipSelection(newProjectVideoPlanContext(options));
+}
+
+function saveNewProjectClipSelection(payload, options = {}) {
+    return newProjectClipSelectionProvider.saveNewProjectClipSelection(payload, newProjectVideoPlanContext(options));
+}
+
 function newProjectExecutionContext(options = {}) {
     const env = options.env || process.env;
     return {
@@ -1833,6 +1842,11 @@ function register(ipcApi = ipcMain, options = {}) {
     ipcApi.handle('film-pipeline:get-new-project-video-result-preview', (_, payload) => getNewProjectVideoResultPreview(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-video-review-decision', (_, payload) => saveNewProjectVideoReviewDecision(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-video-retry-selection', (_, payload) => saveNewProjectVideoRetrySelection(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-clip-selection', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectClipSelection(options);
+    });
+    ipcApi.handle('film-pipeline:save-new-project-clip-selection', (_, payload) => saveNewProjectClipSelection(payload, options));
     ipcApi.handle('film-pipeline:enqueue-video-prompt-agent-request', (_, payload) => enqueueVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-video-prompt-agent-request', (_, payload) => runVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-video-prompt-agent-suggestion', (_, payload) => decideVideoPromptAgentSuggestion(payload, options));
@@ -1959,6 +1973,8 @@ module.exports = {
     getNewProjectVideoResultPreview,
     saveNewProjectVideoReviewDecision,
     saveNewProjectVideoRetrySelection,
+    getNewProjectClipSelection,
+    saveNewProjectClipSelection,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

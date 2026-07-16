@@ -360,6 +360,27 @@ export async function saveNewProjectVideoReviewDecision(payload) {
     return unavailableVideoPlanState('saveNewProjectVideoReviewDecision');
 }
 
+function unavailableClipSelectionState(method) {
+    return {
+        ...unavailable(method), status: 'blocked', design_revision_sha256: '',
+        image_plan_revision_sha256: '', video_plan_revision_sha256: '', revision_sha256: '',
+        clips: [], accepted_count: 0, total_count: 0,
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false,
+    };
+}
+
+export async function getNewProjectClipSelection() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectClipSelection === 'function') return bridge.getNewProjectClipSelection();
+    return unavailableClipSelectionState('getNewProjectClipSelection');
+}
+
+export async function saveNewProjectClipSelection(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectClipSelection === 'function') return bridge.saveNewProjectClipSelection(payload);
+    return unavailableClipSelectionState('saveNewProjectClipSelection');
+}
+
 export async function enqueueVideoPromptAgentRequest(payload) {
     const bridge = getBridge();
     if (typeof bridge?.enqueueVideoPromptAgentRequest === 'function') return bridge.enqueueVideoPromptAgentRequest(payload);
@@ -762,6 +783,8 @@ export const pipelineClient = Object.freeze({
     getNewProjectVideoResultPreview,
     saveNewProjectVideoReviewDecision,
     saveNewProjectVideoRetrySelection,
+    getNewProjectClipSelection,
+    saveNewProjectClipSelection,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

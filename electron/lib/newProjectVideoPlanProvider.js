@@ -799,6 +799,64 @@ function readResult(paths, token) {
     return { manifest, buffer };
 }
 
+// Main-process-only evidence for accepted-range authoring. Unlike the renderer
+// preview path this validates the complete private result without loading it
+// into memory or applying the 32 MiB preview ceiling.
+function getValidatedVideoSelectionSources(context = {}) {
+    const state = getNewProjectVideoPlan(context);
+    if (state.status !== 'restored' || state.blockers.length || state.review_blockers.length) {
+        throw failure(state.blockers[0] || state.review_blockers[0] || 'CLIP_SELECTION_VIDEO_PLAN_REQUIRED');
+    }
+    const decisions = new Map(state.review_decisions.map((item) => [item.task_token, item]));
+    if (state.tasks.some((task) => task.status !== '결과연결' || !task.result_token
+        || decisions.get(task.task_token)?.decision !== 'use')) {
+        throw failure('CLIP_SELECTION_VIDEO_REVIEW_REQUIRED');
+    }
+    const paths = exactPaths(context.userDataPath);
+    const sources = state.tasks.map((task) => {
+        const manifestPath = path.join(paths.resultsRoot, `${task.result_token}.json`);
+        let manifest;
+        try { manifest = JSON.parse(readPrivate(manifestPath, MAX_QUEUE_BYTES).toString('utf8')); }
+        catch (error) { if (error.code) throw error; throw failure('VIDEO_PLAN_RESULT_INVALID'); }
+        exactKeys(manifest, [
+            'schema_version', 'result_token', 'task_token', 'provider', 'mime_type', 'byte_length', 'sha256',
+            'duration_seconds', 'width', 'height', 'source_provenance', 'linked_at', 'generation_executed',
+        ], 'VIDEO_PLAN_RESULT_INVALID');
+        if (manifest.schema_version !== RESULT_SCHEMA || manifest.result_token !== task.result_token
+            || manifest.task_token !== task.task_token || manifest.provider !== task.provider
+            || manifest.mime_type !== 'video/mp4' || !SHA256.test(manifest.sha256)
+            || !Number.isSafeInteger(manifest.byte_length) || manifest.byte_length <= 0
+            || manifest.byte_length > MAX_RESULT_BYTES
+            || !Number.isFinite(manifest.duration_seconds) || manifest.duration_seconds <= 0
+            || !Number.isSafeInteger(manifest.width) || manifest.width <= 0
+            || !Number.isSafeInteger(manifest.height) || manifest.height <= 0
+            || typeof manifest.source_provenance !== 'string'
+            || Buffer.byteLength(manifest.source_provenance, 'utf8') > 128
+            || !Number.isFinite(Date.parse(manifest.linked_at)) || manifest.generation_executed !== false) {
+            throw failure('VIDEO_PLAN_RESULT_INVALID');
+        }
+        const evidence = hashPrivateResult(path.join(paths.resultsRoot, `${task.result_token}.mp4`));
+        if (evidence.sha256 !== manifest.sha256 || evidence.byte_length !== manifest.byte_length) {
+            throw failure('VIDEO_PLAN_RESULT_INVALID');
+        }
+        return {
+            task_token: task.task_token,
+            result_token: task.result_token,
+            result_sha256: manifest.sha256,
+            duration_seconds: manifest.duration_seconds,
+            sequence: task.sequence,
+            source_id: task.source_id,
+            label: task.label,
+        };
+    });
+    return {
+        design_revision_sha256: state.design_revision_sha256,
+        image_plan_revision_sha256: state.image_plan_revision_sha256,
+        video_plan_revision_sha256: state.revision_sha256,
+        sources,
+    };
+}
+
 function getNewProjectVideoResultPreview(payload, context = {}) {
     exactKeys(payload, ['result_token'], 'VIDEO_PLAN_RESULT_PREVIEW_SHAPE_INVALID');
     try {
@@ -926,6 +984,7 @@ module.exports = {
     getNewProjectVideoResultWorkspace,
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
+    getValidatedVideoSelectionSources,
     saveNewProjectVideoReviewDecision,
     saveNewProjectVideoRetrySelection,
 };

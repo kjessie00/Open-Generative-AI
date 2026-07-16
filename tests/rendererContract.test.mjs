@@ -371,7 +371,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
         'file evidence must be a compact four-metric strip',
     );
     await byText(studio, 'button', '클립 QA 열기').dispatchEvent({ type: 'click' });
-    assert.ok(byText(studio, 'h2', '클립 QA·채택 구간'), 'overview CTA must open the existing clip QA panel');
+    assert.ok(byText(studio, 'h2', '클립 선택'), 'overview CTA must open the clip selection panel');
     await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'overview' } });
     const mobileWorkflow = byAttribute(studio, 'select', 'aria-label', '파이프라인 작업 단계');
     assert.ok(mobileWorkflow, 'mobile workflow select must have a Korean accessible name');
@@ -408,7 +408,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
         ['1 기획·대본', [['기획·대본', '기획·대본']]],
         ['2 설계', [['스토리보드', '스토리보드'], ['샷 설계', '샷 설계'], ['모션 보드', '모션 보드']]],
         ['3 생성 준비', [['작업 진행', '작업 진행'], ['이미지 작업', '이미지 작업'], ['영상 작업', '영상 작업'], ['프롬프트 팩', '프롬프트 팩'], ['검토 게이트', '검토 게이트']]],
-        ['4 클립 선택', [['클립 QA', '클립 QA·채택 구간']]],
+        ['4 클립 선택', [['클립 QA', '클립 선택']]],
         ['5 마무리', [['최종 편집', '최종 편집·보고서']]],
     ];
 
@@ -799,6 +799,71 @@ test('new-project media review keeps reference sheets and scene image-video pair
     await byText(videoOnly, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
     assert.deepEqual(videoOnlyOpened, [{ kind: 'video', sequence: 2 }]);
     assert.doesNotMatch(videoOnly.textContent, /private-|GROK_PRIVATE_CODE|\/private\//);
+});
+
+test('new project clip selection uses Korean native controls and never auto-accepts a whole video', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectClipSelectionPanel } = await import('../src/components/pipeline/NewProjectClipSelectionPanel.js');
+    const changes = [];
+    let saves = 0;
+    const clip = {
+        task_token: `task_${'a'.repeat(64)}`, result_token: `result_${'b'.repeat(64)}`,
+        sequence: 1, source_id: 'scene_01', label: '장면 영상 · 첫 장면', duration_seconds: 5,
+        in_seconds: null, out_seconds: null, reason: '', reviewer_confidence: 'medium',
+    };
+    const panel = NewProjectClipSelectionPanel({
+        selectionState: { ok: true, status: 'empty', accepted_count: 0, total_count: 1 },
+        clips: [clip], resultPreviews: { [clip.result_token]: { source: 'blob:test-video' } },
+        dirty: true, notice: '저장하지 않은 선택이 있습니다.',
+        onChange: (taskToken, patch) => changes.push([taskToken, patch]),
+        onSave: () => { saves += 1; },
+    });
+    assert.match(panel.textContent, /선택 0\/1/);
+    assert.match(panel.textContent, /영상 전체가 자동으로 선택되지는 않습니다/);
+    assert.doesNotMatch(panel.textContent, /PASS|BLOCK|badge/i);
+    assert.ok(byText(panel, 'button', '여기를 시작으로'));
+    assert.ok(byText(panel, 'button', '여기를 끝으로'));
+    assert.ok(byText(panel, 'button', '선택 지우기'));
+    await byText(panel, 'button', '전체 구간').dispatchEvent({ type: 'click' });
+    assert.deepEqual(changes.at(-1), [clip.task_token, { in_seconds: 0, out_seconds: 5, reason: '전체 구간 사용' }]);
+    const start = byAttribute(panel, 'input', 'aria-label', `${clip.label} 시작 초`);
+    start.value = '1.25';
+    await start.dispatchEvent({ type: 'input', target: start });
+    assert.deepEqual(changes.at(-1), [clip.task_token, { in_seconds: 1.25 }]);
+    await byText(panel, 'button', '선택 저장').dispatchEvent({ type: 'click' });
+    assert.equal(saves, 1);
+    assert.equal(findAll(panel, 'button').every((button) => button.className.includes('min-h-11')), true);
+});
+
+test('PipelineStudio overview uses restored new-project clip selections instead of legacy accepted seconds', async (t) => {
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
+        },
+        async getHarnessContractStatus() {
+            return { ok: true, ready: true, readiness: 'available', entries: [] };
+        },
+        async getNewProjectClipSelection() {
+            return {
+                ok: true,
+                status: 'restored',
+                accepted_count: 1,
+                total_count: 1,
+                clips: [],
+                blockers: [],
+            };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+
+    assert.match(studio.textContent, /선택한 구간으로 최종 편집을 준비하세요/);
+    assert.match(studio.textContent, /채택1/);
+    assert.ok(byText(studio, 'button', '최종 편집 열기'));
 });
 
 test('MOCK DST result import exposes only image retry targets and uses opaque plan confirmation', async (t) => {

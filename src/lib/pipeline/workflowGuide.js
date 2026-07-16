@@ -38,6 +38,11 @@ export function deriveWorkflowMetrics(state = {}) {
             : record.accepted === true || (record.source_file && record.out_time > record.in_time)
     )).length;
 
+    const newProjectSelection = state.newProjectClipSelection;
+    const newProjectAccepted = newProjectSelection?.total_count > 0
+        ? (newProjectSelection.accepted_count === newProjectSelection.total_count
+            ? newProjectSelection.accepted_count : 0)
+        : null;
     return Object.freeze({
         files: state.fileStatus?.files_found ?? state.assets?.length ?? 0,
         parsed: state.fileStatus?.content_parsed ?? [
@@ -49,7 +54,7 @@ export function deriveWorkflowMetrics(state = {}) {
         ].filter(Boolean).length,
         reviewed: state.fileStatus?.review_passed
             ?? (state.reviewGates || []).filter((gate) => gate.status === 'PASS').length,
-        accepted: state.fileStatus?.quality_accepted ?? accepted,
+        accepted: newProjectAccepted ?? state.fileStatus?.quality_accepted ?? accepted,
     });
 }
 

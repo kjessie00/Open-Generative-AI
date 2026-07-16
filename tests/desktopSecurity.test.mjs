@@ -207,6 +207,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getG3ReviewWorkspace',
         'getHarnessContractStatus',
         'getMediaRetryPlan',
+        'getNewProjectClipSelection',
         'getNewProjectDesignState',
         'getNewProjectDraftState',
         'getNewProjectExecutionState',
@@ -239,6 +240,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'runSafeCommand',
         'runVideoPromptAgentRequest',
         'saveG3ReviewDraft',
+        'saveNewProjectClipSelection',
         'saveNewProjectDesignBoard',
         'saveNewProjectDraft',
         'saveNewProjectImagePlan',
@@ -297,6 +299,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.saveNewProjectVideoRetrySelection({ task_tokens: [] });
     await bridge.saveNewProjectImageReviewDecision({ task_token: 'opaque', decision: 'use' });
     await bridge.saveNewProjectVideoReviewDecision({ task_token: 'opaque', decision: 'retry' });
+    await bridge.getNewProjectClipSelection();
+    await bridge.saveNewProjectClipSelection({ selections: [] });
     await bridge.getNewProjectExecutionState();
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
@@ -358,6 +362,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:save-new-project-video-retry-selection',
             'film-pipeline:save-new-project-image-review-decision',
             'film-pipeline:save-new-project-video-review-decision',
+            'film-pipeline:get-new-project-clip-selection',
+            'film-pipeline:save-new-project-clip-selection',
             'film-pipeline:get-new-project-execution-state',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
@@ -395,6 +401,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-new-project-image-result-workspace',
         'film-pipeline:get-new-project-video-plan',
         'film-pipeline:get-new-project-video-result-workspace',
+        'film-pipeline:get-new-project-clip-selection',
         'film-pipeline:get-new-project-execution-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
