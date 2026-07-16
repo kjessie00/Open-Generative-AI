@@ -8,6 +8,7 @@ const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const newProjectClipSelectionProvider = require('./newProjectClipSelectionProvider');
+const newProjectFinalStitchProvider = require('./newProjectFinalStitchProvider');
 const promptPlanAgentProvider = require('./promptPlanAgentProvider');
 const newProjectExecutionProvider = require('./newProjectExecutionProvider');
 const { defaultLocalAgentSuggestionRunner } = require('./localAgentSuggestionRunner');
@@ -1301,6 +1302,14 @@ function saveNewProjectClipSelection(payload, options = {}) {
     return newProjectClipSelectionProvider.saveNewProjectClipSelection(payload, newProjectVideoPlanContext(options));
 }
 
+function getNewProjectFinalStitch(options = {}) {
+    return newProjectFinalStitchProvider.getNewProjectFinalStitch(newProjectVideoPlanContext(options));
+}
+
+function stageNewProjectFinalStitch(payload, options = {}) {
+    return newProjectFinalStitchProvider.stageNewProjectFinalStitch(payload, newProjectVideoPlanContext(options));
+}
+
 function newProjectExecutionContext(options = {}) {
     const env = options.env || process.env;
     return {
@@ -1847,6 +1856,11 @@ function register(ipcApi = ipcMain, options = {}) {
         return getNewProjectClipSelection(options);
     });
     ipcApi.handle('film-pipeline:save-new-project-clip-selection', (_, payload) => saveNewProjectClipSelection(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-final-stitch', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectFinalStitch(options);
+    });
+    ipcApi.handle('film-pipeline:stage-new-project-final-stitch', (_, payload) => stageNewProjectFinalStitch(payload, options));
     ipcApi.handle('film-pipeline:enqueue-video-prompt-agent-request', (_, payload) => enqueueVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-video-prompt-agent-request', (_, payload) => runVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-video-prompt-agent-suggestion', (_, payload) => decideVideoPromptAgentSuggestion(payload, options));
@@ -1975,6 +1989,8 @@ module.exports = {
     saveNewProjectVideoRetrySelection,
     getNewProjectClipSelection,
     saveNewProjectClipSelection,
+    getNewProjectFinalStitch,
+    stageNewProjectFinalStitch,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

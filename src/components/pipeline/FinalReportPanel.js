@@ -5,6 +5,7 @@ import { blockerList, card, dataTable, el, infoGrid, panelShell, statusBadge } f
 import { FinishingWorkbenchPanel } from './FinishingWorkbenchPanel.js';
 import { p } from './copy.js';
 import { isCanonicalSelectedTakesProvenance } from '../../lib/pipeline/canonicalProvenance.js';
+import { NewProjectFinalStitchPanel } from './NewProjectFinalStitchPanel.js';
 
 function checklistItem(label, ok, blocker = BLOCKERS.OUTPUT_QUALITY_NOT_PROVEN) {
     return card([
@@ -132,6 +133,11 @@ export function FinalReportPanel({
     onFinishingRefresh,
     onFinishingPlan,
     onFinishingExecute,
+    newProjectFinalStitchState,
+    newProjectFinalStitchNotice,
+    onStageNewProjectFinalStitch,
+    onRefreshNewProjectFinalStitch,
+    onOpenNewProjectClipSelection,
 }) {
     const finalReport = state.finalReport || {};
     const canonicalHandoff = state.canonicalHandoff || {};
@@ -171,7 +177,7 @@ export function FinalReportPanel({
     ];
 
     const conditionLabel = p(condition);
-    return panelShell(p('Final Edit And Report'), p('Final readiness checklist and exact blockers. Execution success is separated from output-quality proof.'), [
+    const existingFinal = [
         blockerList(validation.blockers),
         card([
             el('div', { className: 'mb-3 flex flex-wrap gap-2' }, [
@@ -261,6 +267,19 @@ export function FinalReportPanel({
                     : [statusBadge(p('blockers recorded empty'), 'PASS')]),
                 ...(finalReport.residual_risks || []).map((risk) => statusBadge(risk, 'WARN')),
             ]),
+        ]),
+    ];
+    return panelShell(p('Final Edit And Report'), '선택한 구간을 최종 편집 입력으로 준비합니다.', [
+        newProjectFinalStitchState ? NewProjectFinalStitchPanel({
+            state: newProjectFinalStitchState,
+            notice: newProjectFinalStitchNotice,
+            onStage: onStageNewProjectFinalStitch,
+            onRefresh: onRefreshNewProjectFinalStitch,
+            onOpenClipSelection: onOpenNewProjectClipSelection,
+        }) : null,
+        el('details', { className: 'rounded-lg border border-white/10 bg-white/[0.02] px-4' }, [
+            el('summary', { text: '기존 제작 마감 결과', className: 'min-h-11 cursor-pointer py-3 text-sm font-semibold text-white' }),
+            el('div', { className: 'flex flex-col gap-4 pb-4' }, existingFinal),
         ]),
     ]);
 }

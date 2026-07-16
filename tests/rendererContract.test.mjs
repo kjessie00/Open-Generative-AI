@@ -836,6 +836,58 @@ test('new project clip selection uses Korean native controls and never auto-acce
     assert.equal(findAll(panel, 'button').every((button) => button.className.includes('min-h-11')), true);
 });
 
+test('new project final stitch stays simple, stages an exact pathless revision, and restores ready copy', async (t) => {
+    const calls = [];
+    const ready = {
+        ok: true, status: 'ready', revision: `handoff_${'a'.repeat(64)}`, staged: false,
+        selected_count: 2, total_duration_seconds: 6.5,
+        clips: [
+            { sequence: 1, label: '장면 1', in_seconds: 0.5, out_seconds: 3.5 },
+            { sequence: 2, label: '장면 2', in_seconds: 1, out_seconds: 4.5 },
+        ], blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const bridge = {
+        async getNewProjectFinalStitch() { calls.push(['getFinal']); return structuredClone(ready); },
+        async stageNewProjectFinalStitch(payload) {
+            calls.push(['stageFinal', structuredClone(payload)]);
+            return { ...structuredClone(ready), status: 'staged', staged: true, saved: true };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+    assert.ok(byText(studio, 'h3', '최종 편집 준비'));
+    assert.match(studio.textContent, /선택 2개 · 총 6.5초/);
+    assert.match(studio.textContent, /아직 영상을 합치거나 완성하지 않습니다/);
+    assert.ok(byText(studio, 'summary', '기존 제작 마감 결과'));
+    await byText(studio, 'button', '최종 편집 준비 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'stageFinal'), [
+        'stageFinal', { expected_revision: ready.revision },
+    ]);
+    assert.match(studio.textContent, /준비됨 · 아직 영상으로 합치지 않음/);
+    assert.doesNotMatch(studio.textContent.split('기존 제작 마감 결과')[0], /sha256|task_token|result_token|source_path/);
+});
+
+test('blocked final stitch points back to clip selection without badges', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectFinalStitchPanel } = await import('../src/components/pipeline/NewProjectFinalStitchPanel.js');
+    let opened = 0;
+    const panel = NewProjectFinalStitchPanel({
+        state: { ok: false, status: 'blocked', clips: [], blockers: ['PRIVATE_BLOCKER'] },
+        onOpenClipSelection: () => { opened += 1; },
+    });
+    assert.match(panel.textContent, /모든 장면에서 사용할 구간을 먼저 선택/);
+    assert.doesNotMatch(panel.textContent, /PRIVATE_BLOCKER|PASS|BLOCK|badge/i);
+    await byText(panel, 'button', '클립 선택 열기').dispatchEvent({ type: 'click' });
+    assert.equal(opened, 1);
+    assert.equal(findAll(panel, 'button').every((button) => button.className.includes('min-h-11')), true);
+});
+
 test('PipelineStudio overview uses restored new-project clip selections instead of legacy accepted seconds', async (t) => {
     const bridge = {
         async getConfig() {

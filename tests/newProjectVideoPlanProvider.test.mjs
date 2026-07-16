@@ -331,6 +331,9 @@ test('MOCK connected video quality decisions preserve siblings and fail closed o
     assert.deepEqual(selectionSources.sources.map((item) => item.sequence), [1, 2]);
     assert.deepEqual(selectionSources.sources.map((item) => item.duration_seconds), [5, 5]);
     assert.equal(selectionSources.sources.every((item) => /^[a-f0-9]{64}$/.test(item.result_sha256)), true);
+    assert.equal(selectionSources.sources.every((item) => path.isAbsolute(item.source_path)), true);
+    assert.deepEqual(selectionSources.sources.map((item) => item.provider), ['flow', 'flow']);
+    assert.deepEqual(selectionSources.sources.map((item) => [item.width, item.height]), [[1080, 1920], [1080, 1920]]);
     const paths = videoPlanProvider.exactPaths(parts.userDataPath);
     assert.equal(fs.lstatSync(paths.reviewPath).mode & 0o777, 0o600);
     const duplicate = fs.readFileSync(paths.reviewPath, 'utf8');

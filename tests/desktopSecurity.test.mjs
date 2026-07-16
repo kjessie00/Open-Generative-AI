@@ -211,6 +211,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getNewProjectDesignState',
         'getNewProjectDraftState',
         'getNewProjectExecutionState',
+        'getNewProjectFinalStitch',
         'getNewProjectImagePlan',
         'getNewProjectImageResultPreview',
         'getNewProjectImageResultWorkspace',
@@ -251,6 +252,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'saveNewProjectVideoReviewDecision',
         'selectProductionRoot',
         'stageNewProjectExecutionHandoff',
+        'stageNewProjectFinalStitch',
         'writePlanningFile',
     ]);
 
@@ -301,6 +303,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.saveNewProjectVideoReviewDecision({ task_token: 'opaque', decision: 'retry' });
     await bridge.getNewProjectClipSelection();
     await bridge.saveNewProjectClipSelection({ selections: [] });
+    await bridge.getNewProjectFinalStitch();
+    await bridge.stageNewProjectFinalStitch({ expected_revision: 'handoff_opaque' });
     await bridge.getNewProjectExecutionState();
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
@@ -364,6 +368,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:save-new-project-video-review-decision',
             'film-pipeline:get-new-project-clip-selection',
             'film-pipeline:save-new-project-clip-selection',
+            'film-pipeline:get-new-project-final-stitch',
+            'film-pipeline:stage-new-project-final-stitch',
             'film-pipeline:get-new-project-execution-state',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
@@ -402,6 +408,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-new-project-video-plan',
         'film-pipeline:get-new-project-video-result-workspace',
         'film-pipeline:get-new-project-clip-selection',
+        'film-pipeline:get-new-project-final-stitch',
         'film-pipeline:get-new-project-execution-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',

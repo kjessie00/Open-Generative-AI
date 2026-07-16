@@ -181,6 +181,14 @@ function emptyNewProjectClipSelectionState(status = 'empty', blocker = '') {
     };
 }
 
+function emptyNewProjectFinalStitchState(status = 'empty', blocker = '') {
+    return {
+        ok: false, status, revision: '', staged: false, selected_count: 0,
+        total_duration_seconds: 0, clips: [], blockers: blocker ? [blocker] : [],
+        executed: false, rendered: false, generation_executed: false,
+    };
+}
+
 function emptyNewProjectExecutionState(status = 'empty', blocker = '') {
     return {
         ok: false,
@@ -265,6 +273,8 @@ export function PipelineStudio() {
     let newProjectClipSelections = [];
     let newProjectClipSelectionDirty = false;
     let newProjectClipSelectionNotice = '';
+    let newProjectFinalStitchState = emptyNewProjectFinalStitchState('loading');
+    let newProjectFinalStitchNotice = '';
     let newProjectMediaReviewFilter = 'all';
     let newProjectMediaReviewRetryNotice = '';
     let newProjectExecutionState = emptyNewProjectExecutionState('loading');
@@ -441,6 +451,17 @@ export function PipelineStudio() {
                 newProjectClipSelectionNotice = '클립 선택을 불러오지 못했습니다.';
             }
             return newProjectClipSelectionState;
+        };
+
+        const refreshNewProjectFinalStitch = async () => {
+            try {
+                newProjectFinalStitchState = await pipelineClient.getNewProjectFinalStitch();
+                newProjectFinalStitchNotice = '';
+            } catch {
+                newProjectFinalStitchState = emptyNewProjectFinalStitchState('error', 'FINAL_STITCH_READ_FAILED');
+                newProjectFinalStitchNotice = '최종 편집 준비를 불러오지 못했습니다.';
+            }
+            return newProjectFinalStitchState;
         };
 
         const refreshNewProjectExecution = async () => {
@@ -651,6 +672,8 @@ export function PipelineStudio() {
                 newProjectClipSelections,
                 newProjectClipSelectionDirty,
                 newProjectClipSelectionNotice,
+                newProjectFinalStitchState,
+                newProjectFinalStitchNotice,
                 newProjectMediaReviewFilter,
                 mediaReviewRetryNotice: newProjectMediaReviewRetryNotice,
                 onNewProjectMediaReviewFilterChange: (value) => { newProjectMediaReviewFilter = value; },
@@ -710,6 +733,7 @@ export function PipelineStudio() {
                         newProjectClipSelectionNotice = result.accepted_count === result.total_count
                             ? '구간 선택을 완료했습니다. 다음은 5단계 마무리 준비입니다.'
                             : `구간 ${result.accepted_count}/${result.total_count}개를 저장했습니다.`;
+                        await refreshNewProjectFinalStitch();
                     } catch {
                         newProjectClipSelectionNotice = '선택을 저장하지 못했습니다. 범위와 이유를 확인하세요.';
                     }
@@ -719,6 +743,28 @@ export function PipelineStudio() {
                     newProjectClipSelectionNotice = '최신 선택을 확인하는 중…';
                     render();
                     await refreshNewProjectClipSelection({ preserveLocalEdits: true });
+                    render();
+                },
+                onOpenNewProjectClipSelection: () => switchTab('qa'),
+                onRefreshNewProjectFinalStitch: async () => {
+                    newProjectFinalStitchNotice = '최신 준비 상태를 확인하는 중…';
+                    render();
+                    await refreshNewProjectFinalStitch();
+                    render();
+                },
+                onStageNewProjectFinalStitch: async () => {
+                    newProjectFinalStitchNotice = '최종 편집 준비를 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.stageNewProjectFinalStitch({
+                            expected_revision: newProjectFinalStitchState.revision,
+                        });
+                        if (!result?.ok || !result?.staged) throw new Error('FINAL_STITCH_STAGE_FAILED');
+                        newProjectFinalStitchState = result;
+                        newProjectFinalStitchNotice = '준비 파일을 저장했습니다. 아직 영상을 합치지 않았습니다.';
+                    } catch {
+                        newProjectFinalStitchNotice = '준비를 저장하지 못했습니다. 클립 선택을 다시 확인하세요.';
+                    }
                     render();
                 },
                 onNewProjectDraftChange: (field, value) => {
@@ -1821,7 +1867,7 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, videoImportResult, executionResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, videoImportResult, executionResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
@@ -1831,6 +1877,7 @@ export function PipelineStudio() {
             pipelineClient.getNewProjectVideoPlan(),
             pipelineClient.getNewProjectVideoResultWorkspace(),
             pipelineClient.getNewProjectClipSelection(),
+            pipelineClient.getNewProjectFinalStitch(),
             pipelineClient.getVideoResultImportWorkspace(),
             pipelineClient.getNewProjectExecutionState(),
         ]);
@@ -1908,6 +1955,11 @@ export function PipelineStudio() {
             newProjectClipSelectionDirty = false;
         } else {
             newProjectClipSelectionState = emptyNewProjectClipSelectionState('error', 'CLIP_SELECTION_READ_FAILED');
+        }
+        if (finalStitchResult.status === 'fulfilled' && finalStitchResult.value) {
+            newProjectFinalStitchState = finalStitchResult.value;
+        } else {
+            newProjectFinalStitchState = emptyNewProjectFinalStitchState('error', 'FINAL_STITCH_READ_FAILED');
         }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;

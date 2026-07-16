@@ -381,6 +381,26 @@ export async function saveNewProjectClipSelection(payload) {
     return unavailableClipSelectionState('saveNewProjectClipSelection');
 }
 
+function unavailableFinalStitchState(method) {
+    return {
+        ...unavailable(method), status: 'blocked', revision: '', staged: false,
+        selected_count: 0, total_duration_seconds: 0, clips: [],
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], executed: false, rendered: false, generation_executed: false,
+    };
+}
+
+export async function getNewProjectFinalStitch() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectFinalStitch === 'function') return bridge.getNewProjectFinalStitch();
+    return unavailableFinalStitchState('getNewProjectFinalStitch');
+}
+
+export async function stageNewProjectFinalStitch(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.stageNewProjectFinalStitch === 'function') return bridge.stageNewProjectFinalStitch(payload);
+    return unavailableFinalStitchState('stageNewProjectFinalStitch');
+}
+
 export async function enqueueVideoPromptAgentRequest(payload) {
     const bridge = getBridge();
     if (typeof bridge?.enqueueVideoPromptAgentRequest === 'function') return bridge.enqueueVideoPromptAgentRequest(payload);
@@ -785,6 +805,8 @@ export const pipelineClient = Object.freeze({
     saveNewProjectVideoRetrySelection,
     getNewProjectClipSelection,
     saveNewProjectClipSelection,
+    getNewProjectFinalStitch,
+    stageNewProjectFinalStitch,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

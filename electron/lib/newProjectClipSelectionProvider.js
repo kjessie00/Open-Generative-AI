@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const newProjectDesignProvider = require('./newProjectDesignProvider');
+const newProjectDraftProvider = require('./newProjectDraftProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 
 const SCHEMA = 'film_pipeline.new_project_clip_selection.v1';
@@ -318,9 +319,66 @@ function saveNewProjectClipSelection(payload, context = {}) {
     return { ...publicState(upstream, selections, 'saved'), saved: true };
 }
 
+// Main-process-only adapter for stage 5. It revalidates the private selection
+// and the complete source evidence instead of trusting renderer state.
+function getCompleteNewProjectClipSelectionInput(context = {}) {
+    const upstream = (context.getValidatedVideoSelectionSources
+        || newProjectVideoPlanProvider.getValidatedVideoSelectionSources)(context);
+    const paths = exactPaths(context.userDataPath);
+    let record;
+    try { record = JSON.parse(readPrivate(paths.selectionPath).toString('utf8')); }
+    catch (error) { if (error.code) throw error; throw failure('CLIP_SELECTION_FILE_INVALID'); }
+    const selections = validateRecord(record, upstream);
+    if (selections.length !== upstream.sources.length
+        || selections.some((item) => item.in_seconds === null || item.out_seconds === null)) {
+        throw failure('FINAL_STITCH_COMPLETE_SELECTION_REQUIRED');
+    }
+    const draft = newProjectDraftProvider.getNewProjectDraftState(context);
+    const projectId = draft?.status === 'restored' ? draft.draft?.production_id : '';
+    if (typeof projectId !== 'string'
+        || !/^[a-z0-9](?:[a-z0-9_-]{1,62}[a-z0-9])$/.test(projectId) || projectId.includes('..')) {
+        throw failure('FINAL_STITCH_PROJECT_ID_REQUIRED');
+    }
+    const byTask = new Map(selections.map((item) => [item.task_token, item]));
+    return {
+        project_id: projectId,
+        design_revision_sha256: upstream.design_revision_sha256,
+        image_plan_revision_sha256: upstream.image_plan_revision_sha256,
+        video_plan_revision_sha256: upstream.video_plan_revision_sha256,
+        clip_selection_revision_sha256: selectionRevision(upstream, selections),
+        clips: upstream.sources.map((source) => {
+            const selection = byTask.get(source.task_token);
+            if (!selection || !path.isAbsolute(source.source_path || '')
+                || !['flow', 'grok', 'replicate', 'bytedance'].includes(source.provider)
+                || !Number.isSafeInteger(source.width) || source.width <= 0
+                || !Number.isSafeInteger(source.height) || source.height <= 0) {
+                throw failure('FINAL_STITCH_SOURCE_INVALID');
+            }
+            return {
+                task_token: source.task_token,
+                result_token: source.result_token,
+                result_sha256: source.result_sha256,
+                source_path: source.source_path,
+                provider: source.provider,
+                width: source.width,
+                height: source.height,
+                duration_seconds: source.duration_seconds,
+                sequence: source.sequence,
+                source_id: source.source_id,
+                label: source.label,
+                in_seconds: selection.in_seconds,
+                out_seconds: selection.out_seconds,
+                reason: selection.reason,
+                reviewer_confidence: selection.reviewer_confidence,
+            };
+        }),
+    };
+}
+
 module.exports = {
     SCHEMA,
     exactPaths,
     getNewProjectClipSelection,
     saveNewProjectClipSelection,
+    getCompleteNewProjectClipSelectionInput,
 };

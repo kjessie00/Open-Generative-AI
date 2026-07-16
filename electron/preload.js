@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     saveNewProjectVideoRetrySelection: (payload) => ipcRenderer.invoke('film-pipeline:save-new-project-video-retry-selection', payload),
     getNewProjectClipSelection: () => ipcRenderer.invoke('film-pipeline:get-new-project-clip-selection'),
     saveNewProjectClipSelection: (payload) => ipcRenderer.invoke('film-pipeline:save-new-project-clip-selection', payload),
+    getNewProjectFinalStitch: () => ipcRenderer.invoke('film-pipeline:get-new-project-final-stitch'),
+    stageNewProjectFinalStitch: (payload) => ipcRenderer.invoke('film-pipeline:stage-new-project-final-stitch', payload),
     enqueueVideoPromptAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:enqueue-video-prompt-agent-request', payload),
     runVideoPromptAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:run-video-prompt-agent-request', payload),
     decideVideoPromptAgentSuggestion: (payload) => ipcRenderer.invoke('film-pipeline:decide-video-prompt-agent-suggestion', payload),

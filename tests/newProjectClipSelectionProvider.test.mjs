@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import draftProvider from '../electron/lib/newProjectDraftProvider.js';
 import clipSelectionProvider from '../electron/lib/newProjectClipSelectionProvider.js';
 
 const A = 'a'.repeat(64);
@@ -13,11 +14,11 @@ const C = 'c'.repeat(64);
 function fixture(t) {
     const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'open-ga-clip-selection-')));
     const userDataPath = path.join(base, 'user-data');
-    const draftRoot = path.join(userDataPath, 'film-pipeline', 'drafts', 'canonical-project-bootstrap-v1');
-    fs.mkdirSync(draftRoot, { recursive: true, mode: 0o700 });
-    for (const part of [userDataPath, path.join(userDataPath, 'film-pipeline'), path.join(userDataPath, 'film-pipeline', 'drafts'), draftRoot]) {
-        fs.chmodSync(part, 0o700);
-    }
+    fs.mkdirSync(userDataPath, { mode: 0o700 });
+    draftProvider.saveNewProjectDraft({
+        production_id: 'clip-selection-01', brief: '장면 구간을 고르는 이야기', script: '첫 장면과 둘째 장면을 이어 붙인다.',
+        route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 4,
+    }, { userDataPath });
     const upstream = {
         design_revision_sha256: A,
         image_plan_revision_sha256: B,
@@ -26,12 +27,15 @@ function fixture(t) {
             task_token: `task_${String(sequence).repeat(64)}`,
             result_token: `result_${String(sequence + 2).repeat(64)}`,
             result_sha256: String(sequence + 4).repeat(64),
+            source_path: path.join(base, `scene-${sequence}.mp4`),
+            provider: sequence === 1 ? 'flow' : 'replicate', width: 1080, height: 1920,
             duration_seconds: 5,
             sequence,
             source_id: `scene_0${sequence}`,
             label: `장면 ${sequence}`,
         })),
     };
+    upstream.sources.forEach((source) => fs.writeFileSync(source.source_path, 'private-video', { mode: 0o600 }));
     const context = { userDataPath, getValidatedVideoSelectionSources: () => structuredClone(upstream) };
     t.after(() => fs.rmSync(base, { recursive: true, force: true }));
     return { base, userDataPath, upstream, context };
@@ -72,6 +76,35 @@ test('private clip selections start empty, save partial explicit ranges, and res
     assert.equal(fs.lstatSync(paths.root).mode & 0o777, 0o700);
     assert.equal(fs.lstatSync(paths.selectionPath).mode & 0o777, 0o600);
     assert.deepEqual(fs.readdirSync(paths.root).filter((name) => name.startsWith('.clip-selection-')), []);
+});
+
+test('complete main-only input requires every clip and preserves ordered private stitch evidence', (t) => {
+    const parts = fixture(t);
+    let state = clipSelectionProvider.getNewProjectClipSelection(parts.context);
+    state = clipSelectionProvider.saveNewProjectClipSelection({
+        selections: state.clips.map((clip) => ({
+            task_token: clip.task_token, in_seconds: 0.5, out_seconds: 4.5,
+            reason: '선택한 구간', reviewer_confidence: 'high',
+        })),
+        ...expected(state),
+    }, parts.context);
+    const input = clipSelectionProvider.getCompleteNewProjectClipSelectionInput(parts.context);
+    assert.equal(input.project_id, 'clip-selection-01');
+    assert.equal(input.clip_selection_revision_sha256, state.revision_sha256);
+    assert.deepEqual(input.clips.map((clip) => clip.sequence), [1, 2]);
+    assert.deepEqual(input.clips.map((clip) => clip.source_path), parts.upstream.sources.map((source) => source.source_path));
+    assert.deepEqual(input.clips.map((clip) => clip.provider), ['flow', 'replicate']);
+
+    state = clipSelectionProvider.saveNewProjectClipSelection({
+        selections: [{
+            task_token: state.clips[0].task_token, in_seconds: null, out_seconds: null,
+            reason: '', reviewer_confidence: 'medium',
+        }],
+        ...expected(state),
+    }, parts.context);
+    assert.throws(() => clipSelectionProvider.getCompleteNewProjectClipSelectionInput(parts.context), {
+        code: 'FINAL_STITCH_COMPLETE_SELECTION_REQUIRED',
+    });
 });
 
 test('clip selection validates range, reason, confidence, exact shape, and optimistic revision', (t) => {
