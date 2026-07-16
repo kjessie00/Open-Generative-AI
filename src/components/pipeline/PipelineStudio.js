@@ -290,6 +290,7 @@ export function PipelineStudio() {
     let newProjectFinalRenderState = emptyNewProjectFinalRenderState();
     let newProjectFinalRenderNotice = '';
     let newProjectFinalRenderPreview = { source: '', dispose() {} };
+    let newProjectFinalRenderRequestEpoch = 0;
     let newProjectMediaReviewFilter = 'all';
     let newProjectMediaReviewRetryNotice = '';
     let newProjectExecutionState = emptyNewProjectExecutionState('loading');
@@ -307,6 +308,50 @@ export function PipelineStudio() {
     let videoResultImportWorkspace = emptyVideoResultImportWorkspace();
     let videoResultImportPlan = emptyVideoResultImportPlan();
     let mediaReviewSaveStatus = '';
+
+    const beginNewProjectFinalRenderRequest = () => {
+        newProjectFinalRenderRequestEpoch += 1;
+        return newProjectFinalRenderRequestEpoch;
+    };
+
+    const isLatestNewProjectFinalRenderRequest = (requestEpoch) => (
+        requestEpoch === newProjectFinalRenderRequestEpoch
+    );
+
+    const loadNewProjectFinalRenderPreview = async (requestEpoch) => {
+        const sourceState = newProjectFinalRenderState;
+        let prepared = { ok: false, url: '', dispose() {} };
+        let consumedInline = false;
+        if (sourceState.rendered && sourceState.preview_ready) {
+            try {
+                const inline = sourceState.preview;
+                consumedInline = Boolean(inline && typeof inline.ready === 'boolean');
+                const raw = consumedInline ? inline : await pipelineClient.getNewProjectFinalRenderPreview();
+                if (!isLatestNewProjectFinalRenderRequest(requestEpoch)
+                    || newProjectFinalRenderState !== sourceState) return false;
+                prepared = createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
+            } catch { /* pathless preview remains unavailable */ }
+            if (!isLatestNewProjectFinalRenderRequest(requestEpoch)
+                || newProjectFinalRenderState !== sourceState) {
+                prepared.dispose?.();
+                return false;
+            }
+            if (consumedInline) {
+                const nextState = { ...sourceState };
+                delete nextState.preview;
+                newProjectFinalRenderState = nextState;
+            }
+        }
+        if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) {
+            prepared.dispose?.();
+            return false;
+        }
+        newProjectFinalRenderPreview.dispose?.();
+        newProjectFinalRenderPreview = prepared.ok
+            ? { source: prepared.url, dispose: prepared.dispose }
+            : { source: '', dispose() {} };
+        return true;
+    };
 
     const render = () => {
         container.innerHTML = '';
@@ -479,26 +524,16 @@ export function PipelineStudio() {
             return newProjectFinalStitchState;
         };
 
-        const loadNewProjectFinalRenderPreview = async () => {
-            let prepared = { ok: false, url: '', dispose() {} };
-            if (newProjectFinalRenderState.rendered && newProjectFinalRenderState.preview_ready) {
-                try {
-                    const raw = await pipelineClient.getNewProjectFinalRenderPreview();
-                    prepared = createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
-                } catch { /* pathless preview remains unavailable */ }
-            }
-            newProjectFinalRenderPreview.dispose?.();
-            newProjectFinalRenderPreview = prepared.ok
-                ? { source: prepared.url, dispose: prepared.dispose }
-                : { source: '', dispose() {} };
-        };
-
         const refreshNewProjectFinalRender = async ({ loadPreview = true } = {}) => {
+            const requestEpoch = beginNewProjectFinalRenderRequest();
             try {
-                newProjectFinalRenderState = await pipelineClient.getNewProjectFinalRender();
+                const result = await pipelineClient.getNewProjectFinalRender();
+                if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return newProjectFinalRenderState;
+                newProjectFinalRenderState = result;
                 newProjectFinalRenderNotice = '';
-                if (loadPreview) await loadNewProjectFinalRenderPreview();
+                if (loadPreview) await loadNewProjectFinalRenderPreview(requestEpoch);
             } catch {
+                if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return newProjectFinalRenderState;
                 newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
                 newProjectFinalRenderNotice = '검토용 영상 상태를 불러오지 못했습니다.';
             }
@@ -814,6 +849,7 @@ export function PipelineStudio() {
                     render();
                 },
                 onRenderNewProjectFinal: async () => {
+                    const requestEpoch = beginNewProjectFinalRenderRequest();
                     newProjectFinalRenderState = { ...newProjectFinalRenderState, status: 'rendering' };
                     newProjectFinalRenderNotice = '검토용 영상을 만드는 중입니다.';
                     render();
@@ -826,16 +862,20 @@ export function PipelineStudio() {
                             projectId: newProjectDraftValue.production_id,
                         });
                         if (!rendered?.rendered || !rendered?.fresh_probe_verified) throw new Error('FINAL_RENDER_FAILED');
+                        if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return;
                         newProjectFinalRenderState = rendered;
-                        await loadNewProjectFinalRenderPreview();
+                        await loadNewProjectFinalRenderPreview(requestEpoch);
+                        if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return;
                         newProjectFinalRenderNotice = '검토용 영상이 준비되었습니다. 장면 품질은 직접 확인해 주세요.';
                     } catch {
+                        if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return;
                         newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
                         newProjectFinalRenderNotice = '검토용 영상을 만들지 못했습니다. 준비 상태를 새로고침해 주세요.';
                     }
                     render();
                 },
                 onSaveNewProjectFinalReviewDecision: async (decision) => {
+                    const requestEpoch = beginNewProjectFinalRenderRequest();
                     newProjectFinalRenderNotice = '결정을 저장하는 중…';
                     render();
                     try {
@@ -844,11 +884,13 @@ export function PipelineStudio() {
                             expected_review_version: newProjectFinalRenderState.review_version,
                         });
                         if (!result?.rendered || !result?.human_review_recorded) throw new Error('FINAL_REVIEW_SAVE_FAILED');
+                        if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return;
                         newProjectFinalRenderState = result;
                         newProjectFinalRenderNotice = decision === 'use'
                             ? '이 영상을 사용하기로 저장했습니다.'
                             : '다시 만들기로 저장했습니다. 결과 검토에서 수정할 장면을 확인하세요.';
                     } catch {
+                        if (!isLatestNewProjectFinalRenderRequest(requestEpoch)) return;
                         newProjectFinalRenderNotice = '결정을 저장하지 못했습니다. 최신 상태를 확인하고 다시 선택하세요.';
                     }
                     render();
@@ -1953,7 +1995,10 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, finalRenderResult, videoImportResult, executionResult] = await Promise.allSettled([
+        const initialFinalRenderRequestEpoch = beginNewProjectFinalRenderRequest();
+        const finalRenderResultPromise = pipelineClient.getNewProjectFinalRender()
+            .then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, videoImportResult, executionResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
@@ -1964,7 +2009,6 @@ export function PipelineStudio() {
             pipelineClient.getNewProjectVideoResultWorkspace(),
             pipelineClient.getNewProjectClipSelection(),
             pipelineClient.getNewProjectFinalStitch(),
-            pipelineClient.getNewProjectFinalRender(),
             pipelineClient.getVideoResultImportWorkspace(),
             pipelineClient.getNewProjectExecutionState(),
         ]);
@@ -2048,18 +2092,6 @@ export function PipelineStudio() {
         } else {
             newProjectFinalStitchState = emptyNewProjectFinalStitchState('error', 'FINAL_STITCH_READ_FAILED');
         }
-        if (finalRenderResult.status === 'fulfilled' && finalRenderResult.value) {
-            newProjectFinalRenderState = finalRenderResult.value;
-            if (newProjectFinalRenderState.rendered && newProjectFinalRenderState.preview_ready) {
-                try {
-                    const raw = await pipelineClient.getNewProjectFinalRenderPreview();
-                    const prepared = createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
-                    if (prepared.ok) newProjectFinalRenderPreview = { source: prepared.url, dispose: prepared.dispose };
-                } catch { /* relaunch keeps the rendered state even if preview decoding fails */ }
-            }
-        } else {
-            newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
-        }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;
         } else {
@@ -2117,6 +2149,17 @@ export function PipelineStudio() {
                 blockers: ['FINISHING_PRODUCTION_ROOT_NOT_CONFIGURED'],
             }, 'empty');
         }
+        render();
+
+        const finalRenderResult = await finalRenderResultPromise;
+        if (!isLatestNewProjectFinalRenderRequest(initialFinalRenderRequestEpoch)) return;
+        if (finalRenderResult.status === 'fulfilled' && finalRenderResult.value) {
+            newProjectFinalRenderState = finalRenderResult.value;
+            await loadNewProjectFinalRenderPreview(initialFinalRenderRequestEpoch);
+        } else {
+            newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
+        }
+        if (!isLatestNewProjectFinalRenderRequest(initialFinalRenderRequestEpoch)) return;
         render();
     })();
 

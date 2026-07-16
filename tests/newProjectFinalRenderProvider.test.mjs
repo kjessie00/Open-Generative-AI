@@ -34,8 +34,12 @@ function fixture(t, hooks = {}) {
     const ready = finalStitchProvider.getNewProjectFinalStitch(stitchContext);
     finalStitchProvider.stageNewProjectFinalStitch({ expected_revision: ready.revision }, stitchContext);
     let nowMs = 1_000;
+    const runtimeCalls = { inspect: 0, probe: 0 };
     const runtime = {
-        async inspect() { return { fingerprint: 'fixed-runtime', runtime: {}, harness: {} }; },
+        async inspect() {
+            runtimeCalls.inspect += 1;
+            return { fingerprint: 'fixed-runtime', runtime: {}, harness: {} };
+        },
         async render(request) {
             fs.writeFileSync(request.outputPath, hooks.output || Buffer.from('mock-review-video'), { mode: 0o600 });
             if (hooks.afterRender) hooks.afterRender({ input, sourcePath });
@@ -44,7 +48,9 @@ function fixture(t, hooks = {}) {
                 beat_ids: ['scene_01'], ranges: [[0.2, 0.8]], silent_audio_source_count: 1,
             };
         },
-        async probe() {
+        async probe(outputPath) {
+            runtimeCalls.probe += 1;
+            if (hooks.afterProbe) hooks.afterProbe({ outputPath });
             return { has_video: true, has_audio: true, duration_seconds: 0.6, video_codec: 'h264', audio_codec: 'aac', width: 360, height: 640, fps: 24 };
         },
     };
@@ -59,7 +65,10 @@ function fixture(t, hooks = {}) {
         ...extra,
     });
     t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-    return { base, userDataPath, sourcePath, input, stitchContext, makeProvider, advance: (ms) => { nowMs += ms; } };
+    return {
+        base, userDataPath, sourcePath, input, stitchContext, makeProvider, runtimeCalls,
+        advance: (ms) => { nowMs += ms; },
+    };
 }
 
 async function publishReviewVideo(fx) {
@@ -131,6 +140,39 @@ test('MOCK: relaunch restores an already-current private review video', async (t
     const noOp = await relaunched.plan();
     assert.equal(noOp.ready, false);
     assert.equal(noOp.plan_token, '');
+});
+
+test('MOCK: one restored get verifies once and returns the exact pathless preview inline', async (t) => {
+    const fx = fixture(t);
+    await publishReviewVideo(fx);
+    fx.runtimeCalls.inspect = 0;
+    fx.runtimeCalls.probe = 0;
+
+    const restored = await fx.makeProvider().get();
+
+    assert.equal(restored.status, 'already_current');
+    assert.equal(restored.preview.ready, true);
+    assert.equal(restored.preview.mime_type, 'video/mp4');
+    assert.equal(restored.preview.byte_length, Buffer.byteLength('mock-review-video'));
+    assert.deepEqual(Buffer.from(restored.preview.base64, 'base64'), Buffer.from('mock-review-video'));
+    assert.deepEqual(fx.runtimeCalls, { inspect: 1, probe: 1 });
+    assert.equal(JSON.stringify(restored).includes(fx.base), false);
+});
+
+test('MOCK: inline preview fails closed when output changes after the fresh probe', async (t) => {
+    const hooks = {};
+    const fx = fixture(t, hooks);
+    await publishReviewVideo(fx);
+    fx.runtimeCalls.inspect = 0;
+    fx.runtimeCalls.probe = 0;
+    hooks.afterProbe = ({ outputPath }) => fs.appendFileSync(outputPath, 'tampered-after-probe');
+
+    const restored = await fx.makeProvider().get();
+
+    assert.equal(restored.status, 'blocked');
+    assert.equal(restored.rendered, false);
+    assert.deepEqual(restored.preview, { ready: false, mime_type: '', byte_length: 0, base64: '' });
+    assert.deepEqual(fx.runtimeCalls, { inspect: 1, probe: 1 });
 });
 
 test('MOCK: a valid orphan run atomically restores current for get, plan, execute, and preview', async (t) => {

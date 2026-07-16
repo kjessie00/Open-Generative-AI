@@ -888,6 +888,126 @@ test('blocked final stitch points back to clip selection without badges', async 
     assert.equal(findAll(panel, 'button').every((button) => button.className.includes('min-h-11')), true);
 });
 
+test('MOCK: final panel stays usable while restore verifies and consumes inline preview without a second IPC', async (t) => {
+    const calls = [];
+    let resolveFinalRender;
+    const pendingFinalRender = new Promise((resolve) => { resolveFinalRender = resolve; });
+    const stitched = {
+        ok: true, status: 'restored', revision: `handoff_${'a'.repeat(64)}`, staged: true,
+        selected_count: 1, total_duration_seconds: 0.6,
+        clips: [{ sequence: 1, label: '첫 장면', in_seconds: 0.2, out_seconds: 0.8 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const bytes = Buffer.from('inline-mock-video');
+    const rendered = {
+        ok: true, status: 'already_current', can_render: false, rendered: true, selected_count: 1,
+        selected_duration_seconds: 0.6, output_duration_seconds: 0.6, fresh_probe_verified: true,
+        has_video: true, has_audio: true, preview_ready: true, executed: false,
+        output_quality_approved: false, generation_executed: false,
+        review_version: 'a'.repeat(64), review_decision: 'retry', review_ready: true,
+        human_review_recorded: true, legacy_production_modified: false, canonical_delivery_modified: false,
+        notice: '다시 만들기로 선택했습니다. 결과 검토에서 수정할 장면을 확인하세요.',
+        preview: {
+            ready: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64'),
+        },
+    };
+    const bridge = {
+        async getNewProjectFinalStitch() { return structuredClone(stitched); },
+        async getNewProjectFinalRender() {
+            calls.push(['getRender']);
+            return pendingFinalRender;
+        },
+        async getNewProjectFinalRenderPreview() {
+            calls.push(['previewRender']);
+            return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+
+    assert.match(studio.textContent, /검토용 영상을 확인하는 중입니다/);
+    assert.equal(byText(studio, 'button', '검토용 영상 만들기'), null);
+    assert.equal(calls.filter(([method]) => method === 'getRender').length, 1);
+
+    resolveFinalRender(structuredClone(rendered));
+    await flushRenderer();
+
+    assert.ok(findAll(studio, 'video')[0]);
+    assert.match(studio.textContent, /다시 만들기로 선택됨/);
+    assert.equal(calls.filter(([method]) => method === 'previewRender').length, 0);
+});
+
+test('MOCK: a late initial final response cannot overwrite a newer user refresh', async (t) => {
+    const calls = [];
+    let resolveInitial;
+    const pendingInitial = new Promise((resolve) => { resolveInitial = resolve; });
+    const stitched = {
+        ok: true, status: 'restored', revision: `handoff_${'a'.repeat(64)}`, staged: true,
+        selected_count: 1, total_duration_seconds: 0.6,
+        clips: [{ sequence: 1, label: '첫 장면', in_seconds: 0.2, out_seconds: 0.8 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const staleReady = {
+        ok: true, status: 'ready', can_render: true, rendered: false, selected_count: 1,
+        selected_duration_seconds: 0.6, output_duration_seconds: 0, fresh_probe_verified: false,
+        has_video: false, has_audio: false, preview_ready: false, executed: false,
+        output_quality_approved: false, generation_executed: false,
+        review_version: '', review_decision: 'pending', review_ready: false, human_review_recorded: false,
+        legacy_production_modified: false, canonical_delivery_modified: false,
+        notice: '선택한 구간으로 검토용 영상을 만들 수 있습니다.',
+        preview: { ready: false, mime_type: '', byte_length: 0, base64: '' },
+    };
+    const bytes = Buffer.from('newer-inline-video');
+    const refreshed = {
+        ...staleReady, status: 'already_current', can_render: false, rendered: true,
+        output_duration_seconds: 0.6, fresh_probe_verified: true, has_video: true, has_audio: true,
+        preview_ready: true, review_version: 'b'.repeat(64), review_decision: 'retry',
+        review_ready: true, human_review_recorded: true,
+        notice: '다시 만들기로 선택했습니다. 결과 검토에서 수정할 장면을 확인하세요.',
+        preview: {
+            ready: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64'),
+        },
+    };
+    let getRenderCalls = 0;
+    const bridge = {
+        async getNewProjectFinalStitch() { return structuredClone(stitched); },
+        async getNewProjectFinalRender() {
+            getRenderCalls += 1;
+            calls.push(['getRender', getRenderCalls]);
+            return getRenderCalls === 1 ? pendingInitial : structuredClone(refreshed);
+        },
+        async getNewProjectFinalRenderPreview() {
+            calls.push(['previewRender']);
+            return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+
+    await byText(studio, 'button', '새로고침').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const refreshedVideo = findAll(studio, 'video')[0];
+    assert.ok(refreshedVideo);
+    assert.match(studio.textContent, /다시 만들기로 선택됨/);
+
+    resolveInitial(structuredClone(staleReady));
+    await flushRenderer();
+
+    assert.equal(findAll(studio, 'video')[0]?.attributes.get('src'), refreshedVideo.attributes.get('src'));
+    assert.match(studio.textContent, /다시 만들기로 선택됨/);
+    assert.equal(byText(studio, 'button', '검토용 영상 만들기'), null);
+    assert.deepEqual(calls.filter(([method]) => method === 'getRender'), [['getRender', 1], ['getRender', 2]]);
+    assert.equal(calls.filter(([method]) => method === 'previewRender').length, 0);
+});
+
 test('MOCK: rendered review video saves use or retry decisions and opens result review without internal data', async (t) => {
     const calls = [];
     const stitched = {

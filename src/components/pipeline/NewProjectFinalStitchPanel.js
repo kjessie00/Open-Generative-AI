@@ -49,6 +49,7 @@ export function NewProjectFinalStitchPanel({
             : 'border-cyan-400/20 bg-cyan-400/10 text-cyan-100'} hover:bg-white/10`,
         attrs: { type: 'button', 'aria-pressed': reviewDecision === decision ? 'true' : 'false' },
     });
+    const renderLoading = renderState?.status === 'loading';
     const renderArea = !state.staged ? null : renderState?.rendered ? card([
         el('p', {
             text: `검토용 영상 ${duration(renderState.output_duration_seconds)}초`,
@@ -90,12 +91,16 @@ export function NewProjectFinalStitchPanel({
         ]),
     ]) : card([
         el('p', {
-            text: renderState?.status === 'rendering'
+            text: renderLoading
+                ? '검토용 영상을 확인하는 중입니다.'
+                : renderState?.status === 'rendering'
                 ? '검토용 영상을 만드는 중입니다.'
                 : '선택한 구간을 이어 붙여 검토용 영상을 만듭니다.',
             className: 'text-sm leading-6 text-secondary', attrs: { role: 'status', 'aria-live': 'polite' },
         }),
-        renderState?.status === 'rendering' ? null : actionButton('검토용 영상 만들기', { onClick: onRender }),
+        renderLoading || renderState?.status === 'rendering'
+            ? null
+            : actionButton('검토용 영상 만들기', { onClick: onRender }),
     ]);
     return el('section', { className: 'flex flex-col gap-3', attrs: { 'aria-label': '최종 편집 준비' } }, [
         heading,

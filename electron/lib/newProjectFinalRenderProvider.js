@@ -277,6 +277,24 @@ function publicState(inspection, current, review, status = 'ready', executed = f
     };
 }
 
+function emptyPreview() {
+    return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+}
+
+function inlinePreview(current) {
+    if (!current?.valid || current.outputSize > MAX_PREVIEW_BYTES) return emptyPreview();
+    const output = readStableFile(current.outputPath, MAX_PREVIEW_BYTES, 'FINAL_RENDER_PREVIEW');
+    if (output.sha256 !== current.outputSha256 || output.size !== current.outputSize) {
+        throw failure('FINAL_RENDER_PREVIEW_MISMATCH');
+    }
+    return {
+        ready: true,
+        mime_type: 'video/mp4',
+        byte_length: output.size,
+        base64: output.buffer.toString('base64'),
+    };
+}
+
 function blockedState() {
     return {
         ok: false,
@@ -359,6 +377,7 @@ async function inspectRunRoot(paths, inspection, runtime, runId, expectedReceipt
     return {
         valid: true,
         outputPath: path.join(runRoot, 'roughcut.mp4'),
+        outputSha256: output.sha256,
         outputSize: output.size,
         receiptSha256: receiptRead.sha256,
         probe,
@@ -487,10 +506,13 @@ function createNewProjectFinalRenderProvider(options = {}) {
     async function get() {
         try {
             const value = await inspect();
-            return publicState(value.inspection, value.current, value.review);
+            return {
+                ...publicState(value.inspection, value.current, value.review),
+                preview: inlinePreview(value.current),
+            };
         } catch (error) {
             context.onInternalError(error);
-            return blockedState();
+            return { ...blockedState(), preview: emptyPreview() };
         }
     }
 
@@ -653,19 +675,10 @@ function createNewProjectFinalRenderProvider(options = {}) {
     async function preview() {
         try {
             const value = await inspect();
-            if (!value.current.valid || value.current.outputSize > MAX_PREVIEW_BYTES) {
-                return { ready: false, mime_type: '', byte_length: 0, base64: '' };
-            }
-            const output = readStableFile(value.current.outputPath, MAX_PREVIEW_BYTES, 'FINAL_RENDER_PREVIEW');
-            return {
-                ready: true,
-                mime_type: 'video/mp4',
-                byte_length: output.size,
-                base64: output.buffer.toString('base64'),
-            };
+            return inlinePreview(value.current);
         } catch (error) {
             context.onInternalError(error);
-            return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+            return emptyPreview();
         }
     }
 
