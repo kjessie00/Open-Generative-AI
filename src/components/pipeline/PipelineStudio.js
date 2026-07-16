@@ -621,8 +621,8 @@ export function PipelineStudio() {
                 hasProductionRoot: Boolean(config.productionRoot),
                 onRefreshExecution: refreshNewProjectExecution,
                 onStageExecution: stageNewProjectExecution,
-                onOpenWorkItem: async ({ kind, sequence, candidateToken = '', imageIndex = 0 }) => {
-                    if (candidateToken) {
+                onOpenWorkItem: async ({ kind, sequence, candidateToken = '', imageIndex = 0, openConnector = false }) => {
+                    if (candidateToken || openConnector) {
                         if (kind === 'video') await refreshNewProjectVideoResults();
                         else await refreshNewProjectImageResults();
                     }
@@ -631,7 +631,7 @@ export function PipelineStudio() {
                         const target = document.querySelector?.(`[data-work-target="${kind}"][data-sequence="${sequence}"]`);
                         target?.focus?.();
                         target?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-                        if (candidateToken) target?.dispatchEvent?.(new CustomEvent('workbench:show-result', {
+                        if (candidateToken || openConnector) target?.dispatchEvent?.(new CustomEvent('workbench:show-result', {
                             detail: { candidateToken, imageIndex },
                         }));
                     });

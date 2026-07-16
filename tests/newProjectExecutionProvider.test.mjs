@@ -1003,6 +1003,11 @@ test('actual local Replicate request preview claims one absent output without HT
         next_action: '영상 작업에서 프롬프트·길이·첫 화면을 확인하세요.',
         output_kind: 'video', output_count: 1, preview_only: true,
     });
+    const rendererVideo = filmProvider.getNewProjectExecutionState(parts).tasks
+        .find((task) => task.lane === 'video');
+    assert.equal(rendererVideo.execution_preview.reason, 'private_replicate_request_ready');
+    assert.doesNotMatch(JSON.stringify(rendererVideo.execution_preview),
+        /request_spec|authorization_env|REPLICATE_API_TOKEN|claim|output_path|task_|[a-f0-9]{64}/i);
 
     let handoff = executionProvider.inspectExecutionHandoff(parts, { new_attempt: false });
     let video = handoff.tasks.find((task) => task.provider === 'replicate');
@@ -1078,6 +1083,132 @@ test('actual local Replicate request preview claims one absent output without HT
     assert.throws(() => executionProvider.inspectExecutionHandoff(parts, { new_attempt: false }), {
         code: 'EXECUTION_REPLICATE_CLAIM_CONFLICT',
     });
+});
+
+test('MOCK ffprobe: Replicate succeeded receipt requires the exact v2 request, task, claim, and prediction locator', (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const flowResultsRoot = path.join(parts.base, 'identity-flow-results');
+    const grokResultsRoot = path.join(parts.base, 'identity-grok-results');
+    const replicateRunRoot = path.join(parts.base, 'identity-replicate-run');
+    const replicateResultsRoot = path.join(replicateRunRoot, 'replicate_seedance_clips');
+    const replicateReceiptResultsRoot = path.join(parts.base, 'identity-replicate-receipts');
+    const bytedanceReceiptResultsRoot = path.join(parts.base, 'identity-bytedance-receipts');
+    for (const directory of [flowResultsRoot, grokResultsRoot, replicateResultsRoot,
+        replicateReceiptResultsRoot, bytedanceReceiptResultsRoot]) {
+        fs.mkdirSync(directory, { recursive: true });
+    }
+    fs.writeFileSync(path.join(replicateRunRoot, 'run_status.md'), 'Replicate Seedance fallback\n');
+    const context = {
+        ...parts,
+        flowResultsRoot,
+        grokResultsRoot,
+        replicateResultsRoot,
+        replicateReceiptResultsRoot,
+        bytedanceReceiptResultsRoot,
+        tokenSecret: Buffer.alloc(32, 21),
+        runProcessFn: () => ({
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({
+                format: { format_name: 'mov,mp4', duration: '5' },
+                streams: [{ codec_type: 'video', width: 1080, height: 1920 }],
+            }),
+            stderr: '',
+        }),
+    };
+    const initial = executionProvider.getNewProjectExecutionState(context);
+    executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: initial.revision_sha256,
+        new_attempt: false,
+    }, context);
+    const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    const task = handoff.tasks.find((item) => item.provider === 'replicate');
+    const requestRevision = task.provider_execution_preview.request_spec.request_revision_sha256;
+    const claimBytes = fs.readFileSync(task.output_claim_path);
+    const binding = {
+        run_revision_sha256: task.run_revision_sha256,
+        task_token: task.task_token,
+        request_revision_sha256: requestRevision,
+        output_claim_sha256: crypto.createHash('sha256').update(claimBytes).digest('hex'),
+    };
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'),
+        Buffer.from([0x00, 0x00, 0x02, 0x00]), Buffer.from('isomiso2', 'ascii'), Buffer.alloc(4096, 0x61),
+    ]);
+    const videoSha = crypto.createHash('sha256').update(videoBytes).digest('hex');
+    const writeResult = (resultId, overrides = {}, schema = 'film_pipeline.external_video_result.v2') => {
+        const directory = path.join(replicateReceiptResultsRoot, resultId);
+        fs.mkdirSync(directory);
+        fs.writeFileSync(path.join(directory, 'result.mp4'), videoBytes);
+        fs.writeFileSync(path.join(directory, 'receipt.json'), `${JSON.stringify({
+            schema_version: schema,
+            provider: 'replicate',
+            result_id: resultId,
+            status: 'succeeded',
+            output_file: 'result.mp4',
+            output_sha256: videoSha,
+            output_size_bytes: videoBytes.byteLength,
+            completed_at: '2026-07-16T02:00:00.000Z',
+            ...(schema.endsWith('.v2') ? binding : {}),
+            ...overrides,
+        })}\n`);
+        return `replicate:${resultId}:${videoSha}`;
+    };
+    const running = receipt({ revision_sha256: task.run_revision_sha256 }, task, {
+        status: 'running', progress: 20, reported_at: '2026-07-16T02:01:00.000Z',
+    });
+    executionProvider.publishExecutionReceipt(running, context);
+    const succeeded = (resultLocator) => ({
+        ...running,
+        status: 'succeeded', progress: 100, result_received: true, result_locator: resultLocator,
+        external_call_performed: true, model_called: true, generation_executed: true,
+        reported_at: '2026-07-16T02:02:00.000Z',
+    });
+
+    const manualLocator = writeResult('manual_v1_prediction', {}, 'film_pipeline.external_video_result.v1');
+    assert.throws(() => executionProvider.publishExecutionReceipt(succeeded(manualLocator), context), {
+        code: 'EXECUTION_REPLICATE_RESULT_BINDING_REQUIRED',
+    });
+    for (const [resultId, field, value, code] of [
+        ['wrong_run_prediction', 'run_revision_sha256', '7'.repeat(64), 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH'],
+        ['wrong_task_prediction', 'task_token', `task_${'7'.repeat(64)}`, 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH'],
+        ['wrong_request_prediction', 'request_revision_sha256', '7'.repeat(64), 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH'],
+        ['wrong_claim_prediction', 'output_claim_sha256', '7'.repeat(64), 'EXECUTION_REPLICATE_RESULT_CLAIM_MISMATCH'],
+    ]) {
+        const locator = writeResult(resultId, { [field]: value });
+        assert.throws(() => executionProvider.publishExecutionReceipt(succeeded(locator), context), { code });
+    }
+    const validLocator = writeResult('prediction_exact_001');
+    assert.throws(() => executionProvider.publishExecutionReceipt(
+        succeeded(`replicate:different_prediction:${videoSha}`),
+        context,
+    ), { code: 'EXECUTION_RESULT_LOCATOR_INVALID' });
+    const published = executionProvider.publishExecutionReceipt(succeeded(validLocator), context).state;
+    const publishedTask = published.tasks.find((item) => item.lane === 'video');
+    assert.equal(publishedTask.result_match_status, 'ready');
+    assert.ok(publishedTask.result_candidate_token);
+    const relaunched = executionProvider.getNewProjectExecutionState({
+        ...context,
+        tokenSecret: Buffer.alloc(32, 22),
+    });
+    const relaunchedTask = relaunched.tasks.find((item) => item.lane === 'video');
+    assert.equal(relaunchedTask.result_match_status, 'ready');
+    assert.ok(relaunchedTask.result_candidate_token);
+    assert.notEqual(relaunchedTask.result_candidate_token, publishedTask.result_candidate_token);
+    fs.unlinkSync(task.output_claim_path);
+    const missingBindingTask = executionProvider.getNewProjectExecutionState({
+        ...context,
+        tokenSecret: Buffer.alloc(32, 23),
+    }).tasks.find((item) => item.lane === 'video');
+    assert.equal(missingBindingTask.result_match_status, 'waiting');
+    assert.equal(missingBindingTask.result_candidate_token, '');
+    fs.writeFileSync(task.output_claim_path, claimBytes, { mode: 0o600 });
+    const renderer = filmProvider.getNewProjectExecutionState({
+        ...context,
+        tokenSecret: Buffer.alloc(32, 22),
+    });
+    assert.doesNotMatch(JSON.stringify(renderer),
+        /run_revision_sha256|task_token|request_revision_sha256|output_claim_sha256|prediction_exact_001/);
 });
 
 test('actual local CLI inspects a private handoff and publishes a 0600 receipt using file IO only', (t) => {

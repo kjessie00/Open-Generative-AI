@@ -197,6 +197,28 @@ function publishReplicateClaim(selection, task, preview) {
     throw failure('EXECUTION_REPLICATE_CLAIM_INVALID');
 }
 
+function replicateExecutionBinding(selection, task, context = {}) {
+    const referencesByTask = referenceFilesByTask(
+        selection.manifest,
+        loadReferenceCommit(selection.paths, selection.manifest),
+    );
+    const outputPath = executionOutputPath(selection.paths, task.task_token);
+    const preview = replicateRequestPreview(selection, task, referencesByTask, outputPath, context);
+    const claimRecord = replicateClaimRecord(
+        selection,
+        task,
+        preview.request_spec.request_revision_sha256,
+    );
+    const claimPath = loadReplicateClaim(selection, task, claimRecord);
+    const claimBytes = readPrivate(claimPath, MAX_OUTPUT_CLAIM_BYTES, 'EXECUTION_REPLICATE_CLAIM_MISSING');
+    return {
+        run_revision_sha256: selection.manifest.run_revision_sha256,
+        task_token: task.task_token,
+        request_revision_sha256: preview.request_spec.request_revision_sha256,
+        output_claim_sha256: sha256(claimBytes),
+    };
+}
+
 function loadExecutionOutputTargets(selection, context = {}, referencesByTask = new Map()) {
     if (selection.manifest.lane !== 'video') return new Map();
     assertPrivateDirectory(selection.paths.outputsRoot, 'EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
@@ -833,9 +855,7 @@ function loadReceipt(paths, taskToken, { missing = true } = {}) {
 }
 
 function laneReceipts(selection) {
-    return selection.prepared
-        ? selection.manifest.tasks.map((task) => loadReceipt(selection.paths, task.task_token))
-        : selection.manifest.tasks.map(() => null);
+    return selection.manifest.tasks.map((task) => loadReceipt(selection.paths, task.task_token));
 }
 
 function aggregateStatus(counts, total) {
@@ -944,6 +964,11 @@ function publicSelections(selections, context = {}) {
                 ...task, aspect_ratio: selection.manifest.aspect_ratio, reference_files: referenceFiles,
                 output_path: outputTargets.get(task.task_token) || '',
             }, context);
+            let executionResultBinding = null;
+            if (receipt?.status === 'succeeded' && task.lane === 'video' && task.provider === 'replicate') {
+                try { executionResultBinding = replicateExecutionBinding(selection, task, context); }
+                catch { /* missing or changed private binding keeps the result unavailable */ }
+            }
             tasks.push({
                 task_token: task.task_token, lane: task.lane, kind: task.kind, sequence: task.sequence,
                 label: task.label, provider_label: task.provider_label, provider_id: task.provider,
@@ -957,6 +982,7 @@ function publicSelections(selections, context = {}) {
                 provider_preview_readiness: providerPreview.readiness,
                 provider_preview_blockers: providerPreview.blockers,
                 reference_setup_missing: task.reference_result_tokens.length > referenceFiles.length,
+                execution_result_binding: executionResultBinding,
                 ...providerReadiness(task, context),
             });
         });
@@ -970,8 +996,17 @@ function publicSelections(selections, context = {}) {
     for (const task of tasks) {
         let match = null;
         if (task.status === 'succeeded') {
-            const resolver = (task.lane === 'image' ? indexes.image : indexes.video).get('resolve');
-            try { match = typeof resolver === 'function' ? resolver(task.result_locator, context) : null; } catch { match = null; }
+            if (task.lane === 'video' && task.provider_id === 'replicate') {
+                if (task.execution_result_binding) {
+                    const resolver = context.resolveVideoExecutionResultLocatorForExecution
+                        || videoResultImportProvider.resolveVideoExecutionResultLocatorForExecution;
+                    try { match = resolver(task.result_locator, task.execution_result_binding, context); }
+                    catch { match = null; }
+                }
+            } else {
+                const resolver = (task.lane === 'image' ? indexes.image : indexes.video).get('resolve');
+                try { match = typeof resolver === 'function' ? resolver(task.result_locator, context) : null; } catch { match = null; }
+            }
         }
         const candidateToken = connected.has(task.task_token) ? '' : match?.candidate_token || '';
         task.workbench_connected = connected.has(task.task_token);
@@ -985,6 +1020,7 @@ function publicSelections(selections, context = {}) {
         delete task.provider_preview_readiness;
         delete task.provider_preview_blockers;
         delete task.reference_setup_missing;
+        delete task.execution_result_binding;
         delete task.provider_id;
         delete task.result_locator;
     }
@@ -1266,6 +1302,13 @@ function publishExecutionReceipt(payload, context = {}) {
             const expectedProvider = task.lane === 'image' ? 'dst' : task.provider;
             if (!receipt.result_locator.startsWith(`${expectedProvider}:`)) {
                 throw failure('EXECUTION_RESULT_PROVIDER_MISMATCH');
+            }
+            if (task.lane === 'video' && task.provider === 'replicate') {
+                const binding = replicateExecutionBinding({ paths, manifest }, task, context);
+                const resolver = context.resolveVideoExecutionResultLocatorForExecution
+                    || videoResultImportProvider.resolveVideoExecutionResultLocatorForExecution;
+                const match = resolver(receipt.result_locator, binding, context);
+                if (!match?.candidate_token) throw failure('EXECUTION_RESULT_LOCATOR_INVALID');
             }
         }
         privateWrite(receiptPath(paths, receipt.task_token), Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`));

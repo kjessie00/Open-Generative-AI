@@ -1,7 +1,7 @@
 import { actionButton, el, emptyState, panelShell } from './ui.js';
 
 const STATUS_TEXT = Object.freeze({
-    queued: '대기',
+    queued: '시작 전',
     running: '진행 중',
     succeeded: '결과 도착',
     failed: '문제 발생',
@@ -25,6 +25,7 @@ const EXECUTION_PREVIEW_TEXT = Object.freeze({
 });
 
 function executionPreviewDetails(task) {
+    if (task.status !== 'queued') return null;
     const preview = task.execution_preview;
     if (!preview || !EXECUTION_PREVIEW_TEXT[preview.mode]) return null;
     const output = preview.output_kind === 'video' ? '영상 1개' : '이미지 1장';
@@ -55,8 +56,17 @@ function executionPreviewDetails(task) {
 
 function taskRow(task, onOpenWorkItem) {
     const lane = task.lane === 'video' ? 'video' : 'image';
-    const status = STATUS_TEXT[task.status] || task.status_label || '대기';
+    const status = STATUS_TEXT[task.status] || task.status_label || '시작 전';
     const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
+    const waitingForConnection = task.status === 'succeeded' && task.result_match_status === 'waiting';
+    const statusText = task.status === 'running' ? `${status} ${progress}%`
+        : task.status === 'failed' && task.failure_label ? `${status} · ${task.failure_label}`
+            : task.result_match_status === 'connected' ? `${status} · 작업대에 연결됨`
+                : task.result_match_status === 'ready' ? `${status} · 연결 준비됨`
+                    : waitingForConnection ? `${status} · 연결 확인 필요`
+                        : task.status === 'queued'
+                            && task.execution_preview?.reason === 'private_replicate_request_ready'
+                            ? `${status} · 요청 준비됨` : status;
     const stateClass = task.status === 'failed'
         ? 'text-amber-100'
         : task.status === 'succeeded' ? 'text-emerald-200' : 'text-white';
@@ -72,9 +82,7 @@ function taskRow(task, onOpenWorkItem) {
         el('div', { className: 'min-w-0' }, [
             el('strong', { text: `${task.sequence}. ${task.label}`, className: 'break-words text-sm text-white' }),
             el('p', {
-                text: task.status === 'running' ? `${status} ${progress}%`
-                    : task.result_match_status === 'connected' ? `${status} · 작업대에 연결됨`
-                        : task.result_match_status === 'ready' ? `${status} · 연결 준비됨` : status,
+                text: statusText,
                 className: `mt-1 text-sm font-semibold ${stateClass}`,
             }),
             task.status === 'running'
@@ -85,13 +93,15 @@ function taskRow(task, onOpenWorkItem) {
                 : null,
             executionPreviewDetails(task),
         ]),
-        actionButton(task.result_match_status === 'ready' ? '결과 확인' : `${laneTitle(lane)} 작업 열기`, {
+        actionButton(task.result_match_status === 'ready' ? '결과 확인'
+            : waitingForConnection ? '결과 연결 확인' : `${laneTitle(lane)} 작업 열기`, {
             variant: task.result_received ? 'primary' : 'muted',
             onClick: () => onOpenWorkItem?.({
                 kind: lane,
                 sequence: task.sequence,
                 candidateToken: task.result_candidate_token || '',
                 imageIndex: task.result_image_index || 0,
+                openConnector: waitingForConnection,
             }),
         }),
     ]);
@@ -151,7 +161,7 @@ export function NewProjectExecutionPanel({
         }, [
             el('div', { className: 'rounded-lg border border-white/10 bg-white/[0.035] p-4' }, [
                 el('p', {
-                    text: `대기 ${summary.queued || 0} · 진행 ${summary.running || 0} · 결과 ${summary.succeeded || 0} · 문제 ${summary.failed || 0}`,
+                    text: `시작 전 ${summary.queued || 0} · 진행 ${summary.running || 0} · 결과 ${summary.succeeded || 0} · 문제 ${summary.failed || 0}`,
                     className: 'text-sm font-semibold leading-6 text-white', attrs: { role: 'status', 'aria-live': 'polite' },
                 }),
                 el('p', { text: `다음 할 일: ${nextText}`, className: 'mt-1 text-sm leading-6 text-secondary' }),

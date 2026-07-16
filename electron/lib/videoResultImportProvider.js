@@ -8,6 +8,7 @@ const { readProductionFolder } = require('./productionReader');
 const WORKSPACE_SCHEMA = 'film_pipeline.video_result_import_workspace.v1';
 const PLAN_SCHEMA = 'film_pipeline.video_result_import_plan.v1';
 const EXTERNAL_RESULT_SCHEMA = 'film_pipeline.external_video_result.v1';
+const EXTERNAL_RESULT_SCHEMA_V2 = 'film_pipeline.external_video_result.v2';
 const DEFAULT_FLOW_RESULTS_ROOT = '/Users/jessiek/StudioProjects/google_labs_flow_auto/outputs/generated';
 const DEFAULT_GROK_RESULTS_ROOT = '/Users/jessiek/StudioProjects/grok-auto/grok-browser/outputs';
 const DEFAULT_REPLICATE_RESULTS_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory/docs/xhs_ad_tests/20260515_smart_doorbell_ai_reversal/replicate_seedance_clips';
@@ -33,6 +34,7 @@ const SESSION_TOKEN_SECRET = crypto.randomBytes(32);
 const SESSION_PLAN_STORE = new Map();
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+const REPLICATE_PREDICTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,160}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 const DEFAULT_REPLICATE_SHA_ALLOWLIST = Object.freeze({
@@ -335,6 +337,7 @@ function inspectCandidate(provider, resultId, filePath, rootInfo, context = {}, 
         probe,
         provenance: options.provenance || null,
         provenanceKind: options.provenanceKind || '',
+        executionBinding: options.executionBinding || null,
         mtimeMs: after.identity.mtimeMs,
     };
     candidate.token = candidateToken(candidate, context);
@@ -358,17 +361,33 @@ function receiptRoot(context, provider) {
 }
 
 function validateReceipt(value, provider, resultId) {
-    exactKeys(value, [
+    const baseKeys = [
         'schema_version', 'provider', 'result_id', 'status', 'output_file',
         'output_sha256', 'output_size_bytes', 'completed_at',
+    ];
+    const executionBound = value?.schema_version === EXTERNAL_RESULT_SCHEMA_V2;
+    exactKeys(value, [
+        ...baseKeys,
+        ...(executionBound ? [
+            'run_revision_sha256', 'task_token', 'request_revision_sha256', 'output_claim_sha256',
+        ] : []),
     ], 'VIDEO_IMPORT_RECEIPT_CONTRACT_INVALID');
-    if (value.schema_version !== EXTERNAL_RESULT_SCHEMA || value.provider !== provider
+    if (![EXTERNAL_RESULT_SCHEMA, EXTERNAL_RESULT_SCHEMA_V2].includes(value.schema_version)
+        || value.provider !== provider
         || value.result_id !== resultId || value.status !== 'succeeded' || value.output_file !== 'result.mp4'
         || !SHA256_PATTERN.test(value.output_sha256 || '')
         || !Number.isSafeInteger(value.output_size_bytes) || value.output_size_bytes <= 0
         || value.output_size_bytes > MAX_VIDEO_BYTES
         || typeof value.completed_at !== 'string' || Buffer.byteLength(value.completed_at, 'utf8') > 64
         || !ISO_TIME_PATTERN.test(value.completed_at) || !Number.isFinite(Date.parse(value.completed_at))) {
+        throw failure('VIDEO_IMPORT_RECEIPT_CONTRACT_INVALID');
+    }
+    if (executionBound && (provider !== 'replicate'
+        || !REPLICATE_PREDICTION_ID_PATTERN.test(value.result_id)
+        || !/^task_[a-f0-9]{64}$/.test(value.task_token || '')
+        || !SHA256_PATTERN.test(value.run_revision_sha256 || '')
+        || !SHA256_PATTERN.test(value.request_revision_sha256 || '')
+        || !SHA256_PATTERN.test(value.output_claim_sha256 || ''))) {
         throw failure('VIDEO_IMPORT_RECEIPT_CONTRACT_INVALID');
     }
     return value;
@@ -410,7 +429,14 @@ function scanCanonicalProvider(provider, context = {}) {
                 expectedSha256: value.output_sha256,
                 expectedSize: value.output_size_bytes,
                 provenance: receipt,
-                provenanceKind: 'provider_result_receipt_v1',
+                provenanceKind: value.schema_version === EXTERNAL_RESULT_SCHEMA_V2
+                    ? 'provider_result_receipt_v2' : 'provider_result_receipt_v1',
+                executionBinding: value.schema_version === EXTERNAL_RESULT_SCHEMA_V2 ? {
+                    run_revision_sha256: value.run_revision_sha256,
+                    task_token: value.task_token,
+                    request_revision_sha256: value.request_revision_sha256,
+                    output_claim_sha256: value.output_claim_sha256,
+                } : null,
             });
             const receiptAfter = smallFile(receiptPath, MAX_RECEIPT_BYTES, `${codePrefix}_RECEIPT_UNSAFE`);
             if (!sameSnapshot(receipt, receiptAfter)) throw failure(`${codePrefix}_RECEIPT_CHANGED`);
@@ -656,6 +682,36 @@ function resolveVideoExecutionResultLocator(locator, context = {}) {
         entry.provider === match[1] && entry.resultId === match[2] && entry.source.sha256 === match[3]
     ));
     return candidate ? { candidate_token: candidate.token } : null;
+}
+
+function resolveVideoExecutionResultLocatorForExecution(locator, expectedBinding, context = {}) {
+    exactKeys(expectedBinding, [
+        'run_revision_sha256', 'task_token', 'request_revision_sha256', 'output_claim_sha256',
+    ], 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH');
+    if (!SHA256_PATTERN.test(expectedBinding.run_revision_sha256 || '')
+        || !/^task_[a-f0-9]{64}$/.test(expectedBinding.task_token || '')
+        || !SHA256_PATTERN.test(expectedBinding.request_revision_sha256 || '')
+        || !SHA256_PATTERN.test(expectedBinding.output_claim_sha256 || '')) {
+        throw failure('EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH');
+    }
+    const match = /^(flow|grok|replicate|bytedance):([A-Za-z0-9][A-Za-z0-9._-]{0,159}):([a-f0-9]{64})$/.exec(locator || '');
+    if (!match || match[1] !== 'replicate') return null;
+    const inventory = scanInventory(context);
+    const candidate = inventory.candidates.find((entry) => (
+        entry.provider === match[1] && entry.resultId === match[2] && entry.source.sha256 === match[3]
+    ));
+    if (!candidate) return null;
+    if (!candidate.executionBinding) throw failure('EXECUTION_REPLICATE_RESULT_BINDING_REQUIRED');
+    const binding = candidate.executionBinding;
+    if (binding.run_revision_sha256 !== expectedBinding.run_revision_sha256
+        || binding.task_token !== expectedBinding.task_token
+        || binding.request_revision_sha256 !== expectedBinding.request_revision_sha256) {
+        throw failure('EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH');
+    }
+    if (binding.output_claim_sha256 !== expectedBinding.output_claim_sha256) {
+        throw failure('EXECUTION_REPLICATE_RESULT_CLAIM_MISMATCH');
+    }
+    return { candidate_token: candidate.token };
 }
 
 function blockedPreview(code) {
@@ -1550,6 +1606,7 @@ module.exports = {
     WORKSPACE_SCHEMA,
     PLAN_SCHEMA,
     EXTERNAL_RESULT_SCHEMA,
+    EXTERNAL_RESULT_SCHEMA_V2,
     DEFAULT_FLOW_RESULTS_ROOT,
     DEFAULT_GROK_RESULTS_ROOT,
     DEFAULT_REPLICATE_RESULTS_ROOT,
@@ -1564,6 +1621,7 @@ module.exports = {
     DEFAULT_PLAN_TTL_MS,
     getVideoResultImportWorkspace,
     resolveVideoExecutionResultLocator,
+    resolveVideoExecutionResultLocatorForExecution,
     getVideoResultImportPreview,
     copyVideoResultCandidateToPrivateFile,
     planVideoResultImport,

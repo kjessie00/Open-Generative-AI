@@ -1305,6 +1305,8 @@ function rendererExecutionState(state = {}) {
     const safePreview = (preview = {}) => ({
         mode: preview.mode || 'result_only',
         status_label: preview.status_label || '',
+        ...(preview.reason === 'private_replicate_request_ready'
+            ? { reason: 'private_replicate_request_ready' } : {}),
         user_status: preview.user_status || '',
         next_action: preview.next_action || '',
         output_kind: preview.output_kind === 'video' ? 'video' : 'image',

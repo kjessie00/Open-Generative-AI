@@ -185,6 +185,61 @@ test('MOCK ffprobe: durable video execution locator binds provider, result id, a
     assert.equal(provider.resolveVideoExecutionResultLocator(`bytedance:receipt_result_001:${digest}`, fx.context), null);
 });
 
+test('MOCK ffprobe: execution-bound Replicate v2 receipt survives relaunch while v1 remains manual-only', (t) => {
+    const fx = fixture(t);
+    const binding = {
+        run_revision_sha256: '1'.repeat(64),
+        task_token: `task_${'2'.repeat(64)}`,
+        request_revision_sha256: '3'.repeat(64),
+        output_claim_sha256: '4'.repeat(64),
+    };
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'prediction_bound_001', MP4_ALT, {
+        schema_version: provider.EXTERNAL_RESULT_SCHEMA_V2,
+        ...binding,
+    });
+    writeProviderReceipt(fx.replicateReceiptResultsRoot, 'replicate', 'manual_v1_001', MP4);
+    const digest = crypto.createHash('sha256').update(MP4_ALT).digest('hex');
+    const locator = `replicate:prediction_bound_001:${digest}`;
+    const first = provider.resolveVideoExecutionResultLocatorForExecution(locator, binding, fx.context);
+    const relaunched = provider.resolveVideoExecutionResultLocatorForExecution(locator, binding, {
+        ...fx.context,
+        tokenSecret: Buffer.alloc(32, 12),
+    });
+    assert.ok(first?.candidate_token);
+    assert.ok(relaunched?.candidate_token);
+    assert.notEqual(first.candidate_token, relaunched.candidate_token);
+    assert.equal(provider.resolveVideoExecutionResultLocator(
+        `replicate:manual_v1_001:${crypto.createHash('sha256').update(MP4).digest('hex')}`,
+        fx.context,
+    )?.candidate_token.length > 0, true, 'v1 remains available to the manual resolver');
+    assert.throws(() => provider.resolveVideoExecutionResultLocatorForExecution(
+        `replicate:manual_v1_001:${crypto.createHash('sha256').update(MP4).digest('hex')}`,
+        binding,
+        fx.context,
+    ), { code: 'EXECUTION_REPLICATE_RESULT_BINDING_REQUIRED' });
+    for (const [field, code] of [
+        ['run_revision_sha256', 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH'],
+        ['task_token', 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH'],
+        ['request_revision_sha256', 'EXECUTION_REPLICATE_RESULT_REQUEST_MISMATCH'],
+        ['output_claim_sha256', 'EXECUTION_REPLICATE_RESULT_CLAIM_MISMATCH'],
+    ]) {
+        const changed = field === 'task_token' ? `task_${'9'.repeat(64)}` : '9'.repeat(64);
+        assert.throws(() => provider.resolveVideoExecutionResultLocatorForExecution(
+            locator,
+            { ...binding, [field]: changed },
+            fx.context,
+        ), { code });
+    }
+    assert.equal(provider.resolveVideoExecutionResultLocatorForExecution(
+        `replicate:different_prediction:${digest}`,
+        binding,
+        fx.context,
+    ), null, 'locator id must be the producer-authored Replicate prediction id');
+    const workspace = provider.getVideoResultImportWorkspace(fx.context);
+    assert.doesNotMatch(JSON.stringify(workspace),
+        /run_revision_sha256|task_token|request_revision_sha256|output_claim_sha256/);
+});
+
 function writeStoryboard(productionRoot, clips) {
     const directory = path.join(productionRoot, 'storyboard');
     fs.mkdirSync(directory, { recursive: true });

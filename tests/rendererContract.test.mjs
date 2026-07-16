@@ -171,8 +171,8 @@ test('new project execution panel shows short Korean progress without private me
             prepared: false,
             summary: { queued: 1, running: 1, succeeded: 1, failed: 1 },
             tasks: [
-                { task_token: 'private-image-token', lane: 'image', sequence: 1, label: '인물 시트 · 주인공', provider_label: 'DST 이미지', status: 'succeeded', progress: 100, result_received: true, execution_preview: executionPreview('image') },
-                { task_token: 'private-scene-token', lane: 'image', sequence: 2, label: '장면 이미지 · 첫 만남', provider_label: 'DST 이미지', status: 'failed', progress: 45, failure_code: 'PROVIDER_UNAVAILABLE', result_received: false, execution_preview: {
+                { task_token: 'private-image-token', lane: 'image', sequence: 1, label: '인물 시트 · 주인공', provider_label: 'DST 이미지', status: 'succeeded', progress: 100, result_received: true, result_match_status: 'waiting', execution_preview: executionPreview('image') },
+                { task_token: 'private-scene-token', lane: 'image', sequence: 2, label: '장면 이미지 · 첫 만남', provider_label: 'DST 이미지', status: 'failed', progress: 45, failure_code: 'PROVIDER_UNAVAILABLE', failure_label: '생성 도구 응답 없음', result_received: false, execution_preview: {
                     ...executionPreview('image'),
                     user_status: '참조 이미지와 작업 내용이 준비되었습니다.',
                     next_action: '이미지 작업에서 장면 프롬프트를 확인하세요.',
@@ -213,24 +213,19 @@ test('new project execution panel shows short Korean progress without private me
     });
     document.body.appendChild(panel);
 
-    assert.match(panel.textContent, /대기 1 · 진행 1 · 결과 1 · 문제 1/);
+    assert.match(panel.textContent, /시작 전 1 · 진행 1 · 결과 1 · 문제 1/);
     assert.match(panel.textContent, /이미지를 먼저 완성한 뒤 영상을 만듭니다/);
     assert.match(panel.textContent, /작업 목록 준비는 .* 생성은 시작하지 않습니다/);
-    assert.match(panel.textContent, /결과 도착|문제 발생|진행 중 35%/);
+    assert.match(panel.textContent, /결과 도착 · 연결 확인 필요|문제 발생 · 생성 도구 응답 없음|진행 중 35%/);
+    assert.match(panel.textContent, /시작 전 · 요청 준비됨/);
     assert.match(panel.textContent, /내용 확인 가능 · 작업 내용이 준비되었습니다/);
-    assert.match(panel.textContent, /참조 이미지와 작업 내용이 준비되었습니다/);
-    assert.match(panel.textContent, /다음 행동: 이미지 작업에서 장면 프롬프트를 확인하세요/);
     assert.match(panel.textContent, /실행 전 확인/);
-    assert.match(panel.textContent, /다음 행동: 프롬프트를 확인하세요/);
-    assert.match(panel.textContent, /확인 필요 · 작업 조건을 확인하세요/);
-    assert.match(panel.textContent, /현재 참조 구성으로는 영상 작업을 준비할 수 없습니다/);
-    assert.match(panel.textContent, /다음 행동: 영상 작업에서 다른 도구를 선택하거나 완료 영상을 연결하세요/);
     assert.match(panel.textContent, /현재 장면 길이는 이 도구에서 지원되지 않습니다/);
     assert.match(panel.textContent, /다음 행동: 완료 영상을 연결하거나 설계에서 장면 길이를 확인하세요/);
     assert.match(panel.textContent, /Replicate에 보낼 영상 요청이 준비되었습니다\. 아직 전송되지 않았습니다/);
     assert.match(panel.textContent, /다음 행동: 영상 작업에서 프롬프트·길이·첫 화면을 확인하세요/);
-    const reviewDetails = findAll(panel, 'details').find((node) => node.textContent.includes('현재 참조 구성으로는'));
-    assert.match(reviewDetails?.textContent || '', /확인 필요 · 작업 조건을 확인하세요/, 'review-required copy stays inside existing details');
+    assert.doesNotMatch(panel.textContent, /현재 참조 구성으로는 영상 작업을 준비할 수 없습니다|참조 이미지와 작업 내용이 준비되었습니다/,
+        'preflight copy disappears after work starts or finishes');
     assert.match(panel.textContent, /예상 결과: 이미지 1장|예상 결과: 영상 1개/);
     assert.doesNotMatch(panel.textContent, /DST 이미지|플로우|그록/);
     assert.doesNotMatch(panel.textContent, /private-|PROVIDER_UNAVAILABLE|FLOW_REFERENCE_COUNT_MUST_BE_ZERO_OR_TWO|GROK_DURATION_UNSUPPORTED|task_|result_|preparation_|reference_files|relative_path|request_spec|authorization_env|REPLICATE_API_TOKEN|api\.replicate\.com|claim|\.png|\.mp4|flow submit|grok submit|image\/png|video\/mp4|4096|8192|[a-f0-9]{64}/);
@@ -241,10 +236,14 @@ test('new project execution panel shows short Korean progress without private me
 
     await byAttribute(panel, 'button', 'aria-label', '작업 상태 새로고침').dispatchEvent({ type: 'click' });
     await byText(panel, 'button', '실행 목록 준비').dispatchEvent({ type: 'click' });
+    await byText(panel, 'button', '결과 연결 확인').dispatchEvent({ type: 'click' });
     await byText(panel, 'button', '영상 작업 열기').dispatchEvent({ type: 'click' });
     assert.equal(refreshed, 1);
     assert.equal(staged, 1);
-    assert.deepEqual(opened, [{ kind: 'video', sequence: 3, candidateToken: '', imageIndex: 0 }]);
+    assert.deepEqual(opened, [
+        { kind: 'image', sequence: 1, candidateToken: '', imageIndex: 0, openConnector: true },
+        { kind: 'video', sequence: 3, candidateToken: '', imageIndex: 0, openConnector: false },
+    ]);
 });
 
 async function flushRenderer() {
@@ -448,7 +447,7 @@ test('PipelineStudio renders the Korean compact workbench and preserves dry-run 
         .map((span) => span.textContent.trim());
 
     assert.ok(byText(studio, 'h2', '작업 진행'));
-    assert.match(studio.textContent, /대기 0 · 진행 0 · 결과 0 · 문제 0/);
+    assert.match(studio.textContent, /시작 전 0 · 진행 0 · 결과 0 · 문제 0/);
     assert.deepEqual(visibleBadgeLabels(), []);
 
     await byText(studio, 'button', '이미지 작업').dispatchEvent({ type: 'click' });
