@@ -31,7 +31,85 @@ export const WORKFLOW_CAPABILITIES = Object.freeze([
     Object.freeze({ label: '앱에서 실행 안 함', detail: '유료 생성 → Dreamina·Flow 제출 → Gemini 검토 → 외부 업로드' }),
 ]);
 
+function hasOwn(object, key) {
+    return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function hasNewProjectWorkflowInputs(state) {
+    return [
+        'newProjectDraftState',
+        'newProjectDesignState',
+        'newProjectImagePlanState',
+        'newProjectVideoPlanState',
+    ].some((key) => hasOwn(state, key));
+}
+
+function hasSavedDraft(state) {
+    const draftState = state.newProjectDraftState || {};
+    const draft = draftState.draft || {};
+    return ['saved', 'restored'].includes(draftState.status)
+        && Boolean(String(draft.production_id || '').trim())
+        && Boolean(String(draft.brief || '').trim())
+        && Boolean(String(draft.script || '').trim());
+}
+
+function hasSavedDesign(state) {
+    const designState = state.newProjectDesignState || {};
+    const board = designState.board || {};
+    return ['saved', 'restored'].includes(designState.status)
+        && Array.isArray(board.scenes)
+        && board.scenes.length > 0;
+}
+
+function reviewDecisionMap(planState) {
+    return new Map((Array.isArray(planState?.review_decisions) ? planState.review_decisions : [])
+        .map((decision) => [decision?.task_token, decision?.decision]));
+}
+
+function approvedPlanTasks(planState) {
+    const tasks = Array.isArray(planState?.tasks) ? planState.tasks : [];
+    const decisions = reviewDecisionMap(planState);
+    return tasks.filter((task) => (
+        task?.status === '결과연결'
+        && Boolean(task.result_token)
+        && decisions.get(task.task_token) === 'use'
+    )).length;
+}
+
+export function deriveNewProjectWorkflowProjection(state = {}) {
+    if (!hasNewProjectWorkflowInputs(state)) return null;
+    const draftReady = hasSavedDraft(state);
+    const designReady = draftReady && hasSavedDesign(state);
+    const imagePlan = state.newProjectImagePlanState || {};
+    const videoPlan = state.newProjectVideoPlanState || {};
+    const imageTasks = Array.isArray(imagePlan.tasks) ? imagePlan.tasks : [];
+    const videoTasks = Array.isArray(videoPlan.tasks) ? videoPlan.tasks : [];
+    const mediaTotal = imageTasks.length + videoTasks.length;
+    const mediaApproved = approvedPlanTasks(imagePlan) + approvedPlanTasks(videoPlan);
+    const mediaReady = designReady && imageTasks.length > 0 && videoTasks.length > 0
+        && mediaApproved === mediaTotal;
+    const selection = state.newProjectClipSelectionState || state.newProjectClipSelection || {};
+    const acceptedCount = Number(selection.accepted_count) || 0;
+    const selectionTotal = Number(selection.total_count) || 0;
+    const selectionReady = mediaReady && selectionTotal > 0 && acceptedCount === selectionTotal;
+
+    return Object.freeze({
+        draftReady,
+        designReady,
+        mediaReady,
+        selectionReady,
+        metrics: Object.freeze({
+            files: draftReady ? 1 : 0,
+            parsed: designReady ? 1 : 0,
+            reviewed: mediaReady ? mediaApproved : 0,
+            accepted: selectionReady ? acceptedCount : 0,
+        }),
+    });
+}
+
 export function deriveWorkflowMetrics(state = {}) {
+    const newProject = deriveNewProjectWorkflowProjection(state);
+    if (newProject) return newProject.metrics;
     const accepted = (state.acceptedSeconds || []).filter((record) => (
         isCanonicalSelectedTakesProvenance(record.canonical_provenance)
             ? record.accepted === true && record.source_exists === true && Boolean(record.clip_id)

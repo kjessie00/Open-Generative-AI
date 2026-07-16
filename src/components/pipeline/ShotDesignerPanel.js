@@ -9,6 +9,7 @@ import { CameraControlStrip } from './CameraControlStrip.js';
 import { CommandPreviewCard } from './CommandPreviewCard.js';
 import { MediaReferencePicker } from './MediaReferencePicker.js';
 import { GenerationHistoryGrid } from './GenerationHistoryGrid.js';
+import { NewProjectContinuityEditor } from './NewProjectContinuityEditor.js';
 import { p } from './copy.js';
 
 const MODEL_OPTIONS = Object.freeze([
@@ -122,7 +123,21 @@ async function copyText(text, button, fallbackLabel) {
     }, 1200);
 }
 
-export function ShotDesignerPanel({ state, onSavePlanningFile }) {
+export function ShotDesignerPanel({
+    state, onSavePlanningFile,
+    newProjectDesignState, newProjectDesignBoard, newProjectDesignDirty = false, newProjectDesignNotice = '',
+    onNewProjectDesignChange, onSaveNewProjectDesign, onEnqueueDesignAgentRequest,
+}) {
+    if (newProjectDesignState && newProjectDesignBoard) {
+        return panelShell('샷 설계', '현재 장면을 순서대로 보며 첫 화면과 연출을 직접 다듬습니다.', [
+            NewProjectContinuityEditor({
+                mode: 'shot', designState: newProjectDesignState, boardValue: newProjectDesignBoard,
+                dirty: newProjectDesignDirty, notice: newProjectDesignNotice,
+                onBoardChange: onNewProjectDesignChange, onSave: onSaveNewProjectDesign,
+                onAgentRequest: onEnqueueDesignAgentRequest,
+            }),
+        ]);
+    }
     const container = el('div');
     const clips = state.storyboard || [];
     let selectedClipId = clips[0]?.clip_id || '';

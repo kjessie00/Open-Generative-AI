@@ -24,6 +24,135 @@ const EXECUTION_PREVIEW_TEXT = Object.freeze({
     result_only: '결과만 연결 · 이 작업대에서는 생성을 시작하지 않습니다.',
 });
 
+function reviewDecisionMap(planState) {
+    return new Map((Array.isArray(planState?.review_decisions) ? planState.review_decisions : [])
+        .map((decision) => [decision?.task_token, decision?.decision]));
+}
+
+function displayPlanTasks(lane, tasks, planState) {
+    const decisions = reviewDecisionMap(planState);
+    return (Array.isArray(tasks) ? tasks : []).map((task) => {
+        const connected = task?.status === '결과연결' && Boolean(task.result_token);
+        const retry = task?.status === '재제작';
+        const hasResult = (connected || retry) && Boolean(task.result_token);
+        return {
+            ...task,
+            lane,
+            sequence: Number(task.sequence) || 0,
+            label: String(task.label || (lane === 'video' ? '이름 없는 영상' : '이름 없는 이미지')),
+            status: hasResult ? 'succeeded' : 'queued',
+            progress: hasResult ? 100 : 0,
+            result_received: hasResult,
+            result_match_status: hasResult ? 'connected' : '',
+            quality_decision: retry ? 'retry' : decisions.get(task.task_token) || task.review_decision || 'pending',
+        };
+    });
+}
+
+function summarizeTasks(tasks) {
+    return Object.freeze({
+        queued: tasks.filter((task) => task.status === 'queued').length,
+        running: tasks.filter((task) => task.status === 'running').length,
+        succeeded: tasks.filter((task) => task.status === 'succeeded').length,
+        failed: tasks.filter((task) => task.status === 'failed').length,
+    });
+}
+
+function currentPlanLane(lane, tasks, planState) {
+    const source = Array.isArray(tasks) ? tasks
+        : Array.isArray(planState?.tasks) ? planState.tasks : null;
+    return {
+        authoritative: source !== null,
+        tasks: source === null ? [] : displayPlanTasks(lane, source, planState),
+    };
+}
+
+function overlayExecutionTasks(receiptTasks, imagePlan, videoPlan) {
+    if (!imagePlan.authoritative && !videoPlan.authoritative) return [...receiptTasks];
+    const receiptByTask = new Map(receiptTasks.map((task) => [`${task.lane}\0${task.task_token}`, task]));
+    const mergeLane = (lane, plan) => {
+        if (!plan.authoritative) return receiptTasks.filter((task) => task.lane === lane);
+        return plan.tasks.map((current) => {
+            const receipt = receiptByTask.get(`${lane}\0${current.task_token}`);
+            if (!receipt) return current;
+            const connected = current.result_match_status === 'connected';
+            const receiptMatch = ['ready', 'waiting'].includes(receipt.result_match_status)
+                ? receipt.result_match_status : '';
+            return {
+                ...receipt,
+                ...current,
+                status: connected ? current.status : receipt.status || current.status,
+                progress: connected ? current.progress
+                    : Number.isFinite(Number(receipt.progress)) ? Number(receipt.progress) : current.progress,
+                result_received: connected ? current.result_received
+                    : typeof receipt.result_received === 'boolean'
+                    ? receipt.result_received : current.result_received,
+                result_match_status: connected ? 'connected' : receiptMatch,
+                quality_decision: current.quality_decision,
+            };
+        });
+    };
+    return [
+        ...mergeLane('image', imagePlan),
+        ...mergeLane('video', videoPlan),
+    ];
+}
+
+function nextExecutionAction(tasks) {
+    const active = tasks.find((task) => task.status === 'failed')
+        || tasks.find((task) => task.status === 'running')
+        || tasks.find((task) => task.status === 'queued')
+        || tasks.find((task) => task.result_match_status !== 'connected');
+    if (active) {
+        const kind = active.lane === 'video' ? 'video' : 'image';
+        return Object.freeze({
+            id: 'work-item',
+            label: `${laneTitle(kind)} ${active.sequence}. ${shortLabel(active.label)}`,
+            tab: kind === 'video' ? 'videos' : 'assets',
+            kind,
+            sequence: active.sequence,
+        });
+    }
+    const imageTasks = tasks.filter((task) => task.lane === 'image');
+    const videoTasks = tasks.filter((task) => task.lane === 'video');
+    if (!imageTasks.length) return Object.freeze({ id: 'image-work', label: '이미지 작업 준비', tab: 'assets' });
+    if (!videoTasks.length) return Object.freeze({ id: 'video-work', label: '영상 작업 준비', tab: 'videos' });
+    if (!tasks.every((task) => task.quality_decision === 'use')) {
+        return Object.freeze({ id: 'result-review', label: '결과 검토', tab: 'storyboard' });
+    }
+    return Object.freeze({ id: 'clip-selection', label: '클립 선택', tab: 'qa' });
+}
+
+export function deriveExecutionDisplayState({
+    executionState = {}, imagePlanState = {}, imagePlanTasks,
+    videoPlanState = {}, videoPlanTasks,
+} = {}) {
+    const receiptTasks = Array.isArray(executionState.tasks) ? executionState.tasks : [];
+    const imagePlan = currentPlanLane('image', imagePlanTasks, imagePlanState);
+    const videoPlan = currentPlanLane('video', videoPlanTasks, videoPlanState);
+    const tasks = overlayExecutionTasks(receiptTasks, imagePlan, videoPlan);
+    const imageTasks = tasks.filter((task) => task.lane === 'image');
+    const videoTasks = tasks.filter((task) => task.lane === 'video');
+    const laneSummary = Object.freeze({
+        image: Object.freeze({
+            total: imageTasks.length,
+            connected: imageTasks.filter((task) => task.result_match_status === 'connected').length,
+        }),
+        video: Object.freeze({
+            total: videoTasks.length,
+            connected: videoTasks.filter((task) => task.result_match_status === 'connected').length,
+        }),
+    });
+    return Object.freeze({
+        source: receiptTasks.length ? 'execution' : tasks.length ? 'plans' : 'empty',
+        tasks: Object.freeze(tasks),
+        summary: summarizeTasks(tasks),
+        laneSummary,
+        nextAction: nextExecutionAction(tasks),
+        prepared: executionState.prepared === true,
+    });
+}
+
 function executionPreviewDetails(task) {
     if (task.status !== 'queued') return null;
     const preview = task.execution_preview;
@@ -144,16 +273,18 @@ function stageGuide(imageTasks, videoTasks, prepared) {
 
 export function NewProjectExecutionPanel({
     executionState, executionNotice = '', executionRefreshing = false,
-    hasProductionRoot = false, onRefreshExecution, onStageExecution, onOpenWorkItem, onOpenLegacyQueue,
+    imagePlanState, imagePlanTasks, videoPlanState, videoPlanTasks,
+    hasProductionRoot = false, onRefreshExecution, onStageExecution, onOpenWorkItem,
+    onOpenNextAction, onOpenLegacyQueue,
 }) {
-    const tasks = Array.isArray(executionState?.tasks) ? executionState.tasks : [];
-    const summary = executionState?.summary || {};
+    const displayState = deriveExecutionDisplayState({
+        executionState, imagePlanState, imagePlanTasks, videoPlanState, videoPlanTasks,
+    });
+    const tasks = displayState.tasks;
+    const summary = displayState.summary;
     const imageTasks = tasks.filter((task) => task.lane === 'image');
     const videoTasks = tasks.filter((task) => task.lane === 'video');
-    const next = tasks.find((task) => task.status === 'failed')
-        || tasks.find((task) => task.status === 'running')
-        || tasks.find((task) => task.status === 'queued');
-    const nextText = next ? `${laneTitle(next.lane)} ${next.sequence}. ${shortLabel(next.label)}` : tasks.length ? '도착한 결과 확인' : '이미지 작업 준비';
+    const nextText = displayState.nextAction.label;
 
     return panelShell('작업 진행', '이미지를 먼저 완성한 뒤 영상을 만듭니다.', [
         el('section', {
@@ -170,9 +301,9 @@ export function NewProjectExecutionPanel({
                     text: '작업 목록 준비는 프롬프트와 순서만 저장합니다. 이미지나 영상 생성은 시작하지 않습니다.',
                     className: 'mt-1 text-xs leading-5 text-secondary',
                 }),
-                el('div', { className: 'mt-3' }, [stageGuide(imageTasks, videoTasks, executionState?.prepared === true)]),
+                el('div', { className: 'mt-3' }, [stageGuide(imageTasks, videoTasks, displayState.prepared)]),
                 el('div', { className: 'mt-3 flex flex-wrap items-center gap-3' }, [
-                    tasks.length && !executionState?.prepared
+                    tasks.length && !displayState.prepared
                         ? actionButton(executionRefreshing ? '준비 중…' : '실행 목록 준비', {
                             variant: 'primary', disabled: executionRefreshing,
                             onClick: () => onStageExecution?.(),
@@ -180,6 +311,10 @@ export function NewProjectExecutionPanel({
                         : tasks.length ? el('span', {
                             text: '실행 목록 준비됨 · 생성은 아직 시작하지 않음',
                             className: 'text-sm font-semibold text-emerald-200',
+                        }) : null,
+                    onOpenNextAction && ['image-work', 'video-work', 'result-review', 'clip-selection'].includes(displayState.nextAction.id)
+                        ? actionButton(displayState.nextAction.label, {
+                            variant: 'muted', onClick: () => onOpenNextAction(displayState.nextAction),
                         }) : null,
                     el('button', {
                         text: executionRefreshing ? '확인 중…' : '새로고침',

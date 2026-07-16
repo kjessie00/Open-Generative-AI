@@ -1,8 +1,23 @@
 import { BLOCKERS } from '../../lib/pipeline/blockers.js';
 import { blockerList, card, el, infoGrid, panelShell, statusBadge } from './ui.js';
 import { p } from './copy.js';
+import { NewProjectContinuityEditor } from './NewProjectContinuityEditor.js';
 
-export function MotionBoardPanel({ state }) {
+export function MotionBoardPanel({
+    state,
+    newProjectDesignState, newProjectDesignBoard, newProjectDesignDirty = false, newProjectDesignNotice = '',
+    onNewProjectDesignChange, onSaveNewProjectDesign, onEnqueueDesignAgentRequest,
+}) {
+    if (newProjectDesignState && newProjectDesignBoard) {
+        return panelShell('모션 보드', '장면별 행동·카메라·길이를 현재 설계에 바로 저장합니다.', [
+            NewProjectContinuityEditor({
+                mode: 'motion', designState: newProjectDesignState, boardValue: newProjectDesignBoard,
+                dirty: newProjectDesignDirty, notice: newProjectDesignNotice,
+                onBoardChange: onNewProjectDesignChange, onSave: onSaveNewProjectDesign,
+                onAgentRequest: onEnqueueDesignAgentRequest,
+            }),
+        ]);
+    }
     const shots = state.motionBoard || [];
     const clipIds = new Set((state.storyboard || []).map((clip) => clip.clip_id));
     const coveredClipIds = new Set(shots.map((shot) => shot.clip_id));

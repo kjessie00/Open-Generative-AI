@@ -26,11 +26,13 @@ function resultSlot(task, resultPreview) {
 export function VideoTaskCard({ task, resultPreview, resultWorkspace, agentRequest, onPromptChange, onProviderChange, onToggleRetry, onRefreshResults, onLoadCandidatePreview, onConnectResult, onRequestAgentEdit, onDecideAgentEdit }) {
     let connectorOpen = false;
     let preferredCandidateToken = '';
+    const cardClass = () => `min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3 ${agentRequest?.status === 'suggestion_ready' || connectorOpen ? 'lg:col-span-2 xl:col-span-3' : ''}`;
     const root = el('article', {
-        className: `min-w-0 rounded-lg border border-white/10 bg-white/[0.035] p-3 ${agentRequest?.status === 'suggestion_ready' ? 'lg:col-span-2 xl:col-span-3' : ''}`,
+        className: cardClass(),
         attrs: { 'data-work-target': 'video', 'data-sequence': task.sequence, tabindex: -1 },
     });
     const render = () => {
+        root.className = cardClass();
         const providerHelp = el('p', {
             text: PROVIDER_HELP_TEXT[task.provider] || '완료 영상을 연결하거나 다른 도구를 선택하세요.',
             className: 'mt-1 text-xs leading-5 text-secondary',

@@ -110,7 +110,7 @@ background music, no extra characters, no face morphing, no warped hands.
 
 본 §11은 2026-07-07의 3-surface owner 결정을 역사적 기록으로 보존하되, 2026-07-15의 현재 owner 방향이 이를 대체했음을 명시한다. 현재 방향은 provider 후보 지정과 Open-Generative-AI의 실제 실행 가능 상태를 서로 다른 사실로 다룬다.
 
-Seedance2의 reference / scene 이미지 생성 surface는 deepsearch-team의 `dst image`, profile `goldpure369`, Thinking으로 한정한다. 비디오 생성 후보는 `google-labs-flow-auto`, `grok-imagine`, Replicate API, ByteDance API다. 현재 Open-Generative-AI 상태는 Flow의 main-owned no-submit preview가 연결됐고, Grok은 runtime dependency와 reference staging 계약 미충족으로 `BLOCK`이며, Replicate와 ByteDance는 외부 후보만 탐지된 `MISSING_PROVIDER_ADAPTER`다. 후보 지정은 라이브 생성 허용이나 성공 증거가 아니다.
+Seedance2의 reference / scene 이미지 생성 surface는 deepsearch-team의 `dst image`, profile `goldpure369`, Thinking으로 한정한다. 비디오 생성 후보는 `google-labs-flow-auto`, `grok-imagine`, Replicate API, ByteDance API다. 현재 Open-Generative-AI에서 DST는 로컬 완료 묶음의 다중 이미지 비교·정확한 한 장 연결·복원까지 동작하지만 `dst image` 자체에 no-submit 모드가 없어 앱에서 실제 생성을 시작하지 않는다. Flow는 no-submit 미리보기와 정확한 `0장 또는 2장` 참조 계약을 검사하지만 비공개 runtime/result staging과 라이브 제출은 연결되지 않았다. Grok은 로컬 미리보기와 결과 가져오기 표면이 있으나 지원 길이·화면비·참조·non-submit 경계가 모두 맞아야 하며 라이브 생성은 연결되지 않았다. Replicate는 요청 미리보기, 요청-결과 동일성 영수증, 로컬 결과 발행·선택·재생까지 동작하지만 인증 제출·상태 조회·다운로드 실행기는 없다. ByteDance는 결과 receipt 계약만 있고 직접 생성 adapter와 실제 결과 증거가 없다. 후보 지정은 라이브 생성 허용이나 성공 증거가 아니다.
 
 Renderer는 셸·CLI·API를 직접 실행하지 않고 `window.filmPipeline`만 호출한다. Electron main이 provider allowlist, 불변 실행 계획, 입력과 출력 root를 소유한다. 기본 상태는 `preview_only` 또는 `dry_run`이며 `.env`나 API key는 Jessie의 사전 승인 없이 읽거나 사용하지 않는다. live generation, 파일 다운로드, 출력 품질 QA, Jessie의 최종 승인은 각각 별도 상태로 기록한다.
 

@@ -5,12 +5,16 @@ import { normalizeVideoTasks, videoProgress } from './videoPreparationUi.js';
 export function VideoPreparationPanel({
     videoPlanState, videoPlanTasks, videoPlanNotice = '', videoResultWorkspace, videoResultPreviews = {},
     onVideoPromptChange, onVideoProviderChange, onSaveVideoPlan, onPrepareVideoPlan, onToggleVideoRetry,
-    onRefreshVideoResults, onLoadVideoCandidatePreview, onConnectVideoResult, onOpenVideoResultReview,
+    onRefreshVideoResults, onLoadVideoCandidatePreview, onConnectVideoResult, onOpenVideoResultReview, onOpenVideoNext,
     onRequestVideoAgentEdit, onDecideVideoAgentEdit,
 }) {
     let tasks = normalizeVideoTasks(videoPlanTasks || videoPlanState?.tasks, videoPlanState?.review_decisions);
     const progress = videoProgress(tasks);
-    const nextText = progress.next ? `${progress.next.sequence}. ${progress.next.label}` : tasks.length ? '모든 영상 확인' : '장면 설계 먼저 완성';
+    const allApproved = tasks.length > 0 && tasks.every((task) => (
+        task.status === '결과연결' && Boolean(task.result_token) && task.review_decision === 'use'
+    ));
+    const nextText = progress.next ? `${progress.next.sequence}. ${progress.next.label}`
+        : allApproved ? '클립 선택으로 이동' : tasks.length ? '결과 검토' : '장면 설계 먼저 완성';
     const busy = ['saving', 'preparing'].includes(videoPlanState?.status);
 
     const content = el('section', { className: 'flex min-w-0 flex-col gap-4', attrs: { 'aria-labelledby': 'video-workbench-title' } }, [
@@ -24,6 +28,9 @@ export function VideoPreparationPanel({
             el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
                 actionButton('프롬프트 저장', { disabled: busy || !tasks.length, onClick: () => onSaveVideoPlan?.(tasks) }),
                 actionButton('영상 작업 준비', { variant: 'muted', disabled: busy || !tasks.length, onClick: () => onPrepareVideoPlan?.(tasks) }),
+                allApproved && typeof onOpenVideoNext === 'function'
+                    ? actionButton('클립 선택으로', { variant: 'muted', onClick: onOpenVideoNext })
+                    : null,
             ]),
             el('p', {
                 text: videoPlanNotice || '영상 작업 준비는 순서와 프롬프트만 저장합니다. 영상 생성은 시작하지 않습니다.',

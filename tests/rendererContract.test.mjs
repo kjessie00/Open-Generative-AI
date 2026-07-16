@@ -213,7 +213,7 @@ test('new project execution panel shows short Korean progress without private me
     });
     document.body.appendChild(panel);
 
-    assert.match(panel.textContent, /시작 전 1 · 진행 1 · 결과 1 · 문제 1/);
+    assert.match(panel.textContent, /시작 전 2 · 진행 1 · 결과 1 · 문제 1/);
     assert.match(panel.textContent, /이미지를 먼저 완성한 뒤 영상을 만듭니다/);
     assert.match(panel.textContent, /작업 목록 준비는 .* 생성은 시작하지 않습니다/);
     assert.match(panel.textContent, /결과 도착 · 연결 확인 필요|문제 발생 · 생성 도구 응답 없음|진행 중 35%/);
@@ -244,6 +244,90 @@ test('new project execution panel shows short Korean progress without private me
         { kind: 'image', sequence: 1, candidateToken: '', imageIndex: 0, openConnector: true },
         { kind: 'video', sequence: 3, candidateToken: '', imageIndex: 0, openConnector: false },
     ]);
+});
+
+test('new project progress exposes image and video preparation next actions', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { NewProjectExecutionPanel } = await import('../src/components/pipeline/NewProjectExecutionPanel.js');
+    const opened = [];
+    const empty = NewProjectExecutionPanel({
+        executionState: { tasks: [] }, imagePlanTasks: [], videoPlanTasks: [],
+        onOpenNextAction: (action) => opened.push(action),
+    });
+    await byText(empty, 'button', '이미지 작업 준비').dispatchEvent({ type: 'click' });
+
+    const imageTask = {
+        task_token: 'image-current', kind: 'character_sheet', sequence: 1, label: '주인공',
+        status: '결과연결', result_token: 'image-result', reference_task_ids: [],
+    };
+    const imageReady = NewProjectExecutionPanel({
+        executionState: { tasks: [] },
+        imagePlanState: {
+            tasks: [imageTask], review_decisions: [{ task_token: imageTask.task_token, decision: 'use' }],
+        },
+        videoPlanTasks: [],
+        onOpenNextAction: (action) => opened.push(action),
+    });
+    await byText(imageReady, 'button', '영상 작업 준비').dispatchEvent({ type: 'click' });
+
+    assert.deepEqual(opened, [
+        { id: 'image-work', label: '이미지 작업 준비', tab: 'assets' },
+        { id: 'video-work', label: '영상 작업 준비', tab: 'videos' },
+    ]);
+});
+
+test('next-stage controls and review use counts require a connected reviewed result', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { GenerationPreparationPanel } = await import('../src/components/pipeline/GenerationPreparationPanel.js');
+    const { VideoPreparationPanel } = await import('../src/components/pipeline/VideoPreparationPanel.js');
+    const { ReviewGatesPanel } = await import('../src/components/pipeline/ReviewGatesPanel.js');
+    const pendingImage = {
+        task_token: 'image-task', kind: 'character_sheet', sequence: 1, label: '주인공', prompt: '프롬프트',
+        reference_task_ids: [], status: '준비', result_token: '',
+    };
+    const pendingVideo = {
+        task_token: 'video-task', kind: 'scene_video', sequence: 1, label: '첫 장면', provider: 'flow', prompt: '프롬프트',
+        status: '준비', result_token: '',
+    };
+    const imageDecision = [{ task_token: pendingImage.task_token, decision: 'use' }];
+    const videoDecision = [{ task_token: pendingVideo.task_token, decision: 'use' }];
+    const pendingImagePanel = GenerationPreparationPanel({
+        state: {}, config: { productionRoot: '' }, imagePlanTasks: [pendingImage],
+        imagePlanState: { tasks: [pendingImage], review_decisions: imageDecision }, onOpenImageNext() {},
+    });
+    const pendingVideoPanel = VideoPreparationPanel({
+        videoPlanTasks: [pendingVideo], videoPlanState: { tasks: [pendingVideo], review_decisions: videoDecision },
+        onOpenVideoNext() {},
+    });
+    const pendingGates = ReviewGatesPanel({
+        state: {}, imagePlanTasks: [pendingImage],
+        imagePlanState: { tasks: [pendingImage], review_decisions: imageDecision },
+    });
+
+    assert.equal(byText(pendingImagePanel, 'button', '영상 작업으로'), null);
+    assert.equal(byText(pendingVideoPanel, 'button', '클립 선택으로'), null);
+    assert.match(pendingGates.textContent, /사용 0\/1 · 확인 1 · 다시 0/);
+
+    const connectedImage = { ...pendingImage, status: '결과연결', result_token: 'image-result' };
+    const connectedVideo = { ...pendingVideo, status: '결과연결', result_token: 'video-result' };
+    const readyImagePanel = GenerationPreparationPanel({
+        state: {}, config: { productionRoot: '' }, imagePlanTasks: [connectedImage],
+        imagePlanState: { tasks: [connectedImage], review_decisions: imageDecision }, onOpenImageNext() {},
+    });
+    const readyVideoPanel = VideoPreparationPanel({
+        videoPlanTasks: [connectedVideo], videoPlanState: { tasks: [connectedVideo], review_decisions: videoDecision },
+        onOpenVideoNext() {},
+    });
+    const readyGates = ReviewGatesPanel({
+        state: {}, imagePlanTasks: [connectedImage],
+        imagePlanState: { tasks: [connectedImage], review_decisions: imageDecision },
+    });
+
+    assert.ok(byText(readyImagePanel, 'button', '영상 작업으로'));
+    assert.ok(byText(readyVideoPanel, 'button', '클립 선택으로'));
+    assert.match(readyGates.textContent, /사용 1\/1 · 확인 0 · 다시 0/);
 });
 
 async function flushRenderer() {
@@ -1181,12 +1265,41 @@ test('MOCK: rendered review video saves use or retry decisions and opens result 
 });
 
 test('PipelineStudio overview uses restored new-project clip selections instead of legacy accepted seconds', async (t) => {
+    const approvedTask = (lane, taskToken) => ({
+        task_token: taskToken,
+        sequence: 1,
+        label: lane === 'image' ? '첫 장면 이미지' : '첫 장면 영상',
+        status: '결과연결',
+        result_token: `${taskToken}-result`,
+    });
     const bridge = {
         async getConfig() {
             return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
         },
         async getHarnessContractStatus() {
             return { ok: true, ready: true, readiness: 'available', entries: [] };
+        },
+        async getNewProjectDraftState() {
+            return {
+                ok: true,
+                status: 'restored',
+                draft: { production_id: 'restored-project', brief: '기획', script: '대본' },
+            };
+        },
+        async getNewProjectDesignState() {
+            return {
+                ok: true,
+                status: 'restored',
+                board: { characters: [], locations: [], scenes: [{ title: '첫 장면' }] },
+            };
+        },
+        async getNewProjectImagePlan() {
+            const task = approvedTask('image', 'image-task');
+            return { ok: true, status: 'restored', tasks: [task], review_decisions: [{ task_token: task.task_token, decision: 'use' }] };
+        },
+        async getNewProjectVideoPlan() {
+            const task = approvedTask('video', 'video-task');
+            return { ok: true, status: 'restored', tasks: [task], review_decisions: [{ task_token: task.task_token, decision: 'use' }] };
         },
         async getNewProjectClipSelection() {
             return {
@@ -1208,6 +1321,450 @@ test('PipelineStudio overview uses restored new-project clip selections instead 
     assert.match(studio.textContent, /선택한 구간으로 최종 편집을 준비하세요/);
     assert.match(studio.textContent, /채택1/);
     assert.ok(byText(studio, 'button', '최종 편집 열기'));
+});
+
+test('MOCK: PipelineStudio keeps production and new-project guide, title, and panel data in one workspace mode', async (t) => {
+    const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
+    const production = structuredClone(samplePipelineState);
+    production.project.title = '기존 제작 제목';
+    production.project.root_path = '/tmp/existing-production';
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '/tmp/existing-production', productionParentRoot: '', dryRunMode: true } };
+        },
+        async readProductionState() { return { ok: true, state: production }; },
+        async getNewProjectDraftState() {
+            return {
+                ok: true, status: 'saved',
+                draft: { production_id: 'new-workspace-title', brief: '새 기획', script: '새 대본' },
+            };
+        },
+        async getNewProjectDesignState() {
+            return { ok: false, status: 'empty', board: { characters: [], locations: [], scenes: [] } };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const projectTitles = [];
+    window.addEventListener('pipeline:project-title', (event) => projectTitles.push(event.detail?.title));
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+
+    assert.equal(projectTitles.at(-1), '기존 제작 제목');
+    assert.match(studio.textContent, /클립을 검토하고 사용할 구간을 선택하세요/);
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'intake' } });
+    assert.ok(byText(studio, 'summary', '선택한 제작물 감사'));
+    assert.equal(byAttribute(studio, 'input', 'id', 'new-project-production-id'), null);
+    assert.equal(byAttribute(studio, 'textarea', 'id', 'new-project-brief'), null);
+    assert.doesNotMatch(studio.textContent, /기획·대본 작업|에이전트 작업 시작/);
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'shot-designer' } });
+    assert.doesNotMatch(studio.textContent, /새 프로젝트 샷 설계/);
+
+    const newProject = findAll(studio, 'button').find((button) => /새 프로젝트/.test(button.textContent));
+    assert.ok(newProject);
+    await newProject.dispatchEvent({ type: 'click' });
+    assert.equal(projectTitles.at(-1), 'new-workspace-title');
+    assert.ok(byAttribute(studio, 'input', 'id', 'new-project-production-id'));
+    assert.match(studio.textContent, /기획·대본 작업|에이전트 작업 시작/);
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'overview' } });
+    assert.match(studio.textContent, /스토리보드와 모션 설계를 확인하세요/);
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'shot-designer' } });
+    assert.match(studio.textContent, /새 프로젝트 샷 설계/);
+});
+
+test('MOCK: a saved draft wins over the late initial Promise.allSettled snapshot', async (t) => {
+    let releaseInitial;
+    const initialGate = new Promise((resolve) => { releaseInitial = resolve; });
+    const staleDraft = {
+        ok: true, status: 'restored',
+        draft: { production_id: 'stale-project', brief: '오래된 기획', script: '오래된 대본', route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 3 },
+    };
+    const bridge = {
+        async getConfig() { await initialGate; return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getNewProjectDraftState() { return staleDraft; },
+        async getNewProjectDesignState() {
+            return { ok: true, status: 'restored', board: { characters: [], locations: [], scenes: [] }, revision_sha256: 'd'.repeat(64) };
+        },
+        async saveNewProjectDraft(draft) {
+            return { ok: true, status: 'saved', revision_sha256: 'a'.repeat(64), draft: { ...draft } };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'intake' } });
+
+    const productionId = byAttribute(studio, 'input', 'id', 'new-project-production-id');
+    const brief = byAttribute(studio, 'textarea', 'id', 'new-project-brief');
+    const script = byAttribute(studio, 'textarea', 'id', 'new-project-script');
+    productionId.value = 'saved-project';
+    brief.value = '최신 기획';
+    script.value = '최신 대본';
+    await productionId.dispatchEvent({ type: 'input' });
+    await brief.dispatchEvent({ type: 'input' });
+    await script.dispatchEvent({ type: 'input' });
+    await findAll(studio, 'button').find((button) => button.textContent === '직접 저장').dispatchEvent({ type: 'click' });
+    assert.equal(byAttribute(studio, 'textarea', 'id', 'new-project-brief').value, '최신 기획');
+
+    releaseInitial();
+    await flushRenderer();
+    assert.equal(byAttribute(studio, 'input', 'id', 'new-project-production-id').value, 'saved-project');
+    assert.equal(byAttribute(studio, 'textarea', 'id', 'new-project-brief').value, '최신 기획');
+    assert.equal(byAttribute(studio, 'textarea', 'id', 'new-project-script').value, '최신 대본');
+    assert.doesNotMatch(studio.textContent, /오래된 기획|오래된 대본/);
+});
+
+test('MOCK: a newer final stitch refresh wins over the late initial Promise.allSettled snapshot', async (t) => {
+    let releaseInitial;
+    const initialGate = new Promise((resolve) => { releaseInitial = resolve; });
+    let stitchReads = 0;
+    const stale = {
+        ok: true, status: 'ready', revision: 'stale-final-stitch', staged: false,
+        selected_count: 1, total_duration_seconds: 1,
+        clips: [{ sequence: 1, label: '오래된 장면', in_seconds: 0, out_seconds: 1 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const latest = {
+        ...stale, revision: 'latest-final-stitch', selected_count: 2, total_duration_seconds: 2,
+        clips: [
+            { sequence: 1, label: '최신 장면 하나', in_seconds: 0, out_seconds: 1 },
+            { sequence: 2, label: '최신 장면 둘', in_seconds: 0, out_seconds: 1 },
+        ],
+    };
+    const bridge = {
+        async getConfig() {
+            await initialGate;
+            return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
+        },
+        async getNewProjectFinalStitch() {
+            stitchReads += 1;
+            return structuredClone(stitchReads === 1 ? stale : latest);
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+
+    await byText(studio, 'button', '새로고침').dispatchEvent({ type: 'click' });
+    assert.match(studio.textContent, /선택 2개 · 총 2초/);
+    assert.match(studio.textContent, /최신 장면 둘/);
+
+    releaseInitial();
+    await flushRenderer();
+    assert.match(studio.textContent, /선택 2개 · 총 2초/);
+    assert.match(studio.textContent, /최신 장면 둘/);
+    assert.doesNotMatch(studio.textContent, /오래된 장면/);
+    assert.equal(stitchReads, 2);
+});
+
+test('MOCK: reverse-completing final stitch refreshes keep the newest response', async (t) => {
+    let resolveOlderRefresh;
+    const pendingOlderRefresh = new Promise((resolve) => { resolveOlderRefresh = resolve; });
+    let stitchReads = 0;
+    const baseline = {
+        ok: true, status: 'ready', revision: 'baseline-final-stitch', staged: false,
+        selected_count: 1, total_duration_seconds: 1,
+        clips: [{ sequence: 1, label: '기준 장면', in_seconds: 0, out_seconds: 1 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const older = {
+        ...baseline, revision: 'older-refresh', selected_count: 2, total_duration_seconds: 2,
+        clips: [{ sequence: 1, label: '늦게 도착한 장면', in_seconds: 0, out_seconds: 2 }],
+    };
+    const newest = {
+        ...baseline, revision: 'newest-refresh', selected_count: 3, total_duration_seconds: 3,
+        clips: [{ sequence: 1, label: '가장 최신 장면', in_seconds: 0, out_seconds: 3 }],
+    };
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
+        },
+        async getNewProjectFinalStitch() {
+            stitchReads += 1;
+            if (stitchReads === 1) return structuredClone(baseline);
+            if (stitchReads === 2) return pendingOlderRefresh;
+            return structuredClone(newest);
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+
+    const olderRefresh = byText(studio, 'button', '새로고침').dispatchEvent({ type: 'click' });
+    const newestRefresh = byText(studio, 'button', '새로고침').dispatchEvent({ type: 'click' });
+    await newestRefresh;
+    assert.match(studio.textContent, /선택 3개 · 총 3초/);
+    assert.match(studio.textContent, /가장 최신 장면/);
+
+    resolveOlderRefresh(structuredClone(older));
+    await olderRefresh;
+    await flushRenderer();
+    assert.match(studio.textContent, /선택 3개 · 총 3초/);
+    assert.match(studio.textContent, /가장 최신 장면/);
+    assert.doesNotMatch(studio.textContent, /늦게 도착한 장면/);
+    assert.equal(stitchReads, 3);
+});
+
+test('MOCK: a stale clip save cannot replace newer edits or refresh final stitch', async (t) => {
+    const clip = {
+        task_token: 'clip-task', result_token: 'clip-result', sequence: 1, source_id: 'scene-1',
+        label: '장면 영상 · 첫 장면', duration_seconds: 5,
+        in_seconds: 0, out_seconds: 1, reason: '첫 선택', reviewer_confidence: 'medium',
+    };
+    const selectionState = {
+        ok: true, status: 'restored', revision_sha256: 'clip-revision',
+        design_revision_sha256: 'design-revision', image_plan_revision_sha256: 'image-revision',
+        video_plan_revision_sha256: 'video-revision', accepted_count: 1, total_count: 1,
+        clips: [clip], blockers: [],
+    };
+    const finalStitch = {
+        ok: true, status: 'ready', revision: 'initial-stitch', staged: false,
+        selected_count: 1, total_duration_seconds: 1,
+        clips: [{ sequence: 1, label: clip.label, in_seconds: 0, out_seconds: 1 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const saveRequests = [];
+    let finalStitchReads = 0;
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
+        },
+        async getNewProjectClipSelection() { return structuredClone(selectionState); },
+        async getNewProjectFinalStitch() {
+            finalStitchReads += 1;
+            return structuredClone(finalStitch);
+        },
+        saveNewProjectClipSelection(payload) {
+            return new Promise((resolve, reject) => saveRequests.push({
+                payload: structuredClone(payload), resolve, reject,
+            }));
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'qa' } });
+    const stitchReadsBeforeSaves = finalStitchReads;
+    const editEnd = async (value) => {
+        const input = byAttribute(studio, 'input', 'aria-label', `${clip.label} 끝 초`);
+        input.value = String(value);
+        await input.dispatchEvent({ type: 'input' });
+    };
+
+    await editEnd(2);
+    const firstSave = byText(studio, 'button', '선택 저장').dispatchEvent({ type: 'click' });
+    assert.equal(saveRequests.length, 1);
+    assert.equal(saveRequests[0].payload.selections[0].out_seconds, 2);
+    await editEnd(3);
+    saveRequests[0].resolve({
+        ...structuredClone(selectionState), status: 'saved', revision_sha256: 'saved-a',
+        clips: [{ ...clip, out_seconds: 2, reason: 'A' }],
+    });
+    await firstSave;
+    await flushRenderer();
+
+    assert.equal(Number(byAttribute(studio, 'input', 'aria-label', `${clip.label} 끝 초`).value), 3);
+    assert.match(studio.textContent, /저장 안 됨/);
+    assert.match(studio.textContent, /저장하지 않은 선택이 있습니다/);
+    assert.doesNotMatch(studio.textContent, /구간 선택을 완료했습니다/);
+    assert.equal(finalStitchReads, stitchReadsBeforeSaves);
+
+    const secondSave = byText(studio, 'button', '선택 저장').dispatchEvent({ type: 'click' });
+    assert.equal(saveRequests.length, 2);
+    assert.equal(saveRequests[1].payload.selections[0].out_seconds, 3);
+    await editEnd(4);
+    saveRequests[1].reject(new Error('STALE_SAVE_FAILED'));
+    await secondSave;
+    await flushRenderer();
+
+    assert.equal(Number(byAttribute(studio, 'input', 'aria-label', `${clip.label} 끝 초`).value), 4);
+    assert.match(studio.textContent, /저장 안 됨/);
+    assert.match(studio.textContent, /저장하지 않은 선택이 있습니다/);
+    assert.doesNotMatch(studio.textContent, /선택을 저장하지 못했습니다/);
+    assert.equal(finalStitchReads, stitchReadsBeforeSaves);
+});
+
+test('MOCK: a current clip save commits through an overlapping final stitch refresh and wins afterward', async (t) => {
+    const clip = {
+        task_token: 'clip-task-current', result_token: 'clip-result-current', sequence: 1, source_id: 'scene-current',
+        label: '장면 영상 · 현재 장면', duration_seconds: 5,
+        in_seconds: 0, out_seconds: 1, reason: '기존 선택', reviewer_confidence: 'high',
+    };
+    const selectionState = {
+        ok: true, status: 'restored', revision_sha256: 'clip-before-save',
+        design_revision_sha256: 'design-current', image_plan_revision_sha256: 'image-current',
+        video_plan_revision_sha256: 'video-current', accepted_count: 1, total_count: 1,
+        clips: [clip], blockers: [],
+    };
+    const stitch = (revision, label, duration) => ({
+        ok: true, status: 'ready', revision, staged: false,
+        selected_count: 1, total_duration_seconds: duration,
+        clips: [{ sequence: 1, label, in_seconds: 0, out_seconds: duration }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    });
+    let resolveSave;
+    let resolveOverlappingRefresh;
+    let stitchReads = 0;
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
+        },
+        async getNewProjectClipSelection() { return structuredClone(selectionState); },
+        async getNewProjectFinalStitch() {
+            stitchReads += 1;
+            if (stitchReads === 1) return stitch('stitch-initial', '초기 장면', 1);
+            if (stitchReads === 2) {
+                return new Promise((resolve) => { resolveOverlappingRefresh = resolve; });
+            }
+            return stitch('stitch-after-save', '저장 후 장면', 2);
+        },
+        saveNewProjectClipSelection() {
+            return new Promise((resolve) => { resolveSave = resolve; });
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'qa' } });
+
+    const end = byAttribute(studio, 'input', 'aria-label', `${clip.label} 끝 초`);
+    end.value = '2';
+    await end.dispatchEvent({ type: 'input' });
+    const save = byText(studio, 'button', '선택 저장').dispatchEvent({ type: 'click' });
+
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+    const overlappingRefresh = byText(studio, 'button', '새로고침').dispatchEvent({ type: 'click' });
+    assert.equal(stitchReads, 2);
+
+    resolveSave({
+        ...structuredClone(selectionState), status: 'saved', revision_sha256: 'clip-after-save',
+        clips: [{ ...clip, out_seconds: 2, reason: '저장된 선택' }],
+    });
+    await save;
+    await flushRenderer();
+    assert.equal(stitchReads, 3);
+
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'qa' } });
+    assert.equal(Number(byAttribute(studio, 'input', 'aria-label', `${clip.label} 끝 초`).value), 2);
+    assert.match(studio.textContent, /저장됨/);
+    assert.match(studio.textContent, /구간 선택을 완료했습니다/);
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+    assert.match(studio.textContent, /저장 후 장면/);
+    assert.match(studio.textContent, /선택 1개 · 총 2초/);
+
+    resolveOverlappingRefresh(stitch('stitch-overlap', '느리게 도착한 장면', 1.5));
+    await overlappingRefresh;
+    await flushRenderer();
+    assert.match(studio.textContent, /저장 후 장면/);
+    assert.doesNotMatch(studio.textContent, /느리게 도착한 장면/);
+    assert.equal(stitchReads, 3);
+});
+
+test('MOCK: late video preview refresh disposes only its stale URLs and keeps the latest preview map', async (t) => {
+    const priorPreviewApis = {
+        atob: Object.getOwnPropertyDescriptor(globalThis, 'atob'),
+        Blob: Object.getOwnPropertyDescriptor(globalThis, 'Blob'),
+        URL: Object.getOwnPropertyDescriptor(globalThis, 'URL'),
+    };
+    const revoked = [];
+    let nextUrl = 0;
+    globalThis.atob = (value) => Buffer.from(value, 'base64').toString('latin1');
+    globalThis.Blob = class {
+        constructor(parts, options) { this.size = parts.reduce((sum, part) => sum + part.byteLength, 0); this.type = options.type; }
+    };
+    globalThis.URL = {
+        createObjectURL: () => `blob:preview-${nextUrl += 1}`,
+        revokeObjectURL: (value) => revoked.push(value),
+    };
+    t.after(() => {
+        for (const [key, descriptor] of Object.entries(priorPreviewApis)) {
+            if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+            else delete globalThis[key];
+        }
+    });
+
+    let resolveOldPreview;
+    let firstResultPreviewRead = true;
+    let revision = 1;
+    let videoState = {
+        ok: true, status: 'restored', design_revision_sha256: 'd'.repeat(64),
+        image_plan_revision_sha256: 'i'.repeat(64), revision_sha256: String(revision).repeat(64),
+        review_decisions: [], blockers: [], tasks: [
+            { task_token: 'video-race-1', kind: 'scene_video', sequence: 1, label: '첫 영상', provider: 'flow', prompt: '첫 프롬프트', status: '준비', result_token: '' },
+            { task_token: 'video-race-2', kind: 'scene_video', sequence: 2, label: '둘째 영상', provider: 'flow', prompt: '둘째 프롬프트', status: '준비', result_token: '' },
+        ],
+    };
+    const bridge = {
+        async getConfig() { return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } }; },
+        async getNewProjectVideoPlan() { return structuredClone(videoState); },
+        async getNewProjectVideoResultWorkspace() {
+            return { ok: true, status: 'ready', candidates: [
+                { candidate_token: 'video-race-candidate', provider: 'flow', duration_seconds: 5, width: 720, height: 1280 },
+            ], blockers: [] };
+        },
+        async connectNewProjectVideoResult(payload) {
+            revision += 1;
+            videoState = {
+                ...videoState,
+                revision_sha256: String(revision).repeat(64),
+                tasks: videoState.tasks.map((task) => task.task_token === payload.task_token
+                    ? { ...task, status: '결과연결', result_token: `result-${task.sequence}` }
+                    : task),
+            };
+            return { ok: true, connected: true, state: structuredClone(videoState) };
+        },
+        getNewProjectVideoResultPreview({ result_token: resultToken }) {
+            if (resultToken === 'result-1' && firstResultPreviewRead) {
+                firstResultPreviewRead = false;
+                return new Promise((resolve) => { resolveOldPreview = resolve; });
+            }
+            const bytes = Buffer.from(resultToken);
+            return Promise.resolve({
+                loaded: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64'),
+            });
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'videos' } });
+
+    const firstCard = byAttribute(studio, 'article', 'data-sequence', '1');
+    await byText(firstCard, 'button', '완료 영상 연결').dispatchEvent({ type: 'click' });
+    const firstConnect = byText(firstCard, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const secondCard = byAttribute(studio, 'article', 'data-sequence', '2');
+    await byText(secondCard, 'button', '완료 영상 연결').dispatchEvent({ type: 'click' });
+    await byText(secondCard, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const latestSources = findAll(studio, 'video').map((video) => video.attributes.get('src')).filter(Boolean);
+    assert.equal(latestSources.length, 2);
+
+    const staleBytes = Buffer.from('stale-result');
+    resolveOldPreview({
+        loaded: true, mime_type: 'video/mp4', byte_length: staleBytes.byteLength, base64: staleBytes.toString('base64'),
+    });
+    await firstConnect;
+    await flushRenderer();
+
+    const finalSources = findAll(studio, 'video').map((video) => video.attributes.get('src')).filter(Boolean);
+    assert.deepEqual(finalSources, latestSources);
+    assert.equal(revoked.length, 1);
+    assert.equal(finalSources.includes(revoked[0]), false);
 });
 
 test('MOCK DST result import exposes only image retry targets and uses opaque plan confirmation', async (t) => {
@@ -2326,14 +2883,16 @@ test('settings renders partial and blocked fixed-root harness readiness in Korea
     const { PipelineSettingsPanel } = await import('../src/components/pipeline/PipelineSettingsPanel.js');
     const config = { productionRoot: '/tmp/production', productionParentRoot: '' };
 
-    for (const [readiness, expected] of [['partial', '부분'], ['blocked', '차단']]) {
+    for (const [readiness, expected] of [['partial', '일부만 준비됨'], ['blocked', '연결 확인 필요']]) {
         const panel = PipelineSettingsPanel({
             state: samplePipelineState,
             config,
             harnessStatus: { readiness, rootPath: '/fixed/happyVideoFactory' },
         });
-        assert.match(panel.textContent, new RegExp(`happyVideoFactory canonical 계약${expected}읽기 전용 메타데이터`));
-        assert.match(panel.textContent, /main process는 고정 allowlist만 검사합니다/);
+        assert.match(panel.textContent, new RegExp(`로컬 하네스${expected}`));
+        assert.match(panel.textContent, /외부 이미지·영상 생성꺼짐/);
+        assert.match(panel.textContent, /외부 업로드꺼짐/);
+        assert.match(panel.textContent, /고급: 로컬 경로/);
     }
 });
 
@@ -3789,6 +4348,182 @@ test('video preparation workbench keeps scene order, direct controls, local resu
     assert.ok(calls.some(([method, payload]) => method === 'preview' && payload.candidateToken === 'hidden-flow-result'));
     await byText(panel, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
     assert.ok(calls.some(([method, payload]) => method === 'connect' && payload.taskToken === 'video-task-2'));
+});
+
+test('MOCK: changing video candidates ignores a late old preview and connects only the latest choice', async (t) => {
+    let resolveOld;
+    const previewCalls = [];
+    const connections = [];
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { VideoResultConnector } = await import('../src/components/pipeline/VideoResultConnector.js');
+    const connector = VideoResultConnector({
+        task: { task_token: 'private-video-task', sequence: 4, label: '교차 장면', provider: 'flow' },
+        workspace: { candidates: [
+            { candidate_token: 'private-video-a', provider: 'flow', duration_seconds: 5, width: 720, height: 1280 },
+            { candidate_token: 'private-video-b', provider: 'flow', duration_seconds: 6, width: 1080, height: 1920 },
+        ] },
+        onLoadPreview: ({ candidateToken }) => {
+            previewCalls.push(candidateToken);
+            if (candidateToken === 'private-video-a') {
+                return new Promise((resolve) => { resolveOld = resolve; });
+            }
+            const bytes = Buffer.from('new-video');
+            return Promise.resolve({
+                loaded: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64'),
+            });
+        },
+        onConnect: async (payload) => { connections.push(payload); return { ok: true, connected: true }; },
+    });
+
+    const oldPreviewClick = byText(connector, 'button', '영상 미리보기').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.match(connector.textContent, /불러오는 중입니다/);
+    const select = byAttribute(connector, 'select', 'aria-label', '교차 장면 완료 영상');
+    select.value = 'private-video-b';
+    await select.dispatchEvent({ type: 'change' });
+    await byText(connector, 'button', '영상 미리보기').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    const latestSource = byAttribute(connector, 'video', 'aria-label', '교차 장면 미리보기').attributes.get('src');
+    assert.match(latestSource, /^blob:/);
+
+    const oldBytes = Buffer.from('old-video');
+    resolveOld({
+        loaded: true, mime_type: 'video/mp4', byte_length: oldBytes.byteLength, base64: oldBytes.toString('base64'),
+    });
+    await oldPreviewClick;
+    await flushRenderer();
+
+    assert.deepEqual(previewCalls, ['private-video-a', 'private-video-b']);
+    assert.equal(byAttribute(connector, 'video', 'aria-label', '교차 장면 미리보기').attributes.get('src'), latestSource);
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '교차 장면 완료 영상').value, 'private-video-b');
+    await byText(connector, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    assert.deepEqual(connections, [{ taskToken: 'private-video-task', candidateToken: 'private-video-b' }]);
+    assert.doesNotMatch(connector.textContent, /private-video|token|sha|경로|명령/i);
+});
+
+test('MOCK: starting video connection invalidates an in-flight preview loading state', async (t) => {
+    let resolvePreview;
+    let resolveConnect;
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { VideoResultConnector } = await import('../src/components/pipeline/VideoResultConnector.js');
+    const connector = VideoResultConnector({
+        task: { task_token: 'loading-video-task', sequence: 1, label: '연결 전환 장면', provider: 'flow' },
+        workspace: { candidates: [
+            { candidate_token: 'loading-video-result', provider: 'flow', duration_seconds: 5, width: 720, height: 1280 },
+        ] },
+        onLoadPreview: () => new Promise((resolve) => { resolvePreview = resolve; }),
+        onConnect: () => new Promise((resolve) => { resolveConnect = resolve; }),
+    });
+
+    const previewClick = byText(connector, 'button', '영상 미리보기').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.match(connector.textContent, /불러오는 중입니다/);
+
+    const connectClick = byText(connector, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.match(connector.textContent, /연결 중/);
+    assert.doesNotMatch(connector.textContent, /불러오는 중입니다/);
+    assert.match(connector.textContent, /미리보기를 누르면 여기에 영상이 나옵니다/);
+
+    resolveConnect({ ok: false, connected: false });
+    await connectClick;
+    resolvePreview({ loaded: false });
+    await previewClick;
+    assert.doesNotMatch(connector.textContent, /불러오는 중입니다/);
+});
+
+test('MOCK: pending video connect is single-flight and locks candidate controls', async (t) => {
+    const calls = [];
+    let resolveConnect;
+    const connectResult = new Promise((resolve) => { resolveConnect = resolve; });
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { VideoResultConnector } = await import('../src/components/pipeline/VideoResultConnector.js');
+    const connector = VideoResultConnector({
+        task: { task_token: 'pending-video-task', sequence: 5, label: '대기 영상', provider: 'flow' },
+        workspace: { candidates: [
+            { candidate_token: 'video-a', provider: 'flow', duration_seconds: 5, width: 720, height: 1280 },
+            { candidate_token: 'video-b', provider: 'flow', duration_seconds: 6, width: 1080, height: 1920 },
+        ] },
+        onRefresh: () => calls.push(['refresh']),
+        onLoadPreview: async ({ candidateToken }) => {
+            calls.push(['preview', candidateToken]);
+            const bytes = Buffer.from(candidateToken);
+            return { loaded: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64') };
+        },
+        onConnect: async (payload) => { calls.push(['connect', payload]); return connectResult; },
+    });
+    const oldSelect = byAttribute(connector, 'select', 'aria-label', '대기 영상 완료 영상');
+    const oldRefresh = byText(connector, 'button', '결과 새로고침');
+    const oldPreview = byText(connector, 'button', '영상 미리보기');
+    const oldConnect = byText(connector, 'button', '이 영상 연결');
+    const pendingClick = oldConnect.dispatchEvent({ type: 'click' });
+    await flushRenderer();
+
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '대기 영상 완료 영상').disabled, true);
+    assert.equal(byText(connector, 'button', '결과 새로고침').disabled, true);
+    assert.equal(byText(connector, 'button', '영상 미리보기').disabled, true);
+    assert.equal(byText(connector, 'button', '이 영상 연결').disabled, true);
+    oldSelect.value = 'video-b';
+    await oldSelect.dispatchEvent({ type: 'change' });
+    await oldRefresh.dispatchEvent({ type: 'click' });
+    await oldPreview.dispatchEvent({ type: 'click' });
+    await oldConnect.dispatchEvent({ type: 'click' });
+    assert.equal(calls.filter(([method]) => method === 'connect').length, 1);
+    assert.equal(calls.filter(([method]) => method === 'refresh').length, 0);
+    assert.equal(calls.filter(([method]) => method === 'preview').length, 0);
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '대기 영상 완료 영상').value, 'video-a');
+
+    resolveConnect({ connected: true });
+    await pendingClick;
+    await flushRenderer();
+    assert.equal(byAttribute(connector, 'select', 'aria-label', '대기 영상 완료 영상').disabled, false);
+    assert.equal(byText(connector, 'button', '결과 새로고침').disabled, false);
+    assert.match(connector.textContent, /작업에 연결했습니다/);
+    assert.doesNotMatch(connector.textContent, /video-a|video-b|pending-video-task/);
+});
+
+test('video connector errors stay short and private while its task card expands only when needed', async (t) => {
+    const { restore } = installDeterministicDom({});
+    t.after(restore);
+    const { VideoResultConnector } = await import('../src/components/pipeline/VideoResultConnector.js');
+    const { VideoTaskCard } = await import('../src/components/pipeline/VideoTaskCard.js');
+    const task = {
+        task_token: 'layout-video-task', kind: 'scene_video', sequence: 6, label: '레이아웃 영상',
+        provider: 'flow', prompt: 'private prompt', status: '준비', result_token: '',
+    };
+    const workspace = { candidates: [{
+        candidate_token: 'private-failed-video', provider: 'flow', duration_seconds: 5, width: 720, height: 1280,
+    }] };
+    const connector = VideoResultConnector({
+        task, workspace,
+        onLoadPreview: async () => { throw new Error('PRIVATE_VIDEO_PREVIEW_FAILURE'); },
+        onConnect: async () => { throw new Error('PRIVATE_VIDEO_CONNECT_FAILURE'); },
+    });
+    await byText(connector, 'button', '영상 미리보기').dispatchEvent({ type: 'click' });
+    assert.match(connector.textContent, /불러오지 못했습니다/);
+    await byText(connector, 'button', '이 영상 연결').dispatchEvent({ type: 'click' });
+    assert.match(connector.textContent, /연결하지 못했습니다/);
+    assert.doesNotMatch(connector.textContent, /PRIVATE_|private-failed-video|layout-video-task/);
+
+    const props = { task, resultWorkspace: workspace };
+    const card = VideoTaskCard(props);
+    assert.doesNotMatch(card.className, /lg:col-span-2|xl:col-span-3/);
+    await byText(card, 'button', '완료 영상 연결').dispatchEvent({ type: 'click' });
+    assert.match(card.className, /lg:col-span-2/);
+    assert.match(card.className, /xl:col-span-3/);
+    await byText(card, 'button', '영상 연결 닫기').dispatchEvent({ type: 'click' });
+    assert.doesNotMatch(card.className, /lg:col-span-2|xl:col-span-3/);
+
+    const suggestionCard = VideoTaskCard({ ...props, agentRequest: { status: 'suggestion_ready' } });
+    assert.match(suggestionCard.className, /lg:col-span-2/);
+    assert.match(suggestionCard.className, /xl:col-span-3/);
+    await byText(suggestionCard, 'button', '완료 영상 연결').dispatchEvent({ type: 'click' });
+    await byText(suggestionCard, 'button', '영상 연결 닫기').dispatchEvent({ type: 'click' });
+    assert.match(suggestionCard.className, /lg:col-span-2/);
+    assert.match(suggestionCard.className, /xl:col-span-3/);
 });
 
 test('PipelineStudio saves, prepares, connects, and retries image tasks with exact revision-bound payloads', async (t) => {

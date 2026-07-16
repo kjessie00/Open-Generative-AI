@@ -59,13 +59,15 @@ export function IntakePanel({
     newProjectNotice, newProjectDraftDirty, onSaveNewProjectDraft, onEnqueuePlanningAgentRequest,
     onRunPlanningAgentRequest,
     onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
-    onCopyNewProjectBuildCommand, onSavePlanningFile,
+    onCopyNewProjectBuildCommand, onSavePlanningFile, productionOnly = false,
 }) {
     return panelShell(
         '기획·대본',
-        '직접 수정하거나 에이전트에게 다음 작업을 남기고, 저장된 내용을 이어서 작업합니다.',
+        productionOnly
+            ? '선택한 기존 제작의 저장된 기획 정보를 확인합니다.'
+            : '직접 수정하거나 에이전트에게 다음 작업을 남기고, 저장된 내용을 이어서 작업합니다.',
         [
-            NewProjectDraftForm({
+            productionOnly ? null : NewProjectDraftForm({
                 draftState: newProjectDraftState,
                 draftValue: newProjectDraftValue,
                 notice: newProjectNotice,
@@ -79,6 +81,6 @@ export function IntakePanel({
                 draftDirty: newProjectDraftDirty,
             }),
             existingProductionAudit({ state, onSavePlanningFile }),
-        ],
+        ].filter(Boolean),
     );
 }

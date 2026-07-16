@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { deriveWorkflowGuide, deriveWorkflowMetrics, WORKFLOW_STAGES } from './workflowGuide.js';
+import {
+    deriveNewProjectWorkflowProjection,
+    deriveWorkflowGuide,
+    deriveWorkflowMetrics,
+    WORKFLOW_STAGES,
+} from './workflowGuide.js';
 
 const plainFixture = (overrides = {}) => ({
     assets: [{ asset_id: 'asset-1' }],
@@ -48,6 +53,96 @@ test('new project stays at stage 4 until every clip has an explicit accepted ran
     assert.equal(deriveWorkflowGuide({
         ...partial, newProjectClipSelection: { accepted_count: 2, total_count: 2 },
     }).activeStageId, 'finish');
+});
+
+function newProjectFixture(overrides = {}) {
+    const imageTasks = [{ task_token: 'image-1', status: '결과연결', result_token: 'image-result-1' }];
+    const videoTasks = [{ task_token: 'video-1', status: '결과연결', result_token: 'video-result-1' }];
+    return plainFixture({
+        fileStatus: { files_found: 7, content_parsed: 3, review_passed: 2, quality_accepted: 1 },
+        newProjectDraftState: { status: 'empty', draft: {} },
+        newProjectDesignState: { status: 'empty', board: { characters: [], locations: [], scenes: [] } },
+        newProjectImagePlanState: { status: 'empty', tasks: [], review_decisions: [] },
+        newProjectVideoPlanState: { status: 'empty', tasks: [], review_decisions: [] },
+        newProjectClipSelectionState: { status: 'empty', accepted_count: 0, total_count: 0 },
+        newProjectFinalStitchState: { status: 'blocked', staged: false },
+        newProjectFinalRenderState: { status: 'empty', review_decision: 'pending' },
+        fixtureParts: { imageTasks, videoTasks },
+        ...overrides,
+    });
+}
+
+test('new-project workflow overrides completed legacy evidence from empty draft through design', () => {
+    const empty = newProjectFixture();
+    assert.equal(deriveWorkflowGuide(empty).activeStageId, 'start');
+
+    const drafted = newProjectFixture({
+        newProjectDraftState: {
+            status: 'saved',
+            draft: { production_id: 'new-film', brief: '기획', script: '대본' },
+        },
+    });
+    assert.equal(deriveWorkflowGuide(drafted).activeStageId, 'design');
+});
+
+test('new-project workflow remains in preparation until every image and video result is approved', () => {
+    const base = newProjectFixture();
+    const { imageTasks, videoTasks } = base.fixtureParts;
+    const state = {
+        ...base,
+        newProjectDraftState: {
+            status: 'restored',
+            draft: { production_id: 'new-film', brief: '기획', script: '대본' },
+        },
+        newProjectDesignState: {
+            status: 'saved', board: { characters: [], locations: [], scenes: [{ scene_id: 'scene-1' }] },
+        },
+        newProjectImagePlanState: {
+            status: 'restored', tasks: imageTasks,
+            review_decisions: [{ task_token: 'image-1', decision: 'use' }],
+        },
+        newProjectVideoPlanState: {
+            status: 'restored', tasks: videoTasks,
+            review_decisions: [{ task_token: 'video-1', decision: 'pending' }],
+        },
+    };
+    assert.equal(deriveWorkflowGuide(state).activeStageId, 'prepare');
+    assert.equal(deriveNewProjectWorkflowProjection(state).mediaReady, false);
+});
+
+test('approved new-project media advances to selection, then complete ranges stay in finishing', () => {
+    const base = newProjectFixture();
+    const { imageTasks, videoTasks } = base.fixtureParts;
+    const ready = {
+        ...base,
+        newProjectDraftState: {
+            status: 'restored',
+            draft: { production_id: 'new-film', brief: '기획', script: '대본' },
+        },
+        newProjectDesignState: {
+            status: 'restored', board: { characters: [], locations: [], scenes: [{ scene_id: 'scene-1' }] },
+        },
+        newProjectImagePlanState: {
+            status: 'restored', tasks: imageTasks,
+            review_decisions: [{ task_token: 'image-1', decision: 'use' }],
+        },
+        newProjectVideoPlanState: {
+            status: 'restored', tasks: videoTasks,
+            review_decisions: [{ task_token: 'video-1', decision: 'use' }],
+        },
+        newProjectClipSelectionState: { status: 'empty', accepted_count: 0, total_count: 1 },
+    };
+    assert.equal(deriveWorkflowGuide(ready).activeStageId, 'select');
+
+    for (const reviewDecision of ['pending', 'use']) {
+        const finishing = {
+            ...ready,
+            newProjectClipSelectionState: { status: 'restored', accepted_count: 1, total_count: 1 },
+            newProjectFinalStitchState: { status: 'ready', staged: false },
+            newProjectFinalRenderState: { status: 'restored', review_decision: reviewDecision },
+        };
+        assert.equal(deriveWorkflowGuide(finishing).activeStageId, 'finish');
+    }
 });
 
 test('five stages retain every existing work panel and exclude settings', () => {
