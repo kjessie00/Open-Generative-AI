@@ -9,14 +9,17 @@ const videoResultImportProvider = require('./videoResultImportProvider');
 const PLAN_SCHEMA = 'film_pipeline.new_project_video_plan.v1';
 const PREPARATION_SCHEMA = 'film_pipeline.new_project_video_preparation.v1';
 const RESULT_SCHEMA = 'film_pipeline.new_project_video_result.v1';
+const REVIEW_SCHEMA = 'film_pipeline.new_project_video_review.v1';
 const ROOT_DIRECTORY = 'video_plan';
 const PLAN_FILE = 'plan.json';
+const REVIEW_FILE = 'review-decisions.json';
 const QUEUE_DIRECTORY = 'queue';
 const RESULTS_DIRECTORY = 'results';
 const MAX_PLAN_BYTES = 1024 * 1024;
 const MAX_QUEUE_BYTES = 1024 * 1024;
 const MAX_RESULT_BYTES = 512 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 32 * 1024 * 1024;
+const MAX_REVIEW_BYTES = 128 * 1024;
 const MAX_PROMPT_BYTES = 32 * 1024;
 const MAX_QUEUE_ITEMS = 100;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -61,9 +64,70 @@ function exactPaths(userDataPath) {
         draftRoot: design.draftRoot,
         root,
         planPath: path.join(root, PLAN_FILE),
+        reviewPath: path.join(root, REVIEW_FILE),
         queueRoot: path.join(root, QUEUE_DIRECTORY),
         resultsRoot: path.join(root, RESULTS_DIRECTORY),
     };
+}
+
+function validateReviewRecord(value) {
+    exactKeys(value, ['schema_version', 'decisions', 'updated_at'], 'VIDEO_PLAN_REVIEW_INVALID');
+    if (value.schema_version !== REVIEW_SCHEMA || !Array.isArray(value.decisions)
+        || value.decisions.length > 20 || !Number.isFinite(Date.parse(value.updated_at))) {
+        throw failure('VIDEO_PLAN_REVIEW_INVALID');
+    }
+    const decisions = value.decisions.map((decision) => {
+        exactKeys(decision, [
+            'task_token', 'result_token', 'design_revision_sha256', 'image_plan_revision_sha256',
+            'decision', 'decided_at',
+        ], 'VIDEO_PLAN_REVIEW_INVALID');
+        if (!TASK_TOKEN.test(decision.task_token || '') || !RESULT_TOKEN.test(decision.result_token || '')
+            || !SHA256.test(decision.design_revision_sha256 || '')
+            || !SHA256.test(decision.image_plan_revision_sha256 || '') || decision.decision !== 'use'
+            || !Number.isFinite(Date.parse(decision.decided_at))) throw failure('VIDEO_PLAN_REVIEW_INVALID');
+        return decision;
+    });
+    if (new Set(decisions.map((decision) => decision.task_token)).size !== decisions.length) {
+        throw failure('VIDEO_PLAN_REVIEW_INVALID');
+    }
+    return decisions;
+}
+
+function readReviewDecisions(paths) {
+    if (!fs.existsSync(paths.reviewPath)) return { decisions: [], blockers: [] };
+    try {
+        const value = JSON.parse(readPrivate(paths.reviewPath, MAX_REVIEW_BYTES).toString('utf8'));
+        return { decisions: validateReviewRecord(value), blockers: [] };
+    } catch (error) {
+        return { decisions: [], blockers: [error.code || 'VIDEO_PLAN_REVIEW_INVALID'] };
+    }
+}
+
+function requireReviewDecisions(paths) {
+    const review = readReviewDecisions(paths);
+    if (review.blockers.length) throw failure(review.blockers[0]);
+    return review.decisions;
+}
+
+function writeReviewDecisions(paths, decisions) {
+    ensureRoot(paths);
+    const record = { schema_version: REVIEW_SCHEMA, decisions, updated_at: new Date().toISOString() };
+    const buffer = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+    if (buffer.byteLength > MAX_REVIEW_BYTES) throw failure('VIDEO_PLAN_REVIEW_TOO_LARGE');
+    privateWrite(paths.reviewPath, buffer);
+}
+
+function publicReviewDecisions(tasks, designRevision, imagePlanRevision, stored, blockers = []) {
+    const accepted = blockers.length ? new Map() : new Map(stored.filter((decision) => (
+        decision.design_revision_sha256 === designRevision
+        && decision.image_plan_revision_sha256 === imagePlanRevision
+    )).map((decision) => [decision.task_token, decision]));
+    return tasks.filter((task) => task.result_token).map((task) => ({
+        task_token: task.task_token,
+        result_token: task.result_token,
+        decision: task.status === '재제작' ? 'retry'
+            : accepted.get(task.task_token)?.result_token === task.result_token ? 'use' : 'pending',
+    }));
 }
 
 function assertPrivateDirectory(directoryPath, code) {
@@ -173,6 +237,11 @@ function loadUpstream(context) {
         || imagePlan.design_revision_sha256 !== design.revision_sha256 || !SHA256.test(imagePlan.revision_sha256 || '')) {
         throw failure('VIDEO_PLAN_SAVED_ALIGNED_IMAGE_PLAN_REQUIRED');
     }
+    const imageReviews = new Map((imagePlan.review_decisions || [])
+        .map((decision) => [decision.task_token, decision.decision]));
+    if (imagePlan.review_blockers?.length || imagePlan.tasks.some((task) => (
+        !task.result_token || task.status !== '결과연결' || imageReviews.get(task.task_token) !== 'use'
+    ))) throw failure('VIDEO_PLAN_IMAGE_REVIEW_REQUIRED');
     const sceneImages = new Map();
     for (const task of imagePlan.tasks) {
         if (task.kind === 'scene_image') sceneImages.set(task.source_id, task);
@@ -351,6 +420,7 @@ function blockedState(code) {
     return {
         ok: false, status: 'blocked', design_revision_sha256: '', image_plan_revision_sha256: '',
         revision_sha256: '', tasks: [], providers: PROVIDER_LABELS,
+        review_decisions: [], review_blockers: [code],
         preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
         blockers: [code], executed: false, generation_executed: false, model_called: false,
     };
@@ -376,6 +446,7 @@ function getNewProjectVideoPlan(context = {}) {
             } else validateIdentity(tasks, derived);
         }
         const revision = revisionFor(upstream.design.revision_sha256, upstream.imagePlan.revision_sha256, tasks);
+        const review = readReviewDecisions(paths);
         return {
             ok: blockers.length === 0,
             status,
@@ -383,6 +454,11 @@ function getNewProjectVideoPlan(context = {}) {
             image_plan_revision_sha256: upstream.imagePlan.revision_sha256,
             revision_sha256: revision,
             tasks,
+            review_decisions: publicReviewDecisions(
+                tasks, upstream.design.revision_sha256, upstream.imagePlan.revision_sha256,
+                review.decisions, review.blockers,
+            ),
+            review_blockers: review.blockers,
             providers: PROVIDER_LABELS,
             preparation: blockers.length ? {
                 status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false,
@@ -748,6 +824,68 @@ function getNewProjectVideoResultPreview(payload, context = {}) {
     }
 }
 
+function currentVideoUseDecisions(state, stored) {
+    const tasks = new Map(state.tasks.map((task) => [task.task_token, task]));
+    return stored.filter((decision) => {
+        const task = tasks.get(decision.task_token);
+        return decision.design_revision_sha256 === state.design_revision_sha256
+            && decision.image_plan_revision_sha256 === state.image_plan_revision_sha256
+            && task?.result_token === decision.result_token && task.status !== '재제작';
+    });
+}
+
+function saveNewProjectVideoReviewDecision(payload, context = {}) {
+    exactKeys(payload, [
+        'task_token', 'decision', 'expected_design_revision_sha256',
+        'expected_image_plan_revision_sha256', 'expected_video_plan_revision_sha256',
+    ], 'VIDEO_PLAN_REVIEW_SHAPE_INVALID');
+    if (!TASK_TOKEN.test(payload.task_token || '') || !['use', 'retry'].includes(payload.decision)) {
+        throw failure('VIDEO_PLAN_REVIEW_DECISION_INVALID');
+    }
+    let state = requireSavedAlignedPlan(payload, context);
+    const task = state.tasks.find((item) => item.task_token === payload.task_token);
+    if (!task?.result_token) throw failure('VIDEO_PLAN_REVIEW_RESULT_REQUIRED');
+    const paths = exactPaths(context.userDataPath);
+    const stored = currentVideoUseDecisions(state, requireReviewDecisions(paths));
+    const withoutTarget = stored.filter((decision) => decision.task_token !== task.task_token);
+
+    if (payload.decision === 'retry') {
+        writeReviewDecisions(paths, withoutTarget);
+        if (task.status !== '재제작') {
+            const tasks = state.tasks.map((item) => item.task_token === task.task_token
+                ? { ...item, status: '재제작' } : item);
+            writePlan(paths, state.design_revision_sha256, state.image_plan_revision_sha256, tasks);
+        }
+        return { ...getNewProjectVideoPlan(context), status: 'saved' };
+    }
+
+    if (task.status === '재제작') {
+        const tasks = state.tasks.map((item) => item.task_token === task.task_token
+            ? { ...item, status: '결과연결' } : item);
+        writePlan(paths, state.design_revision_sha256, state.image_plan_revision_sha256, tasks);
+        state = getNewProjectVideoPlan(context);
+        if (!state.ok || state.blockers.length) throw failure(state.blockers[0] || 'VIDEO_PLAN_REVIEW_SAVE_FAILED');
+    }
+    const alreadyCurrent = state.review_decisions.some((decision) => (
+        decision.task_token === task.task_token && decision.result_token === task.result_token
+        && decision.decision === 'use'
+    ));
+    if (!alreadyCurrent) {
+        writeReviewDecisions(paths, [
+            ...currentVideoUseDecisions(state, withoutTarget),
+            {
+                task_token: task.task_token,
+                result_token: task.result_token,
+                design_revision_sha256: state.design_revision_sha256,
+                image_plan_revision_sha256: state.image_plan_revision_sha256,
+                decision: 'use',
+                decided_at: new Date().toISOString(),
+            },
+        ]);
+    }
+    return { ...getNewProjectVideoPlan(context), status: 'saved' };
+}
+
 function saveNewProjectVideoRetrySelection(payload, context = {}) {
     exactKeys(payload, [
         'task_tokens', 'expected_design_revision_sha256', 'expected_image_plan_revision_sha256',
@@ -761,11 +899,16 @@ function saveNewProjectVideoRetrySelection(payload, context = {}) {
         const task = state.tasks.find((item) => item.task_token === token);
         if (!task || !task.result_token) throw failure('VIDEO_PLAN_RETRY_RESULT_REQUIRED');
     }
+    const paths = exactPaths(context.userDataPath);
+    const changed = new Set(state.tasks.filter((task) => task.result_token
+        && (task.status === '재제작') !== selected.has(task.task_token)).map((task) => task.task_token));
+    const decisions = currentVideoUseDecisions(state, requireReviewDecisions(paths))
+        .filter((decision) => !changed.has(decision.task_token));
+    if (changed.size) writeReviewDecisions(paths, decisions);
     const tasks = state.tasks.map((task) => {
         if (!task.result_token) return task;
         return { ...task, status: selected.has(task.task_token) ? '재제작' : '결과연결' };
     });
-    const paths = exactPaths(context.userDataPath);
     writePlan(paths, state.design_revision_sha256, state.image_plan_revision_sha256, tasks);
     return { ...getNewProjectVideoPlan(context), status: 'saved' };
 }
@@ -783,5 +926,6 @@ module.exports = {
     getNewProjectVideoResultWorkspace,
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
+    saveNewProjectVideoReviewDecision,
     saveNewProjectVideoRetrySelection,
 };

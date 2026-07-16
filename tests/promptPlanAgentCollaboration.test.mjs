@@ -143,16 +143,29 @@ test('MOCK video prompt agent preserves provider and accepted tasks require retr
     const parts = setup(t);
     const sceneImage = parts.image.tasks.find((task) => task.kind === 'scene_image');
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
-    const linked = imagePlanProvider.connectNewProjectImageResult({
-        task_token: sceneImage.task_token, candidate_token: 'candidate', image_index: 1,
-        expected_design_revision_sha256: parts.image.design_revision_sha256,
-        expected_image_plan_revision_sha256: parts.image.revision_sha256,
-    }, {
+    const imageContext = {
         ...parts.context,
         getDstBundleImportPreview: () => ({ ready: true, preview: {
             mime_type: 'image/png', byte_length: png.byteLength, base64: png.toString('base64'),
         }, blockers: [] }),
-    });
+    };
+    let image = parts.image;
+    let linked;
+    for (let index = 0; index < image.tasks.length; index += 1) {
+        const task = image.tasks[index];
+        linked = imagePlanProvider.connectNewProjectImageResult({
+            task_token: task.task_token, candidate_token: `candidate-${index + 1}`, image_index: index + 1,
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, imageContext);
+        image = linked.state;
+        image = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: task.task_token,
+            decision: 'use',
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, imageContext);
+    }
     const derived = videoPlanProvider.getNewProjectVideoPlan(parts.context);
     const saved = videoPlanProvider.saveNewProjectVideoPlan({
         tasks: derived.tasks,

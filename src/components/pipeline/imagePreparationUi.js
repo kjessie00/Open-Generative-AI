@@ -6,7 +6,9 @@ export const IMAGE_KIND_LABELS = Object.freeze({
     scene_image: '장면',
 });
 
-export function normalizeImageTasks(tasks = []) {
+export function normalizeImageTasks(tasks = [], reviewDecisions = []) {
+    const decisions = new Map((Array.isArray(reviewDecisions) ? reviewDecisions : [])
+        .map((decision) => [decision?.task_token, decision?.decision]));
     return (Array.isArray(tasks) ? tasks : [])
         .filter((task) => task && IMAGE_KIND_LABELS[task.kind])
         .map((task) => ({
@@ -15,6 +17,8 @@ export function normalizeImageTasks(tasks = []) {
             label: String(task.label || '이름 없음'),
             prompt: String(task.prompt || ''),
             status: ['준비', '결과연결', '재제작'].includes(task.status) ? task.status : '준비',
+            review_decision: task.status === '재제작' ? 'retry'
+                : ['pending', 'use'].includes(decisions.get(task.task_token)) ? decisions.get(task.task_token) : 'pending',
             reference_task_ids: Array.isArray(task.reference_task_ids) ? [...task.reference_task_ids] : [],
         }))
         .sort((left, right) => (

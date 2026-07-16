@@ -243,8 +243,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'saveNewProjectDraft',
         'saveNewProjectImagePlan',
         'saveNewProjectImageRetrySelection',
+        'saveNewProjectImageReviewDecision',
         'saveNewProjectVideoPlan',
         'saveNewProjectVideoRetrySelection',
+        'saveNewProjectVideoReviewDecision',
         'selectProductionRoot',
         'stageNewProjectExecutionHandoff',
         'writePlanningFile',
@@ -293,6 +295,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.connectNewProjectVideoResult({ task_token: `task_${'a'.repeat(64)}` });
     await bridge.getNewProjectVideoResultPreview({ result_token: `result_${'a'.repeat(64)}` });
     await bridge.saveNewProjectVideoRetrySelection({ task_tokens: [] });
+    await bridge.saveNewProjectImageReviewDecision({ task_token: 'opaque', decision: 'use' });
+    await bridge.saveNewProjectVideoReviewDecision({ task_token: 'opaque', decision: 'retry' });
     await bridge.getNewProjectExecutionState();
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
@@ -352,6 +356,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:connect-new-project-video-result',
             'film-pipeline:get-new-project-video-result-preview',
             'film-pipeline:save-new-project-video-retry-selection',
+            'film-pipeline:save-new-project-image-review-decision',
+            'film-pipeline:save-new-project-video-review-decision',
             'film-pipeline:get-new-project-execution-state',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',

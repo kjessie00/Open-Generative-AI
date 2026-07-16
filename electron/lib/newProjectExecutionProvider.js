@@ -976,20 +976,26 @@ function resultIndexes(context, needsImage, needsVideo) {
     return { image, video };
 }
 
-function connectedTaskTokens(context = {}) {
-    const connected = new Set();
+function workbenchTaskStates(context = {}) {
+    const states = new Map();
     for (const load of [
         context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan,
         context.getNewProjectVideoPlan || newProjectVideoPlanProvider.getNewProjectVideoPlan,
     ]) {
         try {
             const state = load(context);
+            const decisions = new Map((state?.review_decisions || [])
+                .map((decision) => [decision.task_token, decision.decision]));
             for (const task of Array.isArray(state?.tasks) ? state.tasks : []) {
-                if (task.result_token && task.status === '결과연결') connected.add(task.task_token);
+                if (task.result_token) states.set(task.task_token, {
+                    connected: true,
+                    quality_decision: task.status === '재제작' ? 'retry'
+                        : decisions.get(task.task_token) === 'use' ? 'use' : 'pending',
+                });
             }
         } catch { /* current workbench may not be ready yet */ }
     }
-    return connected;
+    return states;
 }
 
 function publicSelections(selections, context = {}) {
@@ -1046,7 +1052,7 @@ function publicSelections(selections, context = {}) {
         tasks.some((task) => task.lane === 'image' && task.status === 'succeeded'),
         tasks.some((task) => task.lane === 'video' && task.status === 'succeeded'),
     );
-    const connected = connectedTaskTokens(context);
+    const workbenchStates = workbenchTaskStates(context);
     for (const task of tasks) {
         let match = null;
         if (task.status === 'succeeded') {
@@ -1062,8 +1068,10 @@ function publicSelections(selections, context = {}) {
                 try { match = typeof resolver === 'function' ? resolver(task.result_locator, context) : null; } catch { match = null; }
             }
         }
-        const candidateToken = connected.has(task.task_token) ? '' : match?.candidate_token || '';
-        task.workbench_connected = connected.has(task.task_token);
+        const workbench = workbenchStates.get(task.task_token);
+        const candidateToken = workbench?.connected ? '' : match?.candidate_token || '';
+        task.workbench_connected = workbench?.connected === true;
+        task.quality_decision = workbench?.quality_decision || 'pending';
         task.result_match_status = task.status === 'succeeded'
             ? task.workbench_connected ? 'connected' : candidateToken ? 'ready' : 'waiting'
             : '';

@@ -183,6 +183,12 @@ test('scene image preparation opens only after every referenced character and lo
             expected_design_revision_sha256: state.design_revision_sha256,
             expected_image_plan_revision_sha256: state.revision_sha256,
         }, context).state;
+        state = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: task.task_token,
+            decision: 'use',
+            expected_design_revision_sha256: state.design_revision_sha256,
+            expected_image_plan_revision_sha256: state.revision_sha256,
+        }, context);
     }
     const prepared = imagePlanProvider.prepareNewProjectImagePlan({
         expected_design_revision_sha256: state.design_revision_sha256,
@@ -251,6 +257,82 @@ test('MOCK DST public preview connects a private result, previews it, selects re
         expected_image_plan_revision_sha256: cleared.revision_sha256,
     }, context);
     assert.equal(preparedWithoutLinked.tasks.some((task) => task.task_token === cleared.tasks[0].task_token), false);
+});
+
+test('MOCK connected image quality decisions persist use and retry separately and fail closed on drift', (t) => {
+    const parts = setup(t);
+    let state = savePlan(parts);
+    let png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 8, 1, 1]);
+    const context = {
+        ...parts,
+        getDstBundleImportPreview: () => ({
+            ready: true,
+            preview: { mime_type: 'image/png', byte_length: png.byteLength, base64: png.toString('base64') },
+            blockers: [],
+        }),
+    };
+    for (const task of state.tasks.slice(0, 2)) {
+        state = imagePlanProvider.connectNewProjectImageResult({
+            task_token: task.task_token, candidate_token: `MOCK-${task.sequence}`, image_index: 1,
+            expected_design_revision_sha256: state.design_revision_sha256,
+            expected_image_plan_revision_sha256: state.revision_sha256,
+        }, context).state;
+    }
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['pending', 'pending']);
+    const first = state.tasks[0];
+    const second = state.tasks[1];
+    state = imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: first.task_token, decision: 'use',
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    state = imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: second.task_token, decision: 'use',
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['use', 'use']);
+    const paths = imagePlanProvider.exactPaths(parts.userDataPath);
+    assert.equal(fs.lstatSync(paths.reviewPath).mode & 0o777, 0o600);
+    const beforeDuplicate = fs.readFileSync(paths.reviewPath, 'utf8');
+    imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: second.task_token, decision: 'use',
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    assert.equal(fs.readFileSync(paths.reviewPath, 'utf8'), beforeDuplicate, 'duplicate use is idempotent');
+
+    state = imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: first.task_token, decision: 'retry',
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['retry', 'use']);
+    state = imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: first.task_token, decision: 'use',
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context);
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['use', 'use']);
+
+    png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 8, 2, 2]);
+    state = imagePlanProvider.connectNewProjectImageResult({
+        task_token: first.task_token, candidate_token: 'MOCK-new-result', image_index: 2,
+        expected_design_revision_sha256: state.design_revision_sha256,
+        expected_image_plan_revision_sha256: state.revision_sha256,
+    }, context).state;
+    assert.equal(state.review_decisions.find((item) => item.task_token === first.task_token).decision, 'pending');
+    assert.equal(state.review_decisions.find((item) => item.task_token === second.task_token).decision, 'use');
+
+    fs.chmodSync(paths.reviewPath, 0o644);
+    const unsafe = imagePlanProvider.getNewProjectImagePlan(context);
+    assert.equal(unsafe.review_decisions.every((item) => item.decision !== 'use'), true);
+    assert.deepEqual(unsafe.review_blockers, ['IMAGE_PLAN_FILE_UNSAFE']);
+    assert.throws(() => imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: first.task_token, decision: 'use',
+        expected_design_revision_sha256: unsafe.design_revision_sha256,
+        expected_image_plan_revision_sha256: unsafe.revision_sha256,
+    }, context), { code: 'IMAGE_PLAN_FILE_UNSAFE' });
 });
 
 test('MOCK main-only execution references bind current plan tasks to validated typed image bytes', (t) => {

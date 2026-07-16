@@ -810,6 +810,12 @@ test('MOCK: DST scene references stage as immutable typed run inputs and recover
             expected_design_revision_sha256: image.design_revision_sha256,
             expected_image_plan_revision_sha256: image.revision_sha256,
         }, context).state;
+        image = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: referenceTasks[index].task_token,
+            decision: 'use',
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, context);
     }
     imagePlanProvider.prepareNewProjectImagePlan({
         expected_design_revision_sha256: image.design_revision_sha256,
@@ -939,20 +945,34 @@ function setupActualPlans(t, videoProvider = 'flow') {
         tasks: image.tasks, expected_design_revision_sha256: image.design_revision_sha256,
         expected_image_plan_revision_sha256: image.revision_sha256,
     }, imageContext);
-    imagePlanProvider.prepareNewProjectImagePlan({
-        expected_design_revision_sha256: image.design_revision_sha256,
-        expected_image_plan_revision_sha256: image.revision_sha256,
-    }, imageContext);
-    let imageExecution = executionProvider.getNewProjectExecutionState(parts);
-    imageExecution = executionProvider.prepareNewProjectExecution({
-        expected_revision_sha256: imageExecution.revision_sha256, new_attempt: false,
-    }, parts);
+    const referenceTasks = image.tasks.filter((task) => task.kind.endsWith('_sheet'));
+    for (let index = 0; index < referenceTasks.length; index += 1) {
+        image = imagePlanProvider.connectNewProjectImageResult({
+            task_token: referenceTasks[index].task_token,
+            candidate_token: `local-reference-${index + 1}`,
+            image_index: index + 1,
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, imageContext).state;
+        image = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: referenceTasks[index].task_token,
+            decision: 'use',
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, imageContext);
+    }
     const scene = image.tasks.find((task) => task.kind === 'scene_image');
     image = imagePlanProvider.connectNewProjectImageResult({
         task_token: scene.task_token, candidate_token: 'local-fixture', image_index: 1,
         expected_design_revision_sha256: image.design_revision_sha256,
         expected_image_plan_revision_sha256: image.revision_sha256,
     }, imageContext).state;
+    image = imagePlanProvider.saveNewProjectImageReviewDecision({
+        task_token: scene.task_token,
+        decision: 'use',
+        expected_design_revision_sha256: image.design_revision_sha256,
+        expected_image_plan_revision_sha256: image.revision_sha256,
+    }, imageContext);
     let video = videoPlanProvider.getNewProjectVideoPlan(parts);
     const videoTasks = video.tasks.map((task) => ({
         ...task,
@@ -971,7 +991,8 @@ function setupActualPlans(t, videoProvider = 'flow') {
     }, parts);
     const execution = executionProvider.getNewProjectExecutionState(parts);
     assert.equal(execution.prepared, false, 'new video lane awaits materialization');
-    assert.equal(execution.tasks.filter((task) => task.lane === 'image').length, imageExecution.task_count);
+    assert.equal(execution.tasks.filter((task) => task.lane === 'image').length, 0,
+        'accepted image results leave only the video lane to execute');
     assert.equal(execution.tasks.filter((task) => task.lane === 'video').length, 1);
     return { ...parts, execution };
 }
@@ -1326,15 +1347,9 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
     const handoff = JSON.parse(inspected.stdout);
     assert.equal(handoff.ok, true);
     assert.equal(handoff.handoff.schema_version, 'film_pipeline.new_project_execution_handoff.v4');
-    assert.equal(handoff.handoff.tasks.length, 3);
-    const sheetPreviews = handoff.handoff.tasks
-        .filter((task) => task.lane === 'image')
-        .map((task) => task.provider_execution_preview);
-    assert.equal(sheetPreviews.every((preview) => preview.readiness === 'preview_ready'), true);
-    assert.equal(sheetPreviews.every((preview) => preview.command_spec.args.includes('goldpure369')), true);
-    assert.equal(sheetPreviews.every((preview) => preview.command_spec.preview_only === true), true);
-    assert.equal(sheetPreviews.every((preview) => preview.command_spec.live_submit_allowed === false), true);
-    assert.equal(sheetPreviews.every((preview) => preview.command_spec.copy_allowed === false), true);
+    assert.equal(handoff.handoff.tasks.length, 1);
+    assert.equal(handoff.handoff.tasks.some((task) => task.lane === 'image'), false,
+        'accepted image results do not remain in the executable handoff');
     const videoTask = handoff.handoff.tasks.find((task) => task.lane === 'video');
     assert.equal(videoTask.provider, 'flow');
     assert.equal(videoTask.aspect_ratio, '9:16');
@@ -1350,8 +1365,7 @@ test('actual local CLI inspects a private handoff and publishes a 0600 receipt u
         output_kind: 'video', output_count: 1, preview_only: true,
     });
     assert.doesNotMatch(JSON.stringify(publicVideo.execution_preview), /FLOW_|flow|\/Users\//i);
-    assert.equal(executionProvider.getNewProjectExecutionHistory(parts).runs.length, 2,
-        'image run remains after image revision drift and video preparation');
+    assert.equal(executionProvider.getNewProjectExecutionHistory(parts).runs.length, 1);
 
     const inputPath = path.join(parts.base, 'receipt.json');
     const task = parts.execution.tasks[0];

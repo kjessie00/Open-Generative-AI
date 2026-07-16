@@ -1173,6 +1173,10 @@ function getNewProjectImageResultPreview(payload, options = {}) {
     return newProjectImagePlanProvider.getNewProjectImageResultPreview(payload, newProjectImagePlanContext(options));
 }
 
+function saveNewProjectImageReviewDecision(payload, options = {}) {
+    return newProjectImagePlanProvider.saveNewProjectImageReviewDecision(payload, newProjectImagePlanContext(options));
+}
+
 function saveNewProjectImageRetrySelection(payload, options = {}) {
     return newProjectImagePlanProvider.saveNewProjectImageRetrySelection(payload, newProjectImagePlanContext(options));
 }
@@ -1278,6 +1282,10 @@ function connectNewProjectVideoResult(payload, options = {}) {
 
 function getNewProjectVideoResultPreview(payload, options = {}) {
     return newProjectVideoPlanProvider.getNewProjectVideoResultPreview(payload, newProjectVideoPlanContext(options));
+}
+
+function saveNewProjectVideoReviewDecision(payload, options = {}) {
+    return newProjectVideoPlanProvider.saveNewProjectVideoReviewDecision(payload, newProjectVideoPlanContext(options));
 }
 
 function saveNewProjectVideoRetrySelection(payload, options = {}) {
@@ -1806,6 +1814,7 @@ function register(ipcApi = ipcMain, options = {}) {
     });
     ipcApi.handle('film-pipeline:connect-new-project-image-result', (_, payload) => connectNewProjectImageResult(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-image-result-preview', (_, payload) => getNewProjectImageResultPreview(payload, options));
+    ipcApi.handle('film-pipeline:save-new-project-image-review-decision', (_, payload) => saveNewProjectImageReviewDecision(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-image-retry-selection', (_, payload) => saveNewProjectImageRetrySelection(payload, options));
     ipcApi.handle('film-pipeline:enqueue-image-prompt-agent-request', (_, payload) => enqueueImagePromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-image-prompt-agent-request', (_, payload) => runImagePromptAgentRequest(payload, options));
@@ -1822,6 +1831,7 @@ function register(ipcApi = ipcMain, options = {}) {
     });
     ipcApi.handle('film-pipeline:connect-new-project-video-result', (_, payload) => connectNewProjectVideoResult(payload, options));
     ipcApi.handle('film-pipeline:get-new-project-video-result-preview', (_, payload) => getNewProjectVideoResultPreview(payload, options));
+    ipcApi.handle('film-pipeline:save-new-project-video-review-decision', (_, payload) => saveNewProjectVideoReviewDecision(payload, options));
     ipcApi.handle('film-pipeline:save-new-project-video-retry-selection', (_, payload) => saveNewProjectVideoRetrySelection(payload, options));
     ipcApi.handle('film-pipeline:enqueue-video-prompt-agent-request', (_, payload) => enqueueVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-video-prompt-agent-request', (_, payload) => runVideoPromptAgentRequest(payload, options));
@@ -1936,6 +1946,7 @@ module.exports = {
     getNewProjectImageResultWorkspace,
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
+    saveNewProjectImageReviewDecision,
     saveNewProjectImageRetrySelection,
     enqueueImagePromptAgentRequest,
     runImagePromptAgentRequest,
@@ -1946,6 +1957,7 @@ module.exports = {
     getNewProjectVideoResultWorkspace,
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
+    saveNewProjectVideoReviewDecision,
     saveNewProjectVideoRetrySelection,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,

@@ -11,7 +11,7 @@ export function GenerationPreparationPanel({
     onOpenImageResultReview,
     onRequestImageAgentEdit, onDecideImageAgentEdit,
 }) {
-    let tasks = normalizeImageTasks(imagePlanTasks || imagePlanState?.tasks);
+    let tasks = normalizeImageTasks(imagePlanTasks || imagePlanState?.tasks, imagePlanState?.review_decisions);
     const showExistingProduction = config === undefined || Boolean(config.productionRoot);
     const progress = imageProgress(tasks);
     const nextText = progress.next

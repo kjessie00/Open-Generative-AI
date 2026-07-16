@@ -64,7 +64,9 @@ export function VideoTaskCard({ task, resultPreview, resultWorkspace, agentReque
                     el('h3', { text: task.label, className: 'mt-1 truncate text-base font-bold text-white' }),
                 ]),
                 el('span', {
-                    text: task.status === '결과연결' ? '결과 연결됨' : task.status === '재제작' ? '다시 만들기' : '영상 필요',
+                    text: task.status === '재제작' ? '결과 연결됨 · 다시 만들기'
+                        : task.status === '결과연결' && task.review_decision === 'use' ? '결과 연결됨 · 사용 확인'
+                            : task.status === '결과연결' ? '결과 연결됨 · 확인 필요' : '영상 필요',
                     className: 'shrink-0 text-xs font-semibold text-secondary',
                 }),
             ]),

@@ -61,7 +61,8 @@ function taskRow(task, onOpenWorkItem) {
     const waitingForConnection = task.status === 'succeeded' && task.result_match_status === 'waiting';
     const statusText = task.status === 'running' ? `${status} ${progress}%`
         : task.status === 'failed' && task.failure_label ? `${status} · ${task.failure_label}`
-            : task.result_match_status === 'connected' ? `${status} · 작업대에 연결됨`
+            : task.result_match_status === 'connected' ? `${status} · 작업대에 연결됨 · ${task.quality_decision === 'use'
+                ? '사용 확인' : task.quality_decision === 'retry' ? '다시 만들기' : '확인 필요'}`
                 : task.result_match_status === 'ready' ? `${status} · 연결 준비됨`
                     : waitingForConnection ? `${status} · 연결 확인 필요`
                         : task.status === 'queued'

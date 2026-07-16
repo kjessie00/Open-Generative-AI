@@ -149,7 +149,7 @@ function emptyNewProjectImagePlanState(status = 'empty', blocker = '') {
         ok: false,
         status,
         design_revision_sha256: '',
-        revision_sha256: '',
+        revision_sha256: '', review_decisions: [], review_blockers: blocker ? [blocker] : [],
         tasks: [],
         preparation: { status: 'empty', items: [], executed: false, model_called: false },
         blockers: blocker ? [blocker] : [],
@@ -163,6 +163,7 @@ function emptyNewProjectImageResultWorkspace(status = 'empty', blocker = '') {
 function emptyNewProjectVideoPlanState(status = 'empty', blocker = '') {
     return {
         ok: false, status, design_revision_sha256: '', image_plan_revision_sha256: '', revision_sha256: '', tasks: [],
+        review_decisions: [], review_blockers: blocker ? [blocker] : [],
         preparation: { status: 'empty', items: [], executed: false, model_called: false },
         blockers: blocker ? [blocker] : [],
     };
@@ -603,6 +604,7 @@ export function PipelineStudio() {
                 newProjectDesignNotice,
                 imagePlanState: newProjectImagePlanState,
                 imagePlanTasks: newProjectImagePlanTasks,
+                imageReviewDecisions: newProjectImagePlanState.review_decisions || [],
                 imagePlanDirty: newProjectImagePlanDirty,
                 imagePlanNotice: newProjectImagePlanNotice,
                 imageResultWorkspace: newProjectImageResultWorkspace,
@@ -610,6 +612,7 @@ export function PipelineStudio() {
                 onOpenImageResultReview: () => switchTab('storyboard'),
                 videoPlanState: newProjectVideoPlanState,
                 videoPlanTasks: newProjectVideoPlanTasks,
+                videoReviewDecisions: newProjectVideoPlanState.review_decisions || [],
                 videoPlanDirty: newProjectVideoPlanDirty,
                 videoPlanNotice: newProjectVideoPlanNotice,
                 videoResultWorkspace: newProjectVideoResultWorkspace,
@@ -1122,6 +1125,34 @@ export function PipelineStudio() {
                     }
                     render();
                 },
+                onSaveImageReviewDecision: async (taskToken, decision) => {
+                    const previousState = newProjectImagePlanState;
+                    const previousTasks = newProjectImagePlanTasks;
+                    newProjectImagePlanNotice = '결과 선택을 저장하는 중…';
+                    newProjectMediaReviewRetryNotice = '결과 선택을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectImageReviewDecision({
+                            task_token: taskToken,
+                            decision,
+                            expected_design_revision_sha256: previousState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: previousState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!nextState?.ok) throw new Error('IMAGE_REVIEW_SAVE_FAILED');
+                        newProjectImagePlanState = nextState;
+                        newProjectImagePlanTasks = structuredClone(nextState.tasks);
+                        await refreshNewProjectVideoPlan();
+                        newProjectImagePlanNotice = decision === 'use' ? '이 결과를 사용하기로 저장했습니다.' : '다시 만들기로 저장했습니다.';
+                        newProjectMediaReviewRetryNotice = newProjectImagePlanNotice;
+                    } catch {
+                        newProjectImagePlanState = previousState;
+                        newProjectImagePlanTasks = previousTasks;
+                        newProjectImagePlanNotice = '결과 선택을 저장하지 못했습니다.';
+                        newProjectMediaReviewRetryNotice = '결과 선택을 저장하지 못했습니다. 다시 선택하세요.';
+                    }
+                    render();
+                },
                 onRefreshImageResults: refreshNewProjectImageResults,
                 onLoadImageCandidatePreview: (payload) => pipelineClient.loadDstBundleImportPreview(payload),
                 onConnectImageResult: async ({ taskToken, candidateToken, imageIndex }) => {
@@ -1334,6 +1365,34 @@ export function PipelineStudio() {
                         newProjectVideoPlanTasks = previous;
                         newProjectVideoPlanNotice = '다시 만들 선택을 저장하지 못했습니다.';
                         newProjectMediaReviewRetryNotice = '선택을 저장하지 못했습니다. 다시 선택하세요.';
+                    }
+                    render();
+                },
+                onSaveVideoReviewDecision: async (taskToken, decision) => {
+                    const previousState = newProjectVideoPlanState;
+                    const previousTasks = newProjectVideoPlanTasks;
+                    newProjectVideoPlanNotice = '결과 선택을 저장하는 중…';
+                    newProjectMediaReviewRetryNotice = '결과 선택을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectVideoReviewDecision({
+                            task_token: taskToken,
+                            decision,
+                            expected_design_revision_sha256: previousState.design_revision_sha256,
+                            expected_image_plan_revision_sha256: previousState.image_plan_revision_sha256,
+                            expected_video_plan_revision_sha256: previousState.revision_sha256,
+                        });
+                        const nextState = result?.state || result;
+                        if (!nextState?.ok) throw new Error('VIDEO_REVIEW_SAVE_FAILED');
+                        newProjectVideoPlanState = nextState;
+                        newProjectVideoPlanTasks = structuredClone(nextState.tasks);
+                        newProjectVideoPlanNotice = decision === 'use' ? '이 결과를 사용하기로 저장했습니다.' : '다시 만들기로 저장했습니다.';
+                        newProjectMediaReviewRetryNotice = newProjectVideoPlanNotice;
+                    } catch {
+                        newProjectVideoPlanState = previousState;
+                        newProjectVideoPlanTasks = previousTasks;
+                        newProjectVideoPlanNotice = '결과 선택을 저장하지 못했습니다.';
+                        newProjectMediaReviewRetryNotice = '결과 선택을 저장하지 못했습니다. 다시 선택하세요.';
                     }
                     render();
                 },

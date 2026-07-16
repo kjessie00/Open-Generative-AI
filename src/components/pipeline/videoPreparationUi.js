@@ -7,7 +7,9 @@ export const VIDEO_PROVIDER_LABELS = Object.freeze({
     bytedance: 'ByteDance',
 });
 
-export function normalizeVideoTasks(tasks = []) {
+export function normalizeVideoTasks(tasks = [], reviewDecisions = []) {
+    const decisions = new Map((Array.isArray(reviewDecisions) ? reviewDecisions : [])
+        .map((decision) => [decision?.task_token, decision?.decision]));
     return (Array.isArray(tasks) ? tasks : [])
         .filter((task) => task?.kind === 'scene_video')
         .map((task) => ({
@@ -17,6 +19,8 @@ export function normalizeVideoTasks(tasks = []) {
             provider: PROVIDERS.includes(task.provider) ? task.provider : 'flow',
             prompt: String(task.prompt || ''),
             status: ['준비', '결과연결', '재제작'].includes(task.status) ? task.status : '준비',
+            review_decision: task.status === '재제작' ? 'retry'
+                : ['pending', 'use'].includes(decisions.get(task.task_token)) ? decisions.get(task.task_token) : 'pending',
         }))
         .sort((left, right) => left.sequence - right.sequence);
 }

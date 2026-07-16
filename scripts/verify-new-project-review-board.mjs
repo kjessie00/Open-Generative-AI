@@ -104,6 +104,12 @@ if (mode === 'seed') {
             expected_design_revision_sha256: imageState.design_revision_sha256,
             expected_image_plan_revision_sha256: imageState.revision_sha256,
         }, connectedContext).state;
+        imageState = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: task.task_token,
+            decision: 'use',
+            expected_design_revision_sha256: imageState.design_revision_sha256,
+            expected_image_plan_revision_sha256: imageState.revision_sha256,
+        }, connectedContext);
     }
 
     let videoState = videoPlanProvider.getNewProjectVideoPlan(context);
@@ -144,17 +150,28 @@ if (mode === 'seed') {
         candidate_token: candidateToken,
         ...videoRevisions(videoState),
     }, videoContext).state;
+    const imagePaths = imagePlanProvider.exactPaths(userDataPath);
+    const imageReview = JSON.parse(fs.readFileSync(imagePaths.reviewPath, 'utf8'));
+    const pendingTask = imageState.tasks.find((task) => task.kind === 'scene_image');
+    imageReview.decisions = imageReview.decisions.filter((decision) => decision.task_token !== pendingTask.task_token);
+    imageReview.updated_at = new Date().toISOString();
+    fs.writeFileSync(imagePaths.reviewPath, `${JSON.stringify(imageReview, null, 2)}\n`, { mode: 0o600 });
+    fs.chmodSync(imagePaths.reviewPath, 0o600);
+    imageState = imagePlanProvider.getNewProjectImagePlan(context);
     const receipt = {
         mode, user_data_path: userDataPath,
         image_count: imageState.tasks.length,
         image_result_count: imageState.tasks.filter((task) => task.result_token).length,
         video_count: videoState.tasks.length,
         video_result_count: videoState.tasks.filter((task) => task.result_token).length,
+        image_review_decisions: imageState.review_decisions.map((decision) => decision.decision),
         external_call_performed: false, model_called: false, generation_executed: false,
         provider_generation_calls: 0, synthetic_local_ffmpeg: true,
     };
     if (receipt.image_count !== 3 || receipt.image_result_count !== 3
-        || receipt.video_count !== 1 || receipt.video_result_count !== 1) {
+        || receipt.video_count !== 1 || receipt.video_result_count !== 1
+        || receipt.image_review_decisions.filter((decision) => decision === 'use').length !== 2
+        || receipt.image_review_decisions.filter((decision) => decision === 'pending').length !== 1) {
         throw new Error('REVIEW_BOARD_SEED_INVALID');
     }
     writeReceipt('seed.json', receipt);
@@ -176,7 +193,7 @@ if (mode === 'seed') {
     };
     if (receipt.image_count !== 3 || receipt.image_result_count !== 3 || receipt.image_retry_count !== 1
         || receipt.selected_image_label !== '장면 이미지 · 재회' || receipt.video_status !== 'blocked'
-        || !receipt.video_blockers.includes('VIDEO_PLAN_REFERENCE_IMAGE_REQUIRED')) {
+        || !receipt.video_blockers.includes('VIDEO_PLAN_IMAGE_REVIEW_REQUIRED')) {
         throw new Error(`REVIEW_BOARD_IMAGE_VERIFICATION_FAILED:${JSON.stringify(receipt)}`);
     }
     writeReceipt('result.json', receipt);
@@ -186,6 +203,8 @@ if (mode === 'seed') {
     const videoState = videoPlanProvider.getNewProjectVideoPlan(context);
     const imageRetry = imageState.tasks.filter((task) => task.status === '재제작');
     const videoRetry = videoState.tasks.filter((task) => task.status === '재제작');
+    const imageDecisions = imageState.review_decisions.map((decision) => decision.decision);
+    const videoDecisions = videoState.review_decisions.map((decision) => decision.decision);
     const receipt = {
         mode,
         image_count: imageState.tasks.length,
@@ -195,12 +214,15 @@ if (mode === 'seed') {
         video_result_count: videoState.tasks.filter((task) => task.result_token).length,
         video_retry_count: videoRetry.length,
         selected_video_label: videoRetry[0]?.label || '',
+        image_review_decisions: imageDecisions,
+        video_review_decisions: videoDecisions,
         external_call_performed: false, model_called: false, generation_executed: false,
         provider_generation_calls: 0,
     };
     if (receipt.image_count !== 3 || receipt.image_result_count !== 3 || receipt.image_retry_count !== 0
-        || receipt.video_count !== 1 || receipt.video_result_count !== 1 || receipt.video_retry_count !== 1
-        || receipt.selected_video_label !== '장면 영상 · 재회') {
+        || receipt.video_count !== 1 || receipt.video_result_count !== 1 || receipt.video_retry_count !== 0
+        || imageDecisions.some((decision) => decision !== 'use')
+        || videoDecisions.some((decision) => decision !== 'use')) {
         throw new Error(`REVIEW_BOARD_VERIFICATION_FAILED:${JSON.stringify(receipt)}`);
     }
     writeReceipt('result.json', receipt);

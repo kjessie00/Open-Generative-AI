@@ -231,7 +231,8 @@ export async function decideDesignAgentSuggestion(payload) {
 function unavailableImagePlanState(method) {
     return {
         ...unavailable(method), status: 'blocked', design_revision_sha256: '', revision_sha256: '',
-        tasks: [], preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
+        tasks: [], review_decisions: [], review_blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+        preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
         blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false, model_called: false,
     };
 }
@@ -278,6 +279,12 @@ export async function saveNewProjectImageRetrySelection(payload) {
     return unavailableImagePlanState('saveNewProjectImageRetrySelection');
 }
 
+export async function saveNewProjectImageReviewDecision(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectImageReviewDecision === 'function') return bridge.saveNewProjectImageReviewDecision(payload);
+    return unavailableImagePlanState('saveNewProjectImageReviewDecision');
+}
+
 export async function enqueueImagePromptAgentRequest(payload) {
     const bridge = getBridge();
     if (typeof bridge?.enqueueImagePromptAgentRequest === 'function') return bridge.enqueueImagePromptAgentRequest(payload);
@@ -299,7 +306,7 @@ export async function decideImagePromptAgentSuggestion(payload) {
 function unavailableVideoPlanState(method) {
     return {
         ...unavailable(method), status: 'blocked', design_revision_sha256: '', image_plan_revision_sha256: '',
-        revision_sha256: '', tasks: [],
+        revision_sha256: '', tasks: [], review_decisions: [], review_blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
         preparation: { status: 'empty', task_count: 0, task_tokens: [], executed: false, model_called: false },
         blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'], generation_executed: false, model_called: false,
     };
@@ -345,6 +352,12 @@ export async function saveNewProjectVideoRetrySelection(payload) {
     const bridge = getBridge();
     if (typeof bridge?.saveNewProjectVideoRetrySelection === 'function') return bridge.saveNewProjectVideoRetrySelection(payload);
     return unavailableVideoPlanState('saveNewProjectVideoRetrySelection');
+}
+
+export async function saveNewProjectVideoReviewDecision(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectVideoReviewDecision === 'function') return bridge.saveNewProjectVideoReviewDecision(payload);
+    return unavailableVideoPlanState('saveNewProjectVideoReviewDecision');
 }
 
 export async function enqueueVideoPromptAgentRequest(payload) {
@@ -736,6 +749,7 @@ export const pipelineClient = Object.freeze({
     getNewProjectImageResultWorkspace,
     connectNewProjectImageResult,
     getNewProjectImageResultPreview,
+    saveNewProjectImageReviewDecision,
     saveNewProjectImageRetrySelection,
     enqueueImagePromptAgentRequest,
     runImagePromptAgentRequest,
@@ -746,6 +760,7 @@ export const pipelineClient = Object.freeze({
     getNewProjectVideoResultWorkspace,
     connectNewProjectVideoResult,
     getNewProjectVideoResultPreview,
+    saveNewProjectVideoReviewDecision,
     saveNewProjectVideoRetrySelection,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,

@@ -8,7 +8,7 @@ export function VideoPreparationPanel({
     onRefreshVideoResults, onLoadVideoCandidatePreview, onConnectVideoResult, onOpenVideoResultReview,
     onRequestVideoAgentEdit, onDecideVideoAgentEdit,
 }) {
-    let tasks = normalizeVideoTasks(videoPlanTasks || videoPlanState?.tasks);
+    let tasks = normalizeVideoTasks(videoPlanTasks || videoPlanState?.tasks, videoPlanState?.review_decisions);
     const progress = videoProgress(tasks);
     const nextText = progress.next ? `${progress.next.sequence}. ${progress.next.label}` : tasks.length ? '모든 영상 확인' : '장면 설계 먼저 완성';
     const busy = ['saving', 'preparing'].includes(videoPlanState?.status);

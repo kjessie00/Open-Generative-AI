@@ -92,7 +92,7 @@ function saveAndConnectSceneImages(parts) {
         expected_design_revision_sha256: image.design_revision_sha256,
         expected_image_plan_revision_sha256: image.revision_sha256,
     }, context);
-    for (const task of image.tasks.filter((item) => item.kind === 'scene_image')) {
+    for (const task of image.tasks) {
         image = imagePlanProvider.connectNewProjectImageResult({
             task_token: task.task_token,
             candidate_token: 'image-candidate',
@@ -100,6 +100,12 @@ function saveAndConnectSceneImages(parts) {
             expected_design_revision_sha256: image.design_revision_sha256,
             expected_image_plan_revision_sha256: image.revision_sha256,
         }, context).state;
+        image = imagePlanProvider.saveNewProjectImageReviewDecision({
+            task_token: task.task_token,
+            decision: 'use',
+            expected_design_revision_sha256: image.design_revision_sha256,
+            expected_image_plan_revision_sha256: image.revision_sha256,
+        }, context);
     }
     return image;
 }
@@ -294,6 +300,69 @@ test('pathless candidate preview connects private MP4, enforces provider, and dr
     assert.deepEqual(missingOnly.state.preparation.task_tokens, [cleared.tasks[1].task_token]);
 });
 
+test('MOCK connected video quality decisions preserve siblings and fail closed on replacement and unsafe files', (t) => {
+    const parts = setup(t);
+    let state = saveVideo(parts);
+    let bytes = mp4();
+    const context = {
+        ...parts,
+        getVideoResultImportWorkspace: () => ({
+            status: 'ready', blockers: [], candidates: [
+                { candidate_token: 'MOCK-flow-video', provider: 'flow', duration_seconds: 5, width: 1080, height: 1920 },
+            ],
+        }),
+        copyVideoResultCandidateToPrivateFile: (payload) => copyMock(bytes)(payload),
+    };
+    for (const task of state.tasks) {
+        state = videoPlanProvider.connectNewProjectVideoResult({
+            task_token: task.task_token, candidate_token: 'MOCK-flow-video', ...revisions(state),
+        }, context).state;
+    }
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['pending', 'pending']);
+    const first = state.tasks[0];
+    const second = state.tasks[1];
+    for (const task of [first, second]) {
+        state = videoPlanProvider.saveNewProjectVideoReviewDecision({
+            task_token: task.task_token, decision: 'use', ...revisions(state),
+        }, context);
+    }
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['use', 'use']);
+    const paths = videoPlanProvider.exactPaths(parts.userDataPath);
+    assert.equal(fs.lstatSync(paths.reviewPath).mode & 0o777, 0o600);
+    const duplicate = fs.readFileSync(paths.reviewPath, 'utf8');
+    videoPlanProvider.saveNewProjectVideoReviewDecision({
+        task_token: second.task_token, decision: 'use', ...revisions(state),
+    }, context);
+    assert.equal(fs.readFileSync(paths.reviewPath, 'utf8'), duplicate);
+
+    state = videoPlanProvider.saveNewProjectVideoReviewDecision({
+        task_token: first.task_token, decision: 'retry', ...revisions(state),
+    }, context);
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['retry', 'use']);
+    state = videoPlanProvider.saveNewProjectVideoReviewDecision({
+        task_token: first.task_token, decision: 'use', ...revisions(state),
+    }, context);
+    assert.deepEqual(state.review_decisions.map((item) => item.decision), ['use', 'use']);
+
+    state = videoPlanProvider.saveNewProjectVideoReviewDecision({
+        task_token: first.task_token, decision: 'retry', ...revisions(state),
+    }, context);
+    bytes = Buffer.concat([mp4(), Buffer.from([9])]);
+    state = videoPlanProvider.connectNewProjectVideoResult({
+        task_token: first.task_token, candidate_token: 'MOCK-flow-video', ...revisions(state),
+    }, context).state;
+    assert.equal(state.review_decisions.find((item) => item.task_token === first.task_token).decision, 'pending');
+    assert.equal(state.review_decisions.find((item) => item.task_token === second.task_token).decision, 'use');
+
+    fs.chmodSync(paths.reviewPath, 0o644);
+    const unsafe = videoPlanProvider.getNewProjectVideoPlan(context);
+    assert.equal(unsafe.review_decisions.every((item) => item.decision !== 'use'), true);
+    assert.deepEqual(unsafe.review_blockers, ['VIDEO_PLAN_FILE_UNSAFE']);
+    assert.throws(() => videoPlanProvider.saveNewProjectVideoReviewDecision({
+        task_token: first.task_token, decision: 'use', ...revisions(unsafe),
+    }, context), { code: 'VIDEO_PLAN_FILE_UNSAFE' });
+});
+
 test('image-plan drift fails closed and explicit save rebases without carrying stale video results', (t) => {
     const parts = setup(t);
     let video = saveVideo(parts);
@@ -343,7 +412,7 @@ test('unaccepted or retry-selected scene image blocks video planning', (t) => {
     assert.equal(retry.status, 'saved');
     const blocked = videoPlanProvider.getNewProjectVideoPlan(parts);
     assert.equal(blocked.status, 'blocked');
-    assert.deepEqual(blocked.blockers, ['VIDEO_PLAN_REFERENCE_IMAGE_REQUIRED']);
+    assert.deepEqual(blocked.blockers, ['VIDEO_PLAN_IMAGE_REVIEW_REQUIRED']);
 });
 
 test('private plan rejects symlinks and atomic writes leave no temporary files', (t) => {
