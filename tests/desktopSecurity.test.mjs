@@ -200,6 +200,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'enqueuePlanningAgentRequest',
         'enqueueVideoPromptAgentRequest',
         'executeFinishingRun',
+        'executeNewProjectFinalRender',
         'exportG3ReviewPacket',
         'getConfig',
         'getDstBundleImportWorkspace',
@@ -211,6 +212,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getNewProjectDesignState',
         'getNewProjectDraftState',
         'getNewProjectExecutionState',
+        'getNewProjectFinalRender',
+        'getNewProjectFinalRenderPreview',
         'getNewProjectFinalStitch',
         'getNewProjectImagePlan',
         'getNewProjectImageResultPreview',
@@ -228,6 +231,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'planDstBundleImport',
         'planFinishingRun',
         'planG3ProductionPromotion',
+        'planNewProjectFinalRender',
         'planVideoResultImport',
         'prepareNewProjectImagePlan',
         'prepareNewProjectVideoPlan',
@@ -305,6 +309,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.saveNewProjectClipSelection({ selections: [] });
     await bridge.getNewProjectFinalStitch();
     await bridge.stageNewProjectFinalStitch({ expected_revision: 'handoff_opaque' });
+    await bridge.getNewProjectFinalRender();
+    await bridge.planNewProjectFinalRender();
+    await bridge.executeNewProjectFinalRender({ planToken: 'opaque', confirmed: true, projectId: 'test-project' });
+    await bridge.getNewProjectFinalRenderPreview();
     await bridge.getNewProjectExecutionState();
     await bridge.copyNewProjectBuildCommand();
     assert.equal(bridge.setConfig, undefined, 'renderer must not receive a public config mutation method');
@@ -370,6 +378,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:save-new-project-clip-selection',
             'film-pipeline:get-new-project-final-stitch',
             'film-pipeline:stage-new-project-final-stitch',
+            'film-pipeline:get-new-project-final-render',
+            'film-pipeline:plan-new-project-final-render',
+            'film-pipeline:execute-new-project-final-render',
+            'film-pipeline:get-new-project-final-render-preview',
             'film-pipeline:get-new-project-execution-state',
             'film-pipeline:copy-new-project-build-command',
             'film-pipeline:select-production-root',
@@ -409,6 +421,9 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-new-project-video-result-workspace',
         'film-pipeline:get-new-project-clip-selection',
         'film-pipeline:get-new-project-final-stitch',
+        'film-pipeline:get-new-project-final-render',
+        'film-pipeline:plan-new-project-final-render',
+        'film-pipeline:get-new-project-final-render-preview',
         'film-pipeline:get-new-project-execution-state',
         'film-pipeline:copy-new-project-build-command',
         'film-pipeline:list-production-children',
@@ -448,6 +463,10 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:promote-g3-production-selection')[1],
         [{ planToken: 'opaque', projectIdConfirmation: 'project_01', confirmed: true }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:execute-new-project-final-render')[1],
+        [{ planToken: 'opaque', confirmed: true, projectId: 'test-project' }],
     );
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:execute-finishing-run')[1],

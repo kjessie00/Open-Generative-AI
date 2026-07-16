@@ -888,6 +888,72 @@ test('blocked final stitch points back to clip selection without badges', async 
     assert.equal(findAll(panel, 'button').every((button) => button.className.includes('min-h-11')), true);
 });
 
+test('MOCK: one Korean click renders and restores a pathless native review video without quality approval', async (t) => {
+    const calls = [];
+    const stitched = {
+        ok: true, status: 'restored', revision: `handoff_${'a'.repeat(64)}`, staged: true,
+        selected_count: 1, total_duration_seconds: 0.6,
+        clips: [{ sequence: 1, label: '첫 장면', in_seconds: 0.2, out_seconds: 0.8 }],
+        blockers: [], executed: false, rendered: false, generation_executed: false,
+    };
+    const ready = {
+        ok: true, status: 'ready', can_render: true, rendered: false, selected_count: 1,
+        selected_duration_seconds: 0.6, output_duration_seconds: 0, fresh_probe_verified: false,
+        has_video: false, has_audio: false, preview_ready: false, executed: false,
+        output_quality_approved: false, generation_executed: false,
+        legacy_production_modified: false, canonical_delivery_modified: false,
+        notice: '선택한 구간으로 검토용 영상을 만들 수 있습니다.',
+    };
+    const rendered = {
+        ...ready, status: 'already_current', can_render: false, rendered: true,
+        output_duration_seconds: 0.6, fresh_probe_verified: true, has_video: true,
+        has_audio: true, preview_ready: true, executed: true,
+        notice: '검토용 영상이 준비되었습니다. 영상 품질은 아직 승인되지 않았습니다.',
+    };
+    const bridge = {
+        async getNewProjectDraftState() {
+            return { status: 'saved', draft: { production_id: 'review-project-01', brief: '검토', script: '장면', route: 'both', aspect_ratio: '9:16', scene_duration: 5, max_scenes: 2 } };
+        },
+        async getNewProjectFinalStitch() { return structuredClone(stitched); },
+        async getNewProjectFinalRender() { calls.push(['getRender']); return structuredClone(ready); },
+        async planNewProjectFinalRender() {
+            calls.push(['planRender']);
+            return { ...structuredClone(ready), ready: true, plan_token: 'opaque-final-plan', expires_at: '2026-07-16T12:00:00Z' };
+        },
+        async executeNewProjectFinalRender(payload) {
+            calls.push(['executeRender', structuredClone(payload)]);
+            return structuredClone(rendered);
+        },
+        async getNewProjectFinalRenderPreview() {
+            calls.push(['previewRender']);
+            const bytes = Buffer.from('mock-video');
+            return { ready: true, mime_type: 'video/mp4', byte_length: bytes.byteLength, base64: bytes.toString('base64') };
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+    assert.ok(byText(studio, 'button', '검토용 영상 만들기'));
+    await byText(studio, 'button', '검토용 영상 만들기').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'executeRender'), [
+        'executeRender', { planToken: 'opaque-final-plan', confirmed: true, projectId: 'review-project-01' },
+    ]);
+    const video = findAll(studio, 'video')[0];
+    assert.ok(video);
+    assert.equal(video.attributes.get('controls'), 'true');
+    assert.match(video.attributes.get('src'), /^blob:/);
+    assert.match(studio.textContent, /파일과 재생 길이만 확인했습니다\. 내용과 영상 품질은 아직 승인되지 않았습니다/);
+    assert.match(studio.textContent, /준비됨 · 검토용 영상 생성 완료/);
+    assert.doesNotMatch(studio.textContent.split('기존 제작 마감 결과')[0],
+        /opaque-final-plan|sha256|source_path|task_|result_|revision|run_id|payload|argv|FINAL_RENDER|ffmpeg|python/i);
+    assert.equal(findAll(studio, 'button').filter((button) => button.textContent.includes('검토용 영상'))
+        .every((button) => button.className.includes('min-h-11')), true);
+});
+
 test('PipelineStudio overview uses restored new-project clip selections instead of legacy accepted seconds', async (t) => {
     const bridge = {
         async getConfig() {

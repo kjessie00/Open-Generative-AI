@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -56,6 +57,25 @@ def _read_payload(payload_path: Path) -> dict[str, Any]:
     return value
 
 
+def _has_audio(ffprobe: Path, source: Path) -> bool:
+    result = subprocess.run(
+        [str(ffprobe), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "json", "--", str(source)],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    value = json.loads(result.stdout)
+    return any(stream.get("codec_type") == "audio" for stream in value.get("streams", []))
+
+
+def _add_silent_audio(ffmpeg: Path, source: Path, target: Path) -> None:
+    subprocess.run([
+        str(ffmpeg), "-v", "error", "-i", str(source),
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+        "-shortest", "-movflags", "+faststart", str(target),
+    ], check=True, capture_output=True, timeout=300)
+    os.chmod(target, 0o600)
+
+
 def _render(args: argparse.Namespace) -> dict[str, Any]:
     payload_path = _regular_absolute(args.payload, "payload")
     output_path = Path(args.output)
@@ -76,47 +96,63 @@ def _render(args: argparse.Namespace) -> dict[str, Any]:
     os.environ["PATH"] = os.pathsep.join(dict.fromkeys(path_entries))
 
     payload = _read_payload(payload_path)
-    build_timeline, build_roughcut = _load_harness()
-    timeline = build_timeline(
-        payload["selected_takes"],
-        payload["timeline_beats"],
-        audio_manifest=None,
-        fps=24,
-        width=1080,
-        height=1920,
-        measure_durations=False,
-    )
-    issues = timeline.validate()
-    if issues:
-        raise ValueError("timeline_validation_failed")
+    temporary_sources: list[Path] = []
+    silent_audio_source_count = 0
+    try:
+        if args.synthesize_silence:
+            for index, take in enumerate(payload["selected_takes"].get("takes", [])):
+                source = _regular_absolute(take.get("video_path", ""), "source")
+                if not _has_audio(ffprobe, source):
+                    temporary = payload_path.parent / f".silent-source-{index}.mp4"
+                    temporary_sources.append(temporary)
+                    _add_silent_audio(ffmpeg, source, temporary)
+                    take["video_path"] = str(temporary)
+                    silent_audio_source_count += 1
+        build_timeline, build_roughcut = _load_harness()
+        timeline = build_timeline(
+            payload["selected_takes"],
+            payload["timeline_beats"],
+            audio_manifest=None,
+            fps=24,
+            width=1080,
+            height=1920,
+            measure_durations=False,
+        )
+        issues = timeline.validate()
+        if issues:
+            raise ValueError("timeline_validation_failed")
 
-    expected_order = payload["expected_order"]
-    expected_shots = [entry["shot_id"] for entry in expected_order]
-    expected_beats = [entry["beat_id"] for entry in expected_order]
-    if [clip.shot_id for clip in timeline.clips] != expected_shots:
-        raise ValueError("timeline_shot_order_mismatch")
-    if [clip.beat_id for clip in timeline.clips] != expected_beats:
-        raise ValueError("timeline_beat_order_mismatch")
-    if any((clip.transition_in or {}).get("type") != "cut" for clip in timeline.clips):
-        raise ValueError("transition_unsupported")
+        expected_order = payload["expected_order"]
+        expected_shots = [entry["shot_id"] for entry in expected_order]
+        expected_beats = [entry["beat_id"] for entry in expected_order]
+        if [clip.shot_id for clip in timeline.clips] != expected_shots:
+            raise ValueError("timeline_shot_order_mismatch")
+        if [clip.beat_id for clip in timeline.clips] != expected_beats:
+            raise ValueError("timeline_beat_order_mismatch")
+        if any((clip.transition_in or {}).get("type") != "cut" for clip in timeline.clips):
+            raise ValueError("transition_unsupported")
 
-    result = build_roughcut(
-        timeline,
-        output_path,
-        transition_default="cut",
-        height=1280,
-        timeout=1_700,
-    )
-    if result.get("success") is not True:
-        raise RuntimeError("roughcut_failed")
-    os.chmod(output_path, 0o600)
-    return {
-        "success": True,
-        "total_duration_seconds": timeline.total_duration,
-        "shot_ids": [clip.shot_id for clip in timeline.clips],
-        "beat_ids": [clip.beat_id for clip in timeline.clips],
-        "ranges": [[clip.source_in, clip.source_out] for clip in timeline.clips],
-    }
+        result = build_roughcut(
+            timeline,
+            output_path,
+            transition_default="cut",
+            height=1280,
+            timeout=1_700,
+        )
+        if result.get("success") is not True:
+            raise RuntimeError("roughcut_failed")
+        os.chmod(output_path, 0o600)
+        return {
+            "success": True,
+            "total_duration_seconds": timeline.total_duration,
+            "shot_ids": [clip.shot_id for clip in timeline.clips],
+            "beat_ids": [clip.beat_id for clip in timeline.clips],
+            "ranges": [[clip.source_in, clip.source_out] for clip in timeline.clips],
+            "silent_audio_source_count": silent_audio_source_count,
+        }
+    finally:
+        for temporary in temporary_sources:
+            temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -127,6 +163,7 @@ def main() -> int:
     parser.add_argument("--output")
     parser.add_argument("--ffmpeg")
     parser.add_argument("--ffprobe")
+    parser.add_argument("--synthesize-silence", action="store_true")
     args = parser.parse_args()
     try:
         if args.check:

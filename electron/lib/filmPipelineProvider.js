@@ -9,6 +9,7 @@ const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
 const newProjectClipSelectionProvider = require('./newProjectClipSelectionProvider');
 const newProjectFinalStitchProvider = require('./newProjectFinalStitchProvider');
+const { createNewProjectFinalRenderProvider } = require('./newProjectFinalRenderProvider');
 const promptPlanAgentProvider = require('./promptPlanAgentProvider');
 const newProjectExecutionProvider = require('./newProjectExecutionProvider');
 const { defaultLocalAgentSuggestionRunner } = require('./localAgentSuggestionRunner');
@@ -1310,6 +1311,38 @@ function stageNewProjectFinalStitch(payload, options = {}) {
     return newProjectFinalStitchProvider.stageNewProjectFinalStitch(payload, newProjectVideoPlanContext(options));
 }
 
+function newProjectFinalRender(options = {}) {
+    return createNewProjectFinalRenderProvider({
+        ...options,
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        getStagedInput: options.finalRenderGetStagedInput,
+        runtime: options.finalRenderRuntime,
+        harnessRoot: options.finalRenderHarnessRoot,
+        adapterPath: options.finalRenderAdapterPath,
+        planStore: options.finalRenderPlanStore,
+        planTtlMs: options.finalRenderPlanTtlMs,
+        now: options.finalRenderNow,
+        nowMs: options.finalRenderNowMs,
+        randomBytes: options.finalRenderRandomBytes,
+    });
+}
+
+async function getNewProjectFinalRender(options = {}) {
+    return newProjectFinalRender(options).get();
+}
+
+async function planNewProjectFinalRender(options = {}) {
+    return newProjectFinalRender(options).plan();
+}
+
+async function executeNewProjectFinalRender(payload, options = {}) {
+    return newProjectFinalRender(options).execute(payload);
+}
+
+async function getNewProjectFinalRenderPreview(options = {}) {
+    return newProjectFinalRender(options).preview();
+}
+
 function newProjectExecutionContext(options = {}) {
     const env = options.env || process.env;
     return {
@@ -1861,6 +1894,19 @@ function register(ipcApi = ipcMain, options = {}) {
         return getNewProjectFinalStitch(options);
     });
     ipcApi.handle('film-pipeline:stage-new-project-final-stitch', (_, payload) => stageNewProjectFinalStitch(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-final-render', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectFinalRender(options);
+    });
+    ipcApi.handle('film-pipeline:plan-new-project-final-render', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return planNewProjectFinalRender(options);
+    });
+    ipcApi.handle('film-pipeline:execute-new-project-final-render', (_, payload) => executeNewProjectFinalRender(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-final-render-preview', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectFinalRenderPreview(options);
+    });
     ipcApi.handle('film-pipeline:enqueue-video-prompt-agent-request', (_, payload) => enqueueVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-video-prompt-agent-request', (_, payload) => runVideoPromptAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-video-prompt-agent-suggestion', (_, payload) => decideVideoPromptAgentSuggestion(payload, options));
@@ -1991,6 +2037,10 @@ module.exports = {
     saveNewProjectClipSelection,
     getNewProjectFinalStitch,
     stageNewProjectFinalStitch,
+    getNewProjectFinalRender,
+    planNewProjectFinalRender,
+    executeNewProjectFinalRender,
+    getNewProjectFinalRenderPreview,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

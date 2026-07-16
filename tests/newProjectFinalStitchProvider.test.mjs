@@ -61,8 +61,9 @@ test('final stitch stages exact private render handoff and exposes only a simple
     const record = JSON.parse(fs.readFileSync(paths.handoffPath, 'utf8'));
     assert.equal(record.schema_version, finalStitchProvider.SCHEMA);
     assert.equal(record.render_payload.schema_version, 'film_pipeline.finishing_render_payload.v1');
-    assert.equal(record.render_payload.timeline_beats.schema_version, 'short-drama-room-beats-v1');
-    assert.deepEqual(record.render_payload.timeline_beats.beats.map((item) => item.order), [1, 2]);
+    assert.deepEqual(record.render_payload.timeline_beats.scenes.map((scene) => scene.scene_id), ['scene_01', 'scene_02']);
+    assert.deepEqual(record.render_payload.timeline_beats.scenes.flatMap((scene) => scene.beats)
+        .map((item) => item.beat_id), ['scene_01', 'scene_02']);
     assert.deepEqual(record.render_payload.selected_takes.takes.map((item) => item.chosen_provider), ['flow', 'replicate']);
     assert.deepEqual(record.render_payload.expected_order.map((item) => item.shot_id), ['scene_01', 'scene_02']);
     assert.deepEqual(record.render_payload.expected_order.map((item) => [item.source_in_sec, item.source_out_sec]), [[0, 3], [1, 4]]);

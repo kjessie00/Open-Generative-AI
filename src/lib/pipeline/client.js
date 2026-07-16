@@ -401,6 +401,41 @@ export async function stageNewProjectFinalStitch(payload) {
     return unavailableFinalStitchState('stageNewProjectFinalStitch');
 }
 
+function unavailableFinalRenderState() {
+    return {
+        ok: false, status: 'blocked', can_render: false, rendered: false,
+        selected_count: 0, selected_duration_seconds: 0, output_duration_seconds: 0,
+        fresh_probe_verified: false, has_video: false, has_audio: false, preview_ready: false,
+        executed: false, output_quality_approved: false, generation_executed: false,
+        legacy_production_modified: false, canonical_delivery_modified: false,
+        notice: '데스크탑 앱에서 최종 편집 준비를 먼저 저장하세요.',
+    };
+}
+
+export async function getNewProjectFinalRender() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectFinalRender === 'function') return bridge.getNewProjectFinalRender();
+    return unavailableFinalRenderState();
+}
+
+export async function planNewProjectFinalRender() {
+    const bridge = getBridge();
+    if (typeof bridge?.planNewProjectFinalRender === 'function') return bridge.planNewProjectFinalRender();
+    return { ...unavailableFinalRenderState(), ready: false, plan_token: '', expires_at: '' };
+}
+
+export async function executeNewProjectFinalRender(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.executeNewProjectFinalRender === 'function') return bridge.executeNewProjectFinalRender(payload);
+    return unavailableFinalRenderState();
+}
+
+export async function getNewProjectFinalRenderPreview() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectFinalRenderPreview === 'function') return bridge.getNewProjectFinalRenderPreview();
+    return { ready: false, mime_type: '', byte_length: 0, base64: '' };
+}
+
 export async function enqueueVideoPromptAgentRequest(payload) {
     const bridge = getBridge();
     if (typeof bridge?.enqueueVideoPromptAgentRequest === 'function') return bridge.enqueueVideoPromptAgentRequest(payload);
@@ -807,6 +842,10 @@ export const pipelineClient = Object.freeze({
     saveNewProjectClipSelection,
     getNewProjectFinalStitch,
     stageNewProjectFinalStitch,
+    getNewProjectFinalRender,
+    planNewProjectFinalRender,
+    executeNewProjectFinalRender,
+    getNewProjectFinalRenderPreview,
     enqueueVideoPromptAgentRequest,
     runVideoPromptAgentRequest,
     decideVideoPromptAgentSuggestion,

@@ -393,7 +393,7 @@ async function defaultRuntimeResolver(context) {
             const check = await runBoundedProcess(python.path, [context.adapterPath, '--check'], {
                 cwd: context.harnessRoot,
                 env: minimalEnvironment(runtime, context.harnessRoot),
-                timeoutMs: 10_000,
+                timeoutMs: 30_000,
                 maxOutputBytes: 32 * 1024,
             });
             if (check.code !== 0) continue;
@@ -436,14 +436,16 @@ async function defaultMediaProbe(sourcePath, context, runtime) {
     };
 }
 
-async function defaultRender({ outputPath, payloadPath, context, runtime }) {
-    const result = await runBoundedProcess(runtime.python.path, [
+async function defaultRender({ outputPath, payloadPath, context, runtime, synthesizeSilence = false }) {
+    const args = [
         context.adapterPath,
         '--payload', payloadPath,
         '--output', outputPath,
         '--ffmpeg', runtime.ffmpeg.path,
         '--ffprobe', runtime.ffprobe.path,
-    ], {
+    ];
+    if (synthesizeSilence) args.push('--synthesize-silence');
+    const result = await runBoundedProcess(runtime.python.path, args, {
         cwd: context.harnessRoot,
         env: minimalEnvironment(runtime, context.harnessRoot),
         timeoutMs: 30 * 60 * 1000,
@@ -454,6 +456,39 @@ async function defaultRender({ outputPath, payloadPath, context, runtime }) {
     try { value = JSON.parse(result.stdout); } catch { throw failure('FINISHING_RENDER_RESULT_MALFORMED'); }
     if (value?.success !== true) throw failure('FINISHING_RENDER_FAILED');
     return value;
+}
+
+function createFixedRoughcutRuntime(options = {}) {
+    const context = {
+        harnessRoot: options.harnessRoot || DEFAULT_HARNESS_ROOT,
+        adapterPath: options.adapterPath || DEFAULT_ADAPTER_PATH,
+    };
+    const runtimeResolver = options.runtimeResolver || defaultRuntimeResolver;
+    const mediaProbe = options.mediaProbe || defaultMediaProbe;
+    const render = options.render || defaultRender;
+    return Object.freeze({
+        async inspect() {
+            const [runtime, harness] = await Promise.all([
+                runtimeResolver(context).then(validateRuntime),
+                fingerprintHarness(context),
+            ]);
+            return {
+                runtime,
+                harness,
+                fingerprint: sha256(stableJson({
+                    runtime: Object.fromEntries(Object.entries(runtime).map(([key, item]) => [key, item.identity])),
+                    harness,
+                })),
+            };
+        },
+        probe: (sourcePath, inspection) => mediaProbe(sourcePath, context, inspection.runtime),
+        render: (request, inspection) => render({
+            ...request,
+            context,
+            runtime: inspection.runtime,
+            synthesizeSilence: request.synthesizeSilence === true,
+        }),
+    });
 }
 
 function validateRuntime(runtime) {
@@ -1353,6 +1388,7 @@ function createFinishingWorkbenchProvider(options = {}) {
 
 module.exports = {
     createFinishingWorkbenchProvider,
+    createFixedRoughcutRuntime,
     runBoundedProcess,
     FINISHING_OUTPUT_CONTRACT_VERSION,
     FINISHING_PROBE_SCHEMA,

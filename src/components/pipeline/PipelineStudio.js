@@ -189,6 +189,17 @@ function emptyNewProjectFinalStitchState(status = 'empty', blocker = '') {
     };
 }
 
+function emptyNewProjectFinalRenderState(status = 'loading') {
+    return {
+        ok: false, status, can_render: false, rendered: false, selected_count: 0,
+        selected_duration_seconds: 0, output_duration_seconds: 0,
+        fresh_probe_verified: false, has_video: false, has_audio: false, preview_ready: false,
+        executed: false, output_quality_approved: false, generation_executed: false,
+        legacy_production_modified: false, canonical_delivery_modified: false,
+        notice: '',
+    };
+}
+
 function emptyNewProjectExecutionState(status = 'empty', blocker = '') {
     return {
         ok: false,
@@ -275,6 +286,9 @@ export function PipelineStudio() {
     let newProjectClipSelectionNotice = '';
     let newProjectFinalStitchState = emptyNewProjectFinalStitchState('loading');
     let newProjectFinalStitchNotice = '';
+    let newProjectFinalRenderState = emptyNewProjectFinalRenderState();
+    let newProjectFinalRenderNotice = '';
+    let newProjectFinalRenderPreview = { source: '', dispose() {} };
     let newProjectMediaReviewFilter = 'all';
     let newProjectMediaReviewRetryNotice = '';
     let newProjectExecutionState = emptyNewProjectExecutionState('loading');
@@ -462,6 +476,32 @@ export function PipelineStudio() {
                 newProjectFinalStitchNotice = '최종 편집 준비를 불러오지 못했습니다.';
             }
             return newProjectFinalStitchState;
+        };
+
+        const loadNewProjectFinalRenderPreview = async () => {
+            let prepared = { ok: false, url: '', dispose() {} };
+            if (newProjectFinalRenderState.rendered && newProjectFinalRenderState.preview_ready) {
+                try {
+                    const raw = await pipelineClient.getNewProjectFinalRenderPreview();
+                    prepared = createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
+                } catch { /* pathless preview remains unavailable */ }
+            }
+            newProjectFinalRenderPreview.dispose?.();
+            newProjectFinalRenderPreview = prepared.ok
+                ? { source: prepared.url, dispose: prepared.dispose }
+                : { source: '', dispose() {} };
+        };
+
+        const refreshNewProjectFinalRender = async ({ loadPreview = true } = {}) => {
+            try {
+                newProjectFinalRenderState = await pipelineClient.getNewProjectFinalRender();
+                newProjectFinalRenderNotice = '';
+                if (loadPreview) await loadNewProjectFinalRenderPreview();
+            } catch {
+                newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
+                newProjectFinalRenderNotice = '검토용 영상 상태를 불러오지 못했습니다.';
+            }
+            return newProjectFinalRenderState;
         };
 
         const refreshNewProjectExecution = async () => {
@@ -674,6 +714,9 @@ export function PipelineStudio() {
                 newProjectClipSelectionNotice,
                 newProjectFinalStitchState,
                 newProjectFinalStitchNotice,
+                newProjectFinalRenderState,
+                newProjectFinalRenderNotice,
+                newProjectFinalRenderPreviewSource: newProjectFinalRenderPreview.source,
                 newProjectMediaReviewFilter,
                 mediaReviewRetryNotice: newProjectMediaReviewRetryNotice,
                 onNewProjectMediaReviewFilterChange: (value) => { newProjectMediaReviewFilter = value; },
@@ -750,6 +793,7 @@ export function PipelineStudio() {
                     newProjectFinalStitchNotice = '최신 준비 상태를 확인하는 중…';
                     render();
                     await refreshNewProjectFinalStitch();
+                    await refreshNewProjectFinalRender();
                     render();
                 },
                 onStageNewProjectFinalStitch: async () => {
@@ -762,8 +806,31 @@ export function PipelineStudio() {
                         if (!result?.ok || !result?.staged) throw new Error('FINAL_STITCH_STAGE_FAILED');
                         newProjectFinalStitchState = result;
                         newProjectFinalStitchNotice = '준비 파일을 저장했습니다. 아직 영상을 합치지 않았습니다.';
+                        await refreshNewProjectFinalRender();
                     } catch {
                         newProjectFinalStitchNotice = '준비를 저장하지 못했습니다. 클립 선택을 다시 확인하세요.';
+                    }
+                    render();
+                },
+                onRenderNewProjectFinal: async () => {
+                    newProjectFinalRenderState = { ...newProjectFinalRenderState, status: 'rendering' };
+                    newProjectFinalRenderNotice = '검토용 영상을 만드는 중입니다.';
+                    render();
+                    try {
+                        const plan = await pipelineClient.planNewProjectFinalRender();
+                        if (!plan?.ready || !plan?.plan_token) throw new Error('FINAL_RENDER_NOT_READY');
+                        const rendered = await pipelineClient.executeNewProjectFinalRender({
+                            planToken: plan.plan_token,
+                            confirmed: true,
+                            projectId: newProjectDraftValue.production_id,
+                        });
+                        if (!rendered?.rendered || !rendered?.fresh_probe_verified) throw new Error('FINAL_RENDER_FAILED');
+                        newProjectFinalRenderState = rendered;
+                        await loadNewProjectFinalRenderPreview();
+                        newProjectFinalRenderNotice = '검토용 영상이 준비되었습니다. 장면 품질은 직접 확인해 주세요.';
+                    } catch {
+                        newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
+                        newProjectFinalRenderNotice = '검토용 영상을 만들지 못했습니다. 준비 상태를 새로고침해 주세요.';
                     }
                     render();
                 },
@@ -1867,7 +1934,7 @@ export function PipelineStudio() {
 
     (async () => {
         let loadedConfig = config;
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, videoImportResult, executionResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, finalRenderResult, videoImportResult, executionResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
@@ -1878,6 +1945,7 @@ export function PipelineStudio() {
             pipelineClient.getNewProjectVideoResultWorkspace(),
             pipelineClient.getNewProjectClipSelection(),
             pipelineClient.getNewProjectFinalStitch(),
+            pipelineClient.getNewProjectFinalRender(),
             pipelineClient.getVideoResultImportWorkspace(),
             pipelineClient.getNewProjectExecutionState(),
         ]);
@@ -1960,6 +2028,18 @@ export function PipelineStudio() {
             newProjectFinalStitchState = finalStitchResult.value;
         } else {
             newProjectFinalStitchState = emptyNewProjectFinalStitchState('error', 'FINAL_STITCH_READ_FAILED');
+        }
+        if (finalRenderResult.status === 'fulfilled' && finalRenderResult.value) {
+            newProjectFinalRenderState = finalRenderResult.value;
+            if (newProjectFinalRenderState.rendered && newProjectFinalRenderState.preview_ready) {
+                try {
+                    const raw = await pipelineClient.getNewProjectFinalRenderPreview();
+                    const prepared = createG3PreviewObjectUrl({ ...raw, loaded: raw?.ready === true });
+                    if (prepared.ok) newProjectFinalRenderPreview = { source: prepared.url, dispose: prepared.dispose };
+                } catch { /* relaunch keeps the rendered state even if preview decoding fails */ }
+            }
+        } else {
+            newProjectFinalRenderState = emptyNewProjectFinalRenderState('blocked');
         }
         if (videoImportResult.status === 'fulfilled' && videoImportResult.value) {
             videoResultImportWorkspace = videoImportResult.value;

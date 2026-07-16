@@ -135,8 +135,12 @@ export function FinalReportPanel({
     onFinishingExecute,
     newProjectFinalStitchState,
     newProjectFinalStitchNotice,
+    newProjectFinalRenderState,
+    newProjectFinalRenderNotice,
+    newProjectFinalRenderPreviewSource,
     onStageNewProjectFinalStitch,
     onRefreshNewProjectFinalStitch,
+    onRenderNewProjectFinal,
     onOpenNewProjectClipSelection,
 }) {
     const finalReport = state.finalReport || {};
@@ -273,8 +277,12 @@ export function FinalReportPanel({
         newProjectFinalStitchState ? NewProjectFinalStitchPanel({
             state: newProjectFinalStitchState,
             notice: newProjectFinalStitchNotice,
+            renderState: newProjectFinalRenderState,
+            renderNotice: newProjectFinalRenderNotice,
+            previewSource: newProjectFinalRenderPreviewSource,
             onStage: onStageNewProjectFinalStitch,
             onRefresh: onRefreshNewProjectFinalStitch,
+            onRender: onRenderNewProjectFinal,
             onOpenClipSelection: onOpenNewProjectClipSelection,
         }) : null,
         el('details', { className: 'rounded-lg border border-white/10 bg-white/[0.02] px-4' }, [

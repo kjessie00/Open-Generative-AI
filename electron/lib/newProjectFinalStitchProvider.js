@@ -9,6 +9,7 @@ const RENDER_SCHEMA = 'film_pipeline.finishing_render_payload.v1';
 const ROOT_DIRECTORY = 'final_stitch';
 const HANDOFF_FILE = 'handoff.json';
 const MAX_HANDOFF_BYTES = 512 * 1024;
+const MAX_SOURCE_BYTES = 16 * 1024 * 1024 * 1024;
 
 function failure(code) {
     const error = new Error(code);
@@ -79,6 +80,34 @@ function readPrivate(filePath) {
     } finally { fs.closeSync(descriptor); }
 }
 
+function fingerprintSource(filePath) {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || path.normalize(filePath) !== filePath
+        || typeof fs.constants.O_NOFOLLOW !== 'number') throw failure('FINAL_STITCH_SOURCE_INVALID');
+    let before;
+    try { before = fs.lstatSync(filePath); } catch { throw failure('FINAL_STITCH_SOURCE_MISSING'); }
+    if (!before.isFile() || before.isSymbolicLink() || before.size <= 0 || before.size > MAX_SOURCE_BYTES) {
+        throw failure('FINAL_STITCH_SOURCE_UNSAFE');
+    }
+    const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+        const opened = fs.fstatSync(descriptor);
+        if (!sameFile(before, opened)) throw failure('FINAL_STITCH_SOURCE_CHANGED');
+        const digest = crypto.createHash('sha256');
+        const chunk = Buffer.allocUnsafe(1024 * 1024);
+        let offset = 0;
+        while (offset < opened.size) {
+            const bytesRead = fs.readSync(descriptor, chunk, 0, Math.min(chunk.length, opened.size - offset), offset);
+            if (bytesRead <= 0) throw failure('FINAL_STITCH_SOURCE_CHANGED');
+            digest.update(chunk.subarray(0, bytesRead));
+            offset += bytesRead;
+        }
+        const after = fs.fstatSync(descriptor);
+        const final = fs.lstatSync(filePath);
+        if (!sameFile(opened, after) || !sameFile(opened, final)) throw failure('FINAL_STITCH_SOURCE_CHANGED');
+        return { source_path: filePath, source_sha256: digest.digest('hex'), size_bytes: opened.size };
+    } finally { fs.closeSync(descriptor); }
+}
+
 function privateWrite(filePath, buffer) {
     const parent = path.dirname(filePath);
     assertPrivateDirectory(parent, 'FINAL_STITCH_DIRECTORY_UNSAFE');
@@ -121,19 +150,12 @@ function renderPayload(input, stagedAt) {
             takes,
         },
         timeline_beats: {
-            schema_version: 'short-drama-room-beats-v1',
-            project_id: input.project_id,
-            episode_id: input.project_id,
-            runtime_target_sec: input.clips.reduce((sum, clip) => sum + clip.out_seconds - clip.in_seconds, 0),
-            beats: input.clips.map((clip) => ({
-                beat_id: clip.source_id,
+            scenes: input.clips.map((clip) => ({
                 scene_id: clip.source_id,
-                order: clip.sequence,
-                title: clip.label,
-                summary: clip.reason,
-                characters_present: [],
-                emotional_beat: clip.reason,
-                target_duration_sec: clip.out_seconds - clip.in_seconds,
+                beats: [{
+                    beat_id: clip.source_id,
+                    dialogue_lines: [],
+                }],
             })),
         },
         expected_order: input.clips.map((clip) => ({
@@ -159,6 +181,7 @@ function buildRecord(input, stagedAt) {
         clip_selection_revision_sha256: input.clip_selection_revision_sha256,
         input_revision: inputRevision(input),
         sources: input.clips,
+        source_evidence: input.clips.map((clip) => fingerprintSource(clip.source_path)),
         render_payload: renderPayload(input, stagedAt),
         staged_at: stagedAt,
         executed: false,
@@ -171,16 +194,35 @@ function validateRecord(record, input) {
     exactKeys(record, [
         'schema_version', 'project_id', 'design_revision_sha256', 'image_plan_revision_sha256',
         'video_plan_revision_sha256', 'clip_selection_revision_sha256', 'input_revision',
-        'sources', 'render_payload', 'staged_at', 'executed', 'rendered', 'generation_executed',
+        'sources', 'source_evidence', 'render_payload', 'staged_at', 'executed', 'rendered', 'generation_executed',
     ], 'FINAL_STITCH_FILE_INVALID');
     if (record.schema_version !== SCHEMA || !Number.isFinite(Date.parse(record.staged_at))
         || record.executed !== false || record.rendered !== false || record.generation_executed !== false
-        || !Array.isArray(record.sources) || record.render_payload?.schema_version !== RENDER_SCHEMA) {
+        || !Array.isArray(record.sources) || !Array.isArray(record.source_evidence)
+        || record.render_payload?.schema_version !== RENDER_SCHEMA) {
         throw failure('FINAL_STITCH_FILE_INVALID');
     }
     const expected = buildRecord(input, record.staged_at);
     if (JSON.stringify(record) !== JSON.stringify(expected)) throw failure('FINAL_STITCH_INPUT_STALE');
     return record;
+}
+
+// Main-process only. Revalidates the complete selection, every selected source
+// byte, and the staged handoff before exposing private render inputs internally.
+function getStagedNewProjectFinalStitchInput(context = {}) {
+    const input = (context.getCompleteNewProjectClipSelectionInput
+        || clipSelectionProvider.getCompleteNewProjectClipSelectionInput)(context);
+    const paths = exactPaths(context.userDataPath);
+    let record;
+    try { record = JSON.parse(readPrivate(paths.handoffPath).toString('utf8')); }
+    catch (error) { if (error.code) throw error; throw failure('FINAL_STITCH_FILE_INVALID'); }
+    validateRecord(record, input);
+    return {
+        project_id: record.project_id,
+        input_revision: record.input_revision,
+        render_payload: structuredClone(record.render_payload),
+        sources: structuredClone(record.source_evidence),
+    };
 }
 
 function publicState(input, status, staged = false, blockers = []) {
@@ -256,4 +298,5 @@ module.exports = {
     exactPaths,
     getNewProjectFinalStitch,
     stageNewProjectFinalStitch,
+    getStagedNewProjectFinalStitchInput,
 };
