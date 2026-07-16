@@ -30,13 +30,14 @@ function parseArguments(argv) {
         index += 1;
     }
     const userDataPath = values['--user-data'];
-    if (!['inspect', 'publish'].includes(command) || typeof userDataPath !== 'string'
+    if (!['inspect', 'publish', 'publish-replicate-result'].includes(command) || typeof userDataPath !== 'string'
         || !path.isAbsolute(userDataPath) || path.normalize(userDataPath) !== userDataPath) {
         throw cliError('EXECUTION_CLI_ARGUMENT_INVALID');
     }
     const actual = Object.keys(values).sort().join(',');
     if ((command === 'inspect' && !['--user-data', '--new-attempt,--user-data'].includes(actual))
-        || (command === 'publish' && actual !== '--input,--user-data')) {
+        || (['publish', 'publish-replicate-result'].includes(command)
+            && actual !== '--input,--user-data')) {
         throw cliError('EXECUTION_CLI_ARGUMENT_INVALID');
     }
     return {
@@ -94,10 +95,27 @@ function publish(args) {
     })}\n`);
 }
 
+function publishReplicateResult(args) {
+    let metadata;
+    try { metadata = JSON.parse(readStableInput(args.inputPath).toString('utf8')); }
+    catch (error) { if (error.code) throw error; throw cliError('EXECUTION_CLI_INPUT_INVALID'); }
+    const result = executionProvider.publishReplicateResultReceipt(metadata, {
+        userDataPath: args.userDataPath,
+    });
+    process.stdout.write(`${JSON.stringify({
+        ok: true,
+        task_token: metadata.task_token,
+        prediction_id: metadata.prediction_id,
+        result_locator: result.result_locator,
+        already_published: result.already_published,
+    })}\n`);
+}
+
 try {
     const args = parseArguments(process.argv.slice(2));
     if (args.command === 'inspect') inspect(args);
-    else publish(args);
+    else if (args.command === 'publish') publish(args);
+    else publishReplicateResult(args);
 } catch (error) {
     process.stderr.write(`${JSON.stringify({ ok: false, error: error.code || 'EXECUTION_CLI_FAILED' })}\n`);
     process.exitCode = 1;

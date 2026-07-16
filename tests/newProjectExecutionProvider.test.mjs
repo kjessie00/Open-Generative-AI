@@ -1211,6 +1211,112 @@ test('MOCK ffprobe: Replicate succeeded receipt requires the exact v2 request, t
         /run_revision_sha256|task_token|request_revision_sha256|output_claim_sha256|prediction_exact_001/);
 });
 
+test('MOCK ffprobe: Replicate result metadata publishes the deterministic private task output without a caller path', (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const flowResultsRoot = path.join(parts.base, 'publisher-flow-results');
+    const grokResultsRoot = path.join(parts.base, 'publisher-grok-results');
+    const replicateRunRoot = path.join(parts.base, 'publisher-replicate-run');
+    const replicateResultsRoot = path.join(replicateRunRoot, 'replicate_seedance_clips');
+    const replicateReceiptResultsRoot = path.join(parts.base, 'publisher-replicate-receipts');
+    const bytedanceReceiptResultsRoot = path.join(parts.base, 'publisher-bytedance-receipts');
+    for (const directory of [flowResultsRoot, grokResultsRoot, replicateResultsRoot,
+        replicateReceiptResultsRoot, bytedanceReceiptResultsRoot]) {
+        fs.mkdirSync(directory, { recursive: true });
+    }
+    fs.writeFileSync(path.join(replicateRunRoot, 'run_status.md'), 'Replicate Seedance fallback\n');
+    const context = {
+        ...parts,
+        flowResultsRoot,
+        grokResultsRoot,
+        replicateResultsRoot,
+        replicateReceiptResultsRoot,
+        bytedanceReceiptResultsRoot,
+        tokenSecret: Buffer.alloc(32, 35),
+        runProcessFn: () => ({
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({
+                format: { format_name: 'mov,mp4', duration: '5' },
+                streams: [{ codec_type: 'video', width: 1080, height: 1920 }],
+            }),
+            stderr: '',
+        }),
+    };
+    const initial = executionProvider.getNewProjectExecutionState(context);
+    executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: initial.revision_sha256,
+        new_attempt: false,
+    }, context);
+    const handoff = executionProvider.inspectExecutionHandoff(context, { new_attempt: false });
+    const task = handoff.tasks.find((item) => item.provider === 'replicate');
+    const videoBytes = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'),
+        Buffer.from([0x00, 0x00, 0x02, 0x00]), Buffer.from('isomiso2', 'ascii'), Buffer.alloc(4096, 0x62),
+    ]);
+    fs.writeFileSync(task.output_path, videoBytes, { mode: 0o600, flag: 'wx' });
+    assert.equal(executionProvider.getNewProjectExecutionState(context).prepared, true,
+        'a private deterministic download remains part of the prepared run');
+    const metadata = {
+        schema_version: executionProvider.REPLICATE_DOWNLOAD_RESULT_SCHEMA,
+        run_revision_sha256: task.run_revision_sha256,
+        task_token: task.task_token,
+        prediction_id: 'prediction_publisher_001',
+        status: 'succeeded',
+        completed_at: '2026-07-16T04:00:00.000Z',
+    };
+    const published = executionProvider.publishReplicateResultReceipt(metadata, context);
+    const digest = crypto.createHash('sha256').update(videoBytes).digest('hex');
+    assert.equal(published.result_locator, `replicate:prediction_publisher_001:${digest}`);
+    assert.equal(published.already_published, false);
+    assert.equal(executionProvider.publishReplicateResultReceipt(metadata, context).already_published, true);
+    const receiptPath = path.join(
+        replicateReceiptResultsRoot,
+        metadata.prediction_id,
+        'receipt.json',
+    );
+    const claimBytes = fs.readFileSync(task.output_claim_path);
+    assert.deepEqual(JSON.parse(fs.readFileSync(receiptPath, 'utf8')), {
+        schema_version: 'film_pipeline.external_video_result.v2',
+        provider: 'replicate',
+        result_id: metadata.prediction_id,
+        status: 'succeeded',
+        output_file: 'result.mp4',
+        output_sha256: digest,
+        output_size_bytes: videoBytes.byteLength,
+        completed_at: metadata.completed_at,
+        run_revision_sha256: task.run_revision_sha256,
+        task_token: task.task_token,
+        request_revision_sha256: task.provider_execution_preview.request_spec.request_revision_sha256,
+        output_claim_sha256: crypto.createHash('sha256').update(claimBytes).digest('hex'),
+    });
+    assert.equal(Object.hasOwn(metadata, 'source_path'), false);
+    assert.equal(Object.hasOwn(metadata, 'url'), false);
+    assert.equal(Object.hasOwn(metadata, 'token'), false);
+    assert.throws(() => executionProvider.publishReplicateResultReceipt({ ...metadata, source_path: task.output_path }, context), {
+        code: 'EXECUTION_REPLICATE_RESULT_INPUT_INVALID',
+    });
+    assert.throws(() => executionProvider.publishReplicateResultReceipt({
+        ...metadata,
+        task_token: `task_${'7'.repeat(64)}`,
+    }, context), { code: 'EXECUTION_TASK_UNKNOWN' });
+
+    const invalidInputPath = path.join(parts.base, 'invalid-replicate-result.json');
+    fs.writeFileSync(invalidInputPath, `${JSON.stringify({ ...metadata, unexpected: true })}\n`, {
+        mode: 0o600,
+    });
+    const cliRejected = spawnSync(process.execPath, [
+        CLI, 'publish-replicate-result', '--user-data', parts.userDataPath, '--input', invalidInputPath,
+    ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(cliRejected.status, 1);
+    assert.equal(JSON.parse(cliRejected.stderr).error, 'EXECUTION_REPLICATE_RESULT_INPUT_INVALID');
+    const rootOverrideRejected = spawnSync(process.execPath, [
+        CLI, 'publish-replicate-result', '--user-data', parts.userDataPath,
+        '--input', invalidInputPath, '--receipt-root', replicateReceiptResultsRoot,
+    ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(rootOverrideRejected.status, 1);
+    assert.equal(JSON.parse(rootOverrideRejected.stderr).error, 'EXECUTION_CLI_ARGUMENT_INVALID');
+});
+
 test('actual local CLI inspects a private handoff and publishes a 0600 receipt using file IO only', (t) => {
     const parts = setupActualPlans(t);
     const inspected = spawnSync(process.execPath, [CLI, 'inspect', '--user-data', parts.userDataPath], {

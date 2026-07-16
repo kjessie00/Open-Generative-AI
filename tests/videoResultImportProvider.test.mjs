@@ -240,6 +240,60 @@ test('MOCK ffprobe: execution-bound Replicate v2 receipt survives relaunch while
         /run_revision_sha256|task_token|request_revision_sha256|output_claim_sha256/);
 });
 
+test('MOCK ffprobe: main-only Replicate publisher stable-copies one private output and is idempotent without overwrite', (t) => {
+    const fx = fixture(t);
+    const sourcePath = path.join(fx.base, 'private-downloaded-result.mp4');
+    fs.writeFileSync(sourcePath, MP4_ALT, { mode: 0o600, flag: 'wx' });
+    const binding = {
+        run_revision_sha256: '1'.repeat(64),
+        task_token: `task_${'2'.repeat(64)}`,
+        request_revision_sha256: '3'.repeat(64),
+        output_claim_sha256: '4'.repeat(64),
+    };
+    const payload = {
+        prediction_id: 'prediction_publish_001',
+        source_path: sourcePath,
+        completed_at: '2026-07-16T04:00:00.000Z',
+        execution_binding: binding,
+    };
+    const published = provider.publishReplicateExecutionResult(payload, fx.context);
+    const digest = crypto.createHash('sha256').update(MP4_ALT).digest('hex');
+    assert.deepEqual(published, {
+        ok: true,
+        already_published: false,
+        result_locator: `replicate:prediction_publish_001:${digest}`,
+        output_sha256: digest,
+        output_size_bytes: MP4_ALT.byteLength,
+        duration_seconds: 6,
+        width: 1080,
+        height: 1920,
+    });
+    const resultRoot = path.join(fx.replicateReceiptResultsRoot, 'prediction_publish_001');
+    assert.equal(fs.lstatSync(resultRoot).mode & 0o777, 0o700);
+    assert.equal(fs.lstatSync(path.join(resultRoot, 'result.mp4')).mode & 0o777, 0o600);
+    assert.equal(fs.lstatSync(path.join(resultRoot, 'receipt.json')).mode & 0o777, 0o600);
+    assert.equal(fs.readFileSync(path.join(resultRoot, 'result.mp4')).equals(MP4_ALT), true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(resultRoot, 'receipt.json'), 'utf8')), {
+        schema_version: provider.EXTERNAL_RESULT_SCHEMA_V2,
+        provider: 'replicate',
+        result_id: 'prediction_publish_001',
+        status: 'succeeded',
+        output_file: 'result.mp4',
+        output_sha256: digest,
+        output_size_bytes: MP4_ALT.byteLength,
+        completed_at: '2026-07-16T04:00:00.000Z',
+        ...binding,
+    });
+    assert.equal(provider.publishReplicateExecutionResult(payload, fx.context).already_published, true);
+    fs.writeFileSync(sourcePath, MP4, { mode: 0o600 });
+    assert.throws(() => provider.publishReplicateExecutionResult(payload, fx.context), {
+        code: 'VIDEO_IMPORT_REPLICATE_PUBLISH_CONFLICT',
+    });
+    assert.equal(fs.readFileSync(path.join(resultRoot, 'result.mp4')).equals(MP4_ALT), true,
+        'a conflicting retry never replaces canonical bytes');
+    assert.equal(fx.probe.calls.length, 4, 'new publish and every existing-result check use MOCK ffprobe');
+});
+
 function writeStoryboard(productionRoot, clips) {
     const directory = path.join(productionRoot, 'storyboard');
     fs.mkdirSync(directory, { recursive: true });

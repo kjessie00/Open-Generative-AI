@@ -27,6 +27,7 @@ const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const MAX_REFERENCES_MANIFEST_BYTES = 1024 * 1024;
 const MAX_OUTPUT_CLAIM_BYTES = 8 * 1024;
 const REPLICATE_CLAIM_SCHEMA = 'film_pipeline.replicate_output_claim.v1';
+const REPLICATE_DOWNLOAD_RESULT_SCHEMA = 'film_pipeline.replicate_download_result.v1';
 const SHA256 = /^[a-f0-9]{64}$/;
 const TASK_TOKEN = /^task_[a-f0-9]{64}$/;
 const PREPARATION_TOKEN = /^preparation_[a-f0-9]{64}$/;
@@ -247,6 +248,55 @@ function loadExecutionOutputTargets(selection, context = {}, referencesByTask = 
         throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
     }
     return targets;
+}
+
+function replicateDownloadedOutputsPrepared(selection, context, referencesByTask) {
+    if (selection.manifest.lane !== 'video') return false;
+    assertPrivateDirectory(selection.paths.outputsRoot, 'EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    const allowedNames = new Set();
+    let downloaded = 0;
+    for (const task of selection.manifest.tasks) {
+        const outputName = `${task.task_token}.mp4`;
+        const outputPath = executionOutputPath(selection.paths, task.task_token);
+        if (task.provider === 'replicate') {
+            allowedNames.add(`${task.task_token}.claim.json`);
+            allowedNames.add(outputName);
+            const preview = replicateRequestPreview(selection, task, referencesByTask, outputPath, context);
+            loadReplicateClaim(selection, task,
+                replicateClaimRecord(selection, task, preview.request_spec.request_revision_sha256));
+            let before;
+            try { before = fs.lstatSync(outputPath); } catch (error) {
+                if (error.code === 'ENOENT') continue;
+                throw error;
+            }
+            if (!before.isFile() || before.isSymbolicLink() || (before.mode & 0o777) !== 0o600
+                || before.size <= 0 || before.size > 512 * 1024 * 1024) {
+                throw failure('EXECUTION_OUTPUT_TARGET_UNSAFE');
+            }
+            const descriptor = fs.openSync(outputPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            try {
+                const opened = fs.fstatSync(descriptor);
+                const final = fs.lstatSync(outputPath);
+                if (!sameFile(before, opened) || !sameFile(opened, final)) {
+                    throw failure('EXECUTION_OUTPUT_TARGET_UNSAFE');
+                }
+            } finally { fs.closeSync(descriptor); }
+            downloaded += 1;
+        } else {
+            try {
+                fs.lstatSync(outputPath);
+                throw failure('EXECUTION_OUTPUT_TARGET_EXISTS');
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+        }
+    }
+    const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
+    if (!downloaded
+        || entries.some((entry) => !entry.isFile() || entry.isSymbolicLink() || !allowedNames.has(entry.name))) {
+        throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    }
+    return true;
 }
 
 function stageExecutionOutputs(selection, context = {}, referencesByTask = new Map()) {
@@ -543,8 +593,12 @@ function selectionPrepared(selection, context = {}) {
                 loadReferenceCommit(selection.paths, selection.manifest),
             );
         }
-        loadExecutionOutputTargets(selection, context, referencesByTask);
-        return true;
+        try {
+            loadExecutionOutputTargets(selection, context, referencesByTask);
+            return true;
+        } catch {
+            return replicateDownloadedOutputsPrepared(selection, context, referencesByTask);
+        }
     } catch { return false; }
 }
 
@@ -1261,6 +1315,42 @@ function assertSelectedRun(receipt, context) {
     return { paths, manifest };
 }
 
+function publishReplicateResultReceipt(payload, context = {}) {
+    exactKeys(payload, [
+        'schema_version', 'run_revision_sha256', 'task_token',
+        'prediction_id', 'status', 'completed_at',
+    ], 'EXECUTION_REPLICATE_RESULT_INPUT_INVALID');
+    if (payload.schema_version !== REPLICATE_DOWNLOAD_RESULT_SCHEMA
+        || !SHA256.test(payload.run_revision_sha256 || '')
+        || !TASK_TOKEN.test(payload.task_token || '')
+        || typeof payload.prediction_id !== 'string'
+        || !/^[A-Za-z0-9_-]{1,160}$/.test(payload.prediction_id)
+        || payload.status !== 'succeeded'
+        || typeof payload.completed_at !== 'string'
+        || Buffer.byteLength(payload.completed_at, 'utf8') > 64
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(payload.completed_at)
+        || !Number.isFinite(Date.parse(payload.completed_at))) {
+        throw failure('EXECUTION_REPLICATE_RESULT_INPUT_INVALID');
+    }
+    const paths = exactPaths(context.userDataPath, `run_${payload.run_revision_sha256}`);
+    const manifest = loadManifest(paths);
+    const selected = selectLanes(context).find((item) => item.manifest.lane === manifest.lane
+        && item.manifest.run_revision_sha256 === manifest.run_revision_sha256);
+    if (!selected) throw failure('EXECUTION_REVISION_STALE');
+    const task = manifest.tasks.find((item) => item.task_token === payload.task_token);
+    if (!task) throw failure('EXECUTION_TASK_UNKNOWN');
+    if (task.lane !== 'video' || task.provider !== 'replicate') {
+        throw failure('EXECUTION_REPLICATE_RESULT_TASK_INVALID');
+    }
+    const binding = replicateExecutionBinding({ paths, manifest }, task, context);
+    return videoResultImportProvider.publishReplicateExecutionResult({
+        prediction_id: payload.prediction_id,
+        source_path: executionOutputPath(paths, task.task_token),
+        completed_at: payload.completed_at,
+        execution_binding: binding,
+    }, context);
+}
+
 function publishExecutionReceipt(payload, context = {}) {
     const receipt = validateReceipt(payload);
     const { paths, manifest } = assertSelectedRun(receipt, context);
@@ -1381,12 +1471,14 @@ module.exports = {
     RECEIPT_SCHEMA,
     REFERENCES_SCHEMA,
     REPLICATE_CLAIM_SCHEMA,
+    REPLICATE_DOWNLOAD_RESULT_SCHEMA,
     STATUS_LABELS,
     FAILURE_CODES,
     FAILURE_LABELS,
     exactPaths,
     getNewProjectExecutionState,
     prepareNewProjectExecution,
+    publishReplicateResultReceipt,
     publishExecutionReceipt,
     inspectExecutionHandoff,
     getNewProjectExecutionHistory,

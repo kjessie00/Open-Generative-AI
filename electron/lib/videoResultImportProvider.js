@@ -393,6 +393,263 @@ function validateReceipt(value, provider, resultId) {
     return value;
 }
 
+function validateExecutionBinding(value) {
+    exactKeys(value, [
+        'run_revision_sha256', 'task_token', 'request_revision_sha256', 'output_claim_sha256',
+    ], 'VIDEO_IMPORT_REPLICATE_PUBLISH_BINDING_INVALID');
+    if (!SHA256_PATTERN.test(value.run_revision_sha256 || '')
+        || !/^task_[a-f0-9]{64}$/.test(value.task_token || '')
+        || !SHA256_PATTERN.test(value.request_revision_sha256 || '')
+        || !SHA256_PATTERN.test(value.output_claim_sha256 || '')) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_BINDING_INVALID');
+    }
+    return value;
+}
+
+function inspectPublishedReplicateResult(rootInfo, predictionId, context = {}) {
+    const directory = assertRealDirectory(
+        path.join(rootInfo.path, predictionId),
+        'VIDEO_IMPORT_REPLICATE_PUBLISH_RESULT_UNSAFE',
+        { parentRoot: rootInfo.realPath },
+    );
+    const entries = fs.readdirSync(directory.path, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+    if (entries.length !== 2
+        || entries[0].name !== 'receipt.json' || !entries[0].isFile() || entries[0].isSymbolicLink()
+        || entries[1].name !== 'result.mp4' || !entries[1].isFile() || entries[1].isSymbolicLink()) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_RESULT_UNSAFE');
+    }
+    if ((directory.stats.mode & 0o777) !== 0o700) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_RESULT_UNSAFE');
+    }
+    const receiptPath = path.join(directory.path, 'receipt.json');
+    const videoPath = path.join(directory.path, 'result.mp4');
+    const receipt = smallFile(receiptPath, MAX_RECEIPT_BYTES, 'VIDEO_IMPORT_REPLICATE_PUBLISH_RECEIPT_UNSAFE');
+    const videoStats = fs.lstatSync(videoPath);
+    if ((receipt.identity.mode & 0o777) !== 0o600 || (videoStats.mode & 0o777) !== 0o600) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_RESULT_UNSAFE');
+    }
+    const value = validateReceipt(
+        parseJson(receipt, 'VIDEO_IMPORT_REPLICATE_PUBLISH_RECEIPT_INVALID'),
+        'replicate',
+        predictionId,
+    );
+    const candidate = inspectCandidate('replicate', predictionId, videoPath, rootInfo, context, {
+        expectedSha256: value.output_sha256,
+        expectedSize: value.output_size_bytes,
+        provenance: receipt,
+        provenanceKind: 'provider_result_receipt_v2',
+        executionBinding: {
+            run_revision_sha256: value.run_revision_sha256,
+            task_token: value.task_token,
+            request_revision_sha256: value.request_revision_sha256,
+            output_claim_sha256: value.output_claim_sha256,
+        },
+    });
+    return { directory, receipt, value, candidate };
+}
+
+function copyStablePrivateVideo(sourcePath, destinationPath, expectedSource) {
+    let sourceDescriptor;
+    let destinationDescriptor;
+    try {
+        sourceDescriptor = fs.openSync(sourcePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const opened = fs.fstatSync(sourceDescriptor);
+        if ((opened.mode & 0o777) !== 0o600
+            || !sameIdentity(identity(opened), expectedSource.identity)) {
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_CHANGED');
+        }
+        destinationDescriptor = fs.openSync(
+            destinationPath,
+            fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+            0o600,
+        );
+        fs.fchmodSync(destinationDescriptor, 0o600);
+        const digest = crypto.createHash('sha256');
+        const chunk = Buffer.allocUnsafe(1024 * 1024);
+        let position = 0;
+        while (position < opened.size) {
+            const count = fs.readSync(sourceDescriptor, chunk, 0, Math.min(chunk.length, opened.size - position), position);
+            if (count <= 0) throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_CHANGED');
+            let written = 0;
+            while (written < count) {
+                written += fs.writeSync(destinationDescriptor, chunk, written, count - written, null);
+            }
+            digest.update(chunk.subarray(0, count));
+            position += count;
+        }
+        fs.fsyncSync(destinationDescriptor);
+        const sourceAfter = fs.fstatSync(sourceDescriptor);
+        const sourcePathAfter = fs.lstatSync(sourcePath);
+        const destinationAfter = fs.fstatSync(destinationDescriptor);
+        if (position !== expectedSource.size || digest.digest('hex') !== expectedSource.sha256
+            || !sameIdentity(identity(opened), identity(sourceAfter))
+            || !sameIdentity(identity(opened), identity(sourcePathAfter))
+            || !destinationAfter.isFile() || (destinationAfter.mode & 0o777) !== 0o600
+            || destinationAfter.size !== position) {
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_CHANGED');
+        }
+    } finally {
+        if (sourceDescriptor !== undefined) fs.closeSync(sourceDescriptor);
+        if (destinationDescriptor !== undefined) fs.closeSync(destinationDescriptor);
+    }
+}
+
+// Main-process-only publication boundary. The caller has already bound the
+// deterministic source path to the current execution task; this function only
+// validates and publishes local bytes. It never submits, downloads, or reads a token.
+function publishReplicateExecutionResult(payload, context = {}) {
+    exactKeys(payload, [
+        'prediction_id', 'source_path', 'completed_at', 'execution_binding',
+    ], 'VIDEO_IMPORT_REPLICATE_PUBLISH_REQUEST_INVALID');
+    const predictionId = safeOptionalText(
+        payload.prediction_id,
+        160,
+        'VIDEO_IMPORT_REPLICATE_PUBLISH_PREDICTION_INVALID',
+    );
+    if (!REPLICATE_PREDICTION_ID_PATTERN.test(predictionId)) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_PREDICTION_INVALID');
+    }
+    if (typeof payload.source_path !== 'string' || !path.isAbsolute(payload.source_path)
+        || path.normalize(payload.source_path) !== payload.source_path) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_UNSAFE');
+    }
+    if (typeof payload.completed_at !== 'string' || Buffer.byteLength(payload.completed_at, 'utf8') > 64
+        || !ISO_TIME_PATTERN.test(payload.completed_at) || !Number.isFinite(Date.parse(payload.completed_at))) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_TIME_INVALID');
+    }
+    const binding = validateExecutionBinding(payload.execution_binding);
+    const rootInfo = assertRealDirectory(
+        receiptRoot(context, 'replicate'),
+        'VIDEO_IMPORT_REPLICATE_PUBLISH_ROOT_UNSAFE',
+    );
+    let sourceStats;
+    try { sourceStats = fs.lstatSync(payload.source_path); } catch {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_UNSAFE');
+    }
+    if (!sourceStats.isFile() || sourceStats.isSymbolicLink() || (sourceStats.mode & 0o777) !== 0o600) {
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_UNSAFE');
+    }
+    const source = hashStableFile(
+        payload.source_path,
+        context.maxVideoBytes || MAX_VIDEO_BYTES,
+        'VIDEO_IMPORT_REPLICATE_PUBLISH_SOURCE_UNSAFE',
+    );
+    const locator = `replicate:${predictionId}:${source.sha256}`;
+    const expectedReceipt = {
+        schema_version: EXTERNAL_RESULT_SCHEMA_V2,
+        provider: 'replicate',
+        result_id: predictionId,
+        status: 'succeeded',
+        output_file: 'result.mp4',
+        output_sha256: source.sha256,
+        output_size_bytes: source.size,
+        completed_at: payload.completed_at,
+        ...binding,
+    };
+    const targetPath = path.join(rootInfo.path, predictionId);
+    const existing = () => {
+        try {
+            const published = inspectPublishedReplicateResult(rootInfo, predictionId, context);
+            if (JSON.stringify(published.value) !== JSON.stringify(expectedReceipt)) {
+                throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_CONFLICT');
+            }
+            return {
+                ok: true,
+                already_published: true,
+                result_locator: locator,
+                output_sha256: source.sha256,
+                output_size_bytes: source.size,
+                duration_seconds: published.candidate.probe.durationSeconds,
+                width: published.candidate.probe.width,
+                height: published.candidate.probe.height,
+            };
+        } catch (error) {
+            if (error.code === 'ENOENT' || error.code === 'VIDEO_IMPORT_REPLICATE_PUBLISH_RESULT_UNSAFE') return null;
+            throw error;
+        }
+    };
+    try {
+        fs.lstatSync(targetPath);
+        const match = existing();
+        if (match) return match;
+        throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_CONFLICT');
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+
+    const randomBytes = context.randomBytes || crypto.randomBytes;
+    const lockPath = path.join(rootInfo.path, `.replicate-publish-${sha256(predictionId).slice(0, 24)}.lock`);
+    let lockCreated = false;
+    let stagingPath = '';
+    try {
+        try {
+            writeExclusive(lockPath, Buffer.from(`${JSON.stringify({ pid: process.pid })}\n`));
+            lockCreated = true;
+            fsyncDirectory(rootInfo.path);
+        } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            const match = existing();
+            if (match) return match;
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_LOCKED');
+        }
+        try {
+            fs.lstatSync(targetPath);
+            const match = existing();
+            if (match) return match;
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_CONFLICT');
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        stagingPath = path.join(rootInfo.path,
+            `.replicate-result-${process.pid}-${randomBytes(12).toString('hex')}`);
+        fs.mkdirSync(stagingPath, { mode: 0o700 });
+        const staging = assertRealDirectory(stagingPath, 'VIDEO_IMPORT_REPLICATE_PUBLISH_STAGING_UNSAFE', {
+            parentRoot: rootInfo.realPath,
+        });
+        if ((staging.stats.mode & 0o777) !== 0o700) {
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_STAGING_UNSAFE');
+        }
+        const stagedVideo = path.join(staging.path, 'result.mp4');
+        copyStablePrivateVideo(payload.source_path, stagedVideo, source);
+        const copied = hashStableFile(stagedVideo, source.size, 'VIDEO_IMPORT_REPLICATE_PUBLISH_COPY_UNSAFE');
+        if (copied.sha256 !== source.sha256 || copied.size !== source.size) {
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_COPY_INVALID');
+        }
+        const probe = ffprobe(stagedVideo, context);
+        writeExclusive(
+            path.join(staging.path, 'receipt.json'),
+            Buffer.from(`${JSON.stringify(expectedReceipt, null, 2)}\n`),
+        );
+        fsyncDirectory(staging.path);
+        fs.renameSync(staging.path, targetPath);
+        stagingPath = '';
+        fsyncDirectory(rootInfo.path);
+        const published = inspectPublishedReplicateResult(rootInfo, predictionId, context);
+        if (JSON.stringify(published.value) !== JSON.stringify(expectedReceipt)
+            || published.candidate.source.sha256 !== source.sha256) {
+            throw failure('VIDEO_IMPORT_REPLICATE_PUBLISH_POST_WRITE_INVALID');
+        }
+        return {
+            ok: true,
+            already_published: false,
+            result_locator: locator,
+            output_sha256: source.sha256,
+            output_size_bytes: source.size,
+            duration_seconds: probe.durationSeconds,
+            width: probe.width,
+            height: probe.height,
+        };
+    } finally {
+        if (stagingPath) {
+            try { fs.rmSync(stagingPath, { recursive: true, force: true }); } catch { /* task-owned staging */ }
+        }
+        if (lockCreated) {
+            try { fs.unlinkSync(lockPath); fsyncDirectory(rootInfo.path); } catch { /* best-effort unlock */ }
+        }
+    }
+}
+
 function scanCanonicalProvider(provider, context = {}) {
     const codePrefix = `VIDEO_IMPORT_${provider.toUpperCase()}_RECEIPT`;
     const rootInfo = optionalRealDirectory(receiptRoot(context, provider), `${codePrefix}_ROOT_UNSAFE`);
@@ -1620,6 +1877,7 @@ module.exports = {
     MAX_PREVIEW_BYTES,
     DEFAULT_PLAN_TTL_MS,
     getVideoResultImportWorkspace,
+    publishReplicateExecutionResult,
     resolveVideoExecutionResultLocator,
     resolveVideoExecutionResultLocatorForExecution,
     getVideoResultImportPreview,
