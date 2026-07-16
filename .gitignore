@@ -40,3 +40,4 @@ out/
 # mavis session runtime artifacts
 .mavis/
 .mavis_decision/
+.gstack/

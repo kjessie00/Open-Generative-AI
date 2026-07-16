@@ -6,7 +6,7 @@ import { PromptAgentEditor } from './PromptAgentEditor.js';
 const PROVIDER_HELP_TEXT = Object.freeze({
     flow: '현재 참조 이미지 1장으로는 준비할 수 없습니다. 완료 영상을 연결하거나 다른 도구를 선택하세요.',
     grok: '6초, 10초 또는 15초를 지원합니다. 완료 영상을 연결하거나 다른 도구를 선택하세요.',
-    replicate: '이 작업대에서는 완료 영상만 연결할 수 있습니다.',
+    replicate: '요청 미리보기를 준비할 수 있습니다. 위의 영상 작업 준비를 누르세요.',
     bytedance: '이 작업대에서는 완료 영상만 연결할 수 있습니다.',
 });
 

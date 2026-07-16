@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import draftProvider from '../electron/lib/newProjectDraftProvider.js';
@@ -593,16 +593,82 @@ test('provider execution previews build exact private DST and Grok commands whil
     assert.equal(existingOutput.command_spec.command, '');
     fs.unlinkSync(grokOutput);
 
-    for (const provider of ['replicate', 'bytedance']) {
-        const missing = providerExecutionPreview.buildProviderExecutionPreview({
-            lane: 'video', kind: 'scene_video', provider, prompt: '움직임',
-            aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 6,
-        }, context);
-        assert.deepEqual(missing.blockers, [provider === 'replicate'
-            ? 'MISSING_REPLICATE_GENERATION_ADAPTER' : 'MISSING_BYTEDANCE_GENERATION_ADAPTER']);
-        assert.equal(missing.command_spec.command, '');
-        assert.deepEqual(missing.command_spec.args, []);
-    }
+    const replicateBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
+    const replicatePath = path.join(parts.base, 'replicate-reference.png');
+    fs.writeFileSync(replicatePath, replicateBytes, { mode: 0o600 });
+    const replicateReference = {
+        result_token: `result_${'9'.repeat(64)}`,
+        task_token: `task_${'9'.repeat(64)}`,
+        mime_type: 'image/png', byte_length: replicateBytes.byteLength,
+        sha256: crypto.createHash('sha256').update(replicateBytes).digest('hex'), path: replicatePath,
+    };
+    const replicateTask = {
+        lane: 'video', kind: 'scene_video', provider: 'replicate', prompt: '첫 화면에서 천천히 전진',
+        task_token: `task_${'7'.repeat(64)}`, aspect_ratio: '9:16',
+        reference_result_tokens: [replicateReference.result_token], reference_files: [replicateReference],
+        duration_seconds: 5,
+    };
+    const replicate = providerExecutionPreview.buildProviderExecutionPreview(replicateTask, context);
+    assert.equal(replicate.readiness, 'preview_ready');
+    assert.deepEqual(replicate.blockers, []);
+    assert.deepEqual(replicate.command_spec, {
+        command: '', args: [], cwd: '', shell: false,
+        preview_only: true, live_submit_allowed: false, copy_allowed: false,
+    });
+    assert.equal(replicate.request_spec.model_slug, 'bytedance/seedance-1-pro');
+    assert.equal(replicate.request_spec.method, 'POST');
+    assert.equal(replicate.request_spec.url,
+        'https://api.replicate.com/v1/models/bytedance/seedance-1-pro/predictions');
+    assert.deepEqual(replicate.request_spec.header_names, ['Authorization', 'Content-Type', 'Prefer']);
+    assert.deepEqual(replicate.request_spec.headers, { 'Content-Type': 'application/json', Prefer: 'wait' });
+    assert.equal(replicate.request_spec.authorization_env, 'REPLICATE_API_TOKEN');
+    assert.deepEqual(Object.keys(replicate.request_spec.body.input), [
+        'prompt', 'image', 'duration', 'resolution', 'fps', 'camera_fixed',
+    ]);
+    assert.equal(replicate.request_spec.body.input.prompt, replicateTask.prompt);
+    assert.equal(replicate.request_spec.body.input.duration, 5);
+    assert.equal(replicate.request_spec.body.input.resolution, '1080p');
+    assert.equal(replicate.request_spec.body.input.fps, 24);
+    assert.equal(replicate.request_spec.body.input.camera_fixed, false);
+    assert.match(replicate.request_spec.body.input.image, /^data:image\/png;base64,/);
+    assert.equal(Buffer.byteLength(replicate.request_spec.body.input.image) <= 1024 * 1024, true);
+    assert.equal(Object.hasOwn(replicate.request_spec.body.input, 'aspect_ratio'), false);
+    assert.equal(replicate.request_spec.preview_only, true);
+    assert.equal(replicate.request_spec.live_submit_allowed, false);
+    assert.equal(replicate.request_spec.external_call_performed, false);
+    assert.match(replicate.request_spec.request_revision_sha256, /^[a-f0-9]{64}$/);
+    assert.doesNotMatch(JSON.stringify(replicate.request_spec), /Bearer|actual-token|version[_-]?digest/i);
+
+    const replicateInvalid = (changes) => providerExecutionPreview.buildProviderExecutionPreview({
+        ...replicateTask, ...changes,
+    }, context);
+    assert.deepEqual(replicateInvalid({ reference_result_tokens: [], reference_files: [] }).blockers,
+        ['REPLICATE_REFERENCE_COUNT_MUST_BE_ONE']);
+    assert.deepEqual(replicateInvalid({ duration_seconds: 6 }).blockers, ['REPLICATE_DURATION_UNSUPPORTED']);
+    assert.deepEqual(replicateInvalid({
+        reference_files: [{ ...replicateReference, sha256: '0'.repeat(64) }],
+    }).blockers, ['REPLICATE_REFERENCE_DRIFT']);
+    const oversizedBytes = Buffer.alloc(786432, 7);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(oversizedBytes);
+    const oversizedPath = path.join(parts.base, 'replicate-oversized.png');
+    fs.writeFileSync(oversizedPath, oversizedBytes, { mode: 0o600 });
+    const oversizedReference = {
+        ...replicateReference, path: oversizedPath, byte_length: oversizedBytes.byteLength,
+        sha256: crypto.createHash('sha256').update(oversizedBytes).digest('hex'),
+    };
+    assert.deepEqual(replicateInvalid({ reference_files: [oversizedReference] }).blockers,
+        ['REPLICATE_REFERENCE_TOO_LARGE']);
+    const replicateChanged = replicateInvalid({ prompt: `${replicateTask.prompt} 빠른 이동` });
+    assert.notEqual(replicate.request_spec.request_revision_sha256,
+        replicateChanged.request_spec.request_revision_sha256);
+
+    const bytedance = providerExecutionPreview.buildProviderExecutionPreview({
+        lane: 'video', kind: 'scene_video', provider: 'bytedance', prompt: '움직임',
+        aspect_ratio: '9:16', reference_result_tokens: [], duration_seconds: 6,
+    }, context);
+    assert.deepEqual(bytedance.blockers, ['MISSING_BYTEDANCE_GENERATION_ADAPTER']);
+    assert.equal(bytedance.command_spec.command, '');
+    assert.deepEqual(bytedance.command_spec.args, []);
 
     const changedPrompt = providerExecutionPreview.buildProviderExecutionPreview({
         ...task, prompt: `${task.prompt} 다른 지시`,
@@ -852,7 +918,7 @@ test('MOCK: DST scene references stage as immutable typed run inputs and recover
     });
 });
 
-function setupActualPlans(t) {
+function setupActualPlans(t, videoProvider = 'flow') {
     const parts = fixture(t, 'open-ga-execution-cli-');
     const empty = designProvider.getNewProjectDesignState(parts);
     designProvider.saveNewProjectDesignBoard({
@@ -888,8 +954,13 @@ function setupActualPlans(t) {
         expected_image_plan_revision_sha256: image.revision_sha256,
     }, imageContext).state;
     let video = videoPlanProvider.getNewProjectVideoPlan(parts);
+    const videoTasks = video.tasks.map((task) => ({
+        ...task,
+        provider: videoProvider,
+        provider_label: videoProvider === 'replicate' ? 'Replicate' : task.provider_label,
+    }));
     video = videoPlanProvider.saveNewProjectVideoPlan({
-        tasks: video.tasks, expected_design_revision_sha256: video.design_revision_sha256,
+        tasks: videoTasks, expected_design_revision_sha256: video.design_revision_sha256,
         expected_image_plan_revision_sha256: video.image_plan_revision_sha256,
         expected_video_plan_revision_sha256: video.revision_sha256,
     }, parts);
@@ -904,6 +975,110 @@ function setupActualPlans(t) {
     assert.equal(execution.tasks.filter((task) => task.lane === 'video').length, 1);
     return { ...parts, execution };
 }
+
+function spawnInspect(userDataPath) {
+    return new Promise((resolve) => {
+        const child = spawn(process.execPath, [CLI, 'inspect', '--user-data', userDataPath], {
+            env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk) => { stdout += chunk; });
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.on('close', (status) => resolve({ status, stdout, stderr }));
+    });
+}
+
+test('actual local Replicate request preview claims one absent output without HTTP and stays stable under concurrent inspect', async (t) => {
+    const parts = setupActualPlans(t, 'replicate');
+    const initial = executionProvider.getNewProjectExecutionState(parts);
+    const prepared = executionProvider.prepareNewProjectExecution({
+        expected_revision_sha256: initial.revision_sha256, new_attempt: false,
+    }, parts);
+    assert.equal(prepared.prepared, true);
+    const publicVideo = prepared.tasks.find((task) => task.lane === 'video');
+    assert.deepEqual(publicVideo.execution_preview, {
+        mode: 'preview_ready', status_label: '요청 내용 확인 가능', reason: 'private_replicate_request_ready',
+        user_status: 'Replicate에 보낼 영상 요청이 준비되었습니다. 아직 전송되지 않았습니다.',
+        next_action: '영상 작업에서 프롬프트·길이·첫 화면을 확인하세요.',
+        output_kind: 'video', output_count: 1, preview_only: true,
+    });
+
+    let handoff = executionProvider.inspectExecutionHandoff(parts, { new_attempt: false });
+    let video = handoff.tasks.find((task) => task.provider === 'replicate');
+    const request = video.provider_execution_preview.request_spec;
+    assert.equal(video.provider_execution_preview.readiness, 'preview_ready');
+    assert.deepEqual(video.provider_execution_preview.blockers, []);
+    assert.equal(request.model_slug, 'bytedance/seedance-1-pro');
+    assert.equal(request.body.input.duration, 5);
+    assert.equal(request.body.input.resolution, '1080p');
+    assert.equal(request.body.input.fps, 24);
+    assert.equal(request.body.input.camera_fixed, false);
+    assert.equal(Object.hasOwn(request.body.input, 'aspect_ratio'), false);
+    assert.equal(request.preview_only, true);
+    assert.equal(request.live_submit_allowed, false);
+    assert.equal(request.external_call_performed, false);
+    assert.deepEqual(video.provider_execution_preview.command_spec, {
+        command: '', args: [], cwd: '', shell: false,
+        preview_only: true, live_submit_allowed: false, copy_allowed: false,
+    });
+    const paths = executionProvider.exactPaths(parts.userDataPath, `run_${video.run_revision_sha256}`);
+    const claimPath = path.join(paths.outputsRoot, `${video.task_token}.claim.json`);
+    const outputPath = path.join(paths.outputsRoot, `${video.task_token}.mp4`);
+    assert.equal(video.output_claim_path, claimPath);
+    assert.equal(video.output_path, outputPath);
+    assert.equal(fs.existsSync(outputPath), false);
+    assert.equal(fs.lstatSync(claimPath).mode & 0o777, 0o600);
+    const claimText = fs.readFileSync(claimPath, 'utf8');
+    const claim = JSON.parse(claimText);
+    assert.deepEqual(claim, {
+        schema_version: executionProvider.REPLICATE_CLAIM_SCHEMA,
+        run_revision_sha256: video.run_revision_sha256,
+        task_token: video.task_token,
+        request_revision_sha256: request.request_revision_sha256,
+        output_basename: `${video.task_token}.mp4`,
+    });
+    const claimInode = fs.lstatSync(claimPath).ino;
+    handoff = executionProvider.inspectExecutionHandoff(parts, { new_attempt: false });
+    video = handoff.tasks.find((task) => task.provider === 'replicate');
+    assert.deepEqual(video.provider_execution_preview.request_spec, request);
+    assert.equal(fs.readFileSync(claimPath, 'utf8'), claimText);
+    assert.equal(fs.lstatSync(claimPath).ino, claimInode);
+
+    fs.rmSync(paths.outputsRoot, { recursive: true });
+    const concurrent = await Promise.all([spawnInspect(parts.userDataPath), spawnInspect(parts.userDataPath)]);
+    assert.equal(concurrent.every((result) => result.status === 0), true,
+        concurrent.map((result) => result.stderr).join('\n'));
+    const concurrentRequests = concurrent.map((result) => JSON.parse(result.stdout).handoff.tasks
+        .find((task) => task.provider === 'replicate').provider_execution_preview.request_spec);
+    assert.deepEqual(concurrentRequests[0], concurrentRequests[1]);
+    assert.equal(fs.lstatSync(claimPath).mode & 0o777, 0o600);
+    assert.equal(fs.existsSync(outputPath), false);
+
+    const renderer = filmProvider.getNewProjectExecutionState(parts);
+    assert.equal(renderer.external_call_performed, false);
+    assert.equal(renderer.model_called, false);
+    assert.equal(renderer.generation_executed, false);
+    const rendererJson = JSON.stringify(renderer);
+    assert.doesNotMatch(rendererJson,
+        /request_spec|authorization_env|REPLICATE_API_TOKEN|claim|output_path|data:image|api\.replicate\.com/i);
+    for (const privateValue of [video.task_token, request.request_revision_sha256, claimPath, outputPath]) {
+        assert.equal(rendererJson.includes(privateValue), false);
+    }
+
+    const unexpected = path.join(paths.outputsRoot, 'unexpected.json');
+    fs.writeFileSync(unexpected, '{}\n', { mode: 0o600 });
+    assert.throws(() => executionProvider.inspectExecutionHandoff(parts, { new_attempt: false }), {
+        code: 'EXECUTION_OUTPUT_DIRECTORY_UNSAFE',
+    });
+    fs.unlinkSync(unexpected);
+    const conflicting = { ...claim, request_revision_sha256: '0'.repeat(64) };
+    fs.writeFileSync(claimPath, `${JSON.stringify(conflicting, null, 2)}\n`, { mode: 0o600 });
+    assert.equal(executionProvider.getNewProjectExecutionState(parts).prepared, false);
+    assert.throws(() => executionProvider.inspectExecutionHandoff(parts, { new_attempt: false }), {
+        code: 'EXECUTION_REPLICATE_CLAIM_CONFLICT',
+    });
+});
 
 test('actual local CLI inspects a private handoff and publishes a 0600 receipt using file IO only', (t) => {
     const parts = setupActualPlans(t);

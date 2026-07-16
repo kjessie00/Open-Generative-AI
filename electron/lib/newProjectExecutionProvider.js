@@ -25,6 +25,8 @@ const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 64 * 1024;
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
 const MAX_REFERENCES_MANIFEST_BYTES = 1024 * 1024;
+const MAX_OUTPUT_CLAIM_BYTES = 8 * 1024;
+const REPLICATE_CLAIM_SCHEMA = 'film_pipeline.replicate_output_claim.v1';
 const SHA256 = /^[a-f0-9]{64}$/;
 const TASK_TOKEN = /^task_[a-f0-9]{64}$/;
 const PREPARATION_TOKEN = /^preparation_[a-f0-9]{64}$/;
@@ -127,10 +129,81 @@ function executionOutputPath(paths, taskToken) {
     return path.join(paths.outputsRoot, `${taskToken}.mp4`);
 }
 
-function loadExecutionOutputTargets(selection) {
+function replicateClaimPath(paths, taskToken) {
+    if (!TASK_TOKEN.test(taskToken || '')) throw failure('EXECUTION_TASK_TOKEN_INVALID');
+    return path.join(paths.outputsRoot, `${taskToken}.claim.json`);
+}
+
+function replicateRequestPreview(selection, task, referencesByTask, outputPath, context) {
+    const preview = providerExecutionPreview.buildProviderExecutionPreview({
+        ...task,
+        aspect_ratio: selection.manifest.aspect_ratio,
+        reference_files: referencesByTask.get(task.task_token) || [],
+        output_path: outputPath,
+    }, context);
+    if (preview.readiness !== 'preview_ready' || preview.blockers.length
+        || !SHA256.test(preview.request_spec?.request_revision_sha256 || '')) {
+        throw failure('EXECUTION_REPLICATE_REQUEST_INVALID');
+    }
+    return preview;
+}
+
+function replicateClaimRecord(selection, task, requestRevision) {
+    return {
+        schema_version: REPLICATE_CLAIM_SCHEMA,
+        run_revision_sha256: selection.manifest.run_revision_sha256,
+        task_token: task.task_token,
+        request_revision_sha256: requestRevision,
+        output_basename: `${task.task_token}.mp4`,
+    };
+}
+
+function loadReplicateClaim(selection, task, expected) {
+    const claimPath = replicateClaimPath(selection.paths, task.task_token);
+    let value;
+    try {
+        value = JSON.parse(readPrivate(claimPath, MAX_OUTPUT_CLAIM_BYTES,
+            'EXECUTION_REPLICATE_CLAIM_MISSING').toString('utf8'));
+    } catch (error) {
+        if (error.code) throw error;
+        throw failure('EXECUTION_REPLICATE_CLAIM_INVALID');
+    }
+    exactKeys(value, [
+        'schema_version', 'run_revision_sha256', 'task_token',
+        'request_revision_sha256', 'output_basename',
+    ], 'EXECUTION_REPLICATE_CLAIM_INVALID');
+    if (value.schema_version !== REPLICATE_CLAIM_SCHEMA || JSON.stringify(value) !== JSON.stringify(expected)) {
+        throw failure('EXECUTION_REPLICATE_CLAIM_CONFLICT');
+    }
+    return claimPath;
+}
+
+function publishReplicateClaim(selection, task, preview) {
+    const record = replicateClaimRecord(selection, task, preview.request_spec.request_revision_sha256);
+    const claimPath = replicateClaimPath(selection.paths, task.task_token);
+    try {
+        privateWrite(claimPath, Buffer.from(`${JSON.stringify(record, null, 2)}\n`), { exclusive: true });
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+    }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        try { return loadReplicateClaim(selection, task, record); } catch (error) {
+            if (!['EXECUTION_REPLICATE_CLAIM_MISSING', 'EXECUTION_REPLICATE_CLAIM_INVALID',
+                'EXECUTION_FILE_UNSAFE', 'EXECUTION_FILE_CHANGED']
+                .includes(error.code) || attempt === 19) throw error;
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        }
+    }
+    throw failure('EXECUTION_REPLICATE_CLAIM_INVALID');
+}
+
+function loadExecutionOutputTargets(selection, context = {}, referencesByTask = new Map()) {
     if (selection.manifest.lane !== 'video') return new Map();
     assertPrivateDirectory(selection.paths.outputsRoot, 'EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
     const targets = new Map();
+    const expectedNames = new Set(selection.manifest.tasks
+        .filter((task) => task.provider === 'replicate')
+        .map((task) => `${task.task_token}.claim.json`));
     for (const task of selection.manifest.tasks) {
         const target = executionOutputPath(selection.paths, task.task_token);
         try {
@@ -139,18 +212,41 @@ function loadExecutionOutputTargets(selection) {
         } catch (error) {
             if (error.code !== 'ENOENT') throw error;
         }
+        if (task.provider === 'replicate') {
+            const preview = replicateRequestPreview(selection, task, referencesByTask, target, context);
+            const record = replicateClaimRecord(selection, task, preview.request_spec.request_revision_sha256);
+            loadReplicateClaim(selection, task, record);
+        }
         targets.set(task.task_token, target);
     }
     const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
-    if (entries.length) throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    if (entries.length !== expectedNames.size || entries.some((entry) => !entry.isFile()
+        || entry.isSymbolicLink() || !expectedNames.has(entry.name))) {
+        throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    }
     return targets;
 }
 
-function stageExecutionOutputs(selection) {
+function stageExecutionOutputs(selection, context = {}, referencesByTask = new Map()) {
     if (selection.manifest.lane !== 'video') return new Map();
     ensureRunDirectories(selection.paths);
     ensureDirectory(selection.paths.outputsRoot, selection.paths.runRoot);
-    return loadExecutionOutputTargets(selection);
+    const expectedNames = new Set(selection.manifest.tasks
+        .filter((task) => task.provider === 'replicate')
+        .map((task) => `${task.task_token}.claim.json`));
+    const outputNames = new Set(selection.manifest.tasks
+        .map((task) => `${task.task_token}.mp4`));
+    const entries = fs.readdirSync(selection.paths.outputsRoot, { withFileTypes: true });
+    if (entries.some((entry) => !entry.isFile() || entry.isSymbolicLink()
+        || (!expectedNames.has(entry.name) && !outputNames.has(entry.name)))) {
+        throw failure('EXECUTION_OUTPUT_DIRECTORY_UNSAFE');
+    }
+    for (const task of selection.manifest.tasks.filter((item) => item.provider === 'replicate')) {
+        const outputPath = executionOutputPath(selection.paths, task.task_token);
+        const preview = replicateRequestPreview(selection, task, referencesByTask, outputPath, context);
+        publishReplicateClaim(selection, task, preview);
+    }
+    return loadExecutionOutputTargets(selection, context, referencesByTask);
 }
 
 function sameFile(left, right) {
@@ -414,14 +510,18 @@ function stageExecutionReferences(selection, context) {
 
 function selectionPrepared(selection, context = {}) {
     try {
+        let referencesByTask = new Map();
         if (referencePairs(selection.manifest).length) {
             const image = (context.getNewProjectImagePlan || newProjectImagePlanProvider.getNewProjectImagePlan)(context);
             if (!image?.ok || image.status !== 'restored' || image.blockers?.length
                 || image.design_revision_sha256 !== selection.manifest.design_revision_sha256
                 || image.revision_sha256 !== selection.manifest.image_plan_revision_sha256) return false;
-            loadReferenceCommit(selection.paths, selection.manifest);
+            referencesByTask = referenceFilesByTask(
+                selection.manifest,
+                loadReferenceCommit(selection.paths, selection.manifest),
+            );
         }
-        loadExecutionOutputTargets(selection);
+        loadExecutionOutputTargets(selection, context, referencesByTask);
         return true;
     } catch { return false; }
 }
@@ -833,7 +933,7 @@ function publicSelections(selections, context = {}) {
             } catch { /* incomplete staging stays a simple setup state */ }
         }
         if (selection.prepared && selection.manifest.lane === 'video') {
-            try { outputTargets = loadExecutionOutputTargets(selection); }
+            try { outputTargets = loadExecutionOutputTargets(selection, context, referencesByTask); }
             catch { /* missing or unsafe output staging stays private and blocked */ }
         }
         selection.manifest.tasks.forEach((task, index) => {
@@ -846,7 +946,8 @@ function publicSelections(selections, context = {}) {
             }, context);
             tasks.push({
                 task_token: task.task_token, lane: task.lane, kind: task.kind, sequence: task.sequence,
-                label: task.label, provider_label: task.provider_label, status, status_label: STATUS_LABELS[status],
+                label: task.label, provider_label: task.provider_label, provider_id: task.provider,
+                status, status_label: STATUS_LABELS[status],
                 progress: receipt?.progress || 0, failure_label: receipt?.failure_code ? FAILURE_LABELS[receipt.failure_code] : '',
                 result_received: status === 'succeeded',
                 external_call_performed: receipt?.external_call_performed || false,
@@ -884,6 +985,7 @@ function publicSelections(selections, context = {}) {
         delete task.provider_preview_readiness;
         delete task.provider_preview_blockers;
         delete task.reference_setup_missing;
+        delete task.provider_id;
         delete task.result_locator;
     }
     const counts = Object.fromEntries(Object.keys(STATUS_LABELS)
@@ -960,6 +1062,19 @@ function executionPreview(task) {
             preview_only: true,
         };
     }
+    if (!resultAvailable && task.lane === 'video' && task.provider_id === 'replicate'
+        && task.provider_preview_readiness === 'preview_ready') {
+        return {
+            mode: 'preview_ready',
+            status_label: '요청 내용 확인 가능',
+            reason: 'private_replicate_request_ready',
+            user_status: 'Replicate에 보낼 영상 요청이 준비되었습니다. 아직 전송되지 않았습니다.',
+            next_action: '영상 작업에서 프롬프트·길이·첫 화면을 확인하세요.',
+            output_kind: 'video',
+            output_count: 1,
+            preview_only: true,
+        };
+    }
     if (!resultAvailable && task.lane === 'image' && task.kind === 'scene_image'
         && task.provider_preview_readiness === 'preview_ready') {
         return {
@@ -1026,8 +1141,8 @@ function materialize(selection, context) {
     const loaded = loadManifest(selection.paths);
     if (loaded.run_revision_sha256 !== record.run_revision_sha256) throw failure('EXECUTION_MANIFEST_CONFLICT');
     const staged = { paths: selection.paths, manifest: loaded, prepared: false };
-    stageExecutionReferences(staged, context);
-    stageExecutionOutputs(staged);
+    const stagedReferences = stageExecutionReferences(staged, context);
+    stageExecutionOutputs(staged, context, referenceFilesByTask(staged.manifest, stagedReferences));
     if (!selectionPrepared(staged, context)) throw failure(selection.manifest.lane === 'video'
         ? 'EXECUTION_OUTPUT_PREPARATION_INCOMPLETE' : 'EXECUTION_REFERENCE_PREPARATION_INCOMPLETE');
     return { ...staged, prepared: true, alreadyPrepared: false };
@@ -1175,11 +1290,11 @@ function inspectExecutionHandoff(context = {}, options = {}) {
             selection.manifest,
             stageExecutionReferences(selection, context),
         );
-        const outputTargets = stageExecutionOutputs(selection);
+        const outputTargets = stageExecutionOutputs(selection, context, referencesByTask);
         return selection.manifest.tasks.map((task) => {
             const referenceFiles = referencesByTask.get(task.task_token) || [];
             const outputPath = outputTargets.get(task.task_token) || '';
-            return {
+            const privateTask = {
                 ...task, run_revision_sha256: selection.manifest.run_revision_sha256,
                 attempt: selection.manifest.attempt, aspect_ratio: selection.manifest.aspect_ratio,
                 reference_files: referenceFiles, output_path: outputPath,
@@ -1188,6 +1303,10 @@ function inspectExecutionHandoff(context = {}, options = {}) {
                     output_path: outputPath,
                 }, context),
             };
+            if (task.provider === 'replicate') {
+                privateTask.output_claim_path = replicateClaimPath(selection.paths, task.task_token);
+            }
+            return privateTask;
         });
     });
     return {
@@ -1218,6 +1337,7 @@ module.exports = {
     MANIFEST_SCHEMA,
     RECEIPT_SCHEMA,
     REFERENCES_SCHEMA,
+    REPLICATE_CLAIM_SCHEMA,
     STATUS_LABELS,
     FAILURE_CODES,
     FAILURE_LABELS,
