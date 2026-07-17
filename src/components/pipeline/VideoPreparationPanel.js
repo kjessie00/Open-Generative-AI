@@ -9,6 +9,11 @@ export function VideoPreparationPanel({
     onRequestVideoAgentEdit, onDecideVideoAgentEdit,
 }) {
     let tasks = normalizeVideoTasks(videoPlanTasks || videoPlanState?.tasks, videoPlanState?.review_decisions);
+    const persistableTasks = () => tasks.map((task) => {
+        const value = { ...task };
+        delete value.review_decision;
+        return value;
+    });
     const progress = videoProgress(tasks);
     const allApproved = tasks.length > 0 && tasks.every((task) => (
         task.status === '결과연결' && Boolean(task.result_token) && task.review_decision === 'use'
@@ -26,8 +31,8 @@ export function VideoPreparationPanel({
             }),
             el('p', { text: '장면 순서대로 위에서부터 확인하세요.', className: 'mt-1 text-xs leading-5 text-secondary' }),
             el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
-                actionButton('프롬프트 저장', { disabled: busy || !tasks.length, onClick: () => onSaveVideoPlan?.(tasks) }),
-                actionButton('영상 작업 준비', { variant: 'muted', disabled: busy || !tasks.length, onClick: () => onPrepareVideoPlan?.(tasks) }),
+                actionButton('프롬프트 저장', { disabled: busy || !tasks.length, onClick: () => onSaveVideoPlan?.(persistableTasks()) }),
+                actionButton('영상 작업 준비', { variant: 'muted', disabled: busy || !tasks.length, onClick: () => onPrepareVideoPlan?.(persistableTasks()) }),
                 allApproved && typeof onOpenVideoNext === 'function'
                     ? actionButton('클립 선택으로', { variant: 'muted', onClick: onOpenVideoNext })
                     : null,

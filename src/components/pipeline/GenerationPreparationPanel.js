@@ -12,6 +12,11 @@ export function GenerationPreparationPanel({
     onRequestImageAgentEdit, onDecideImageAgentEdit,
 }) {
     let tasks = normalizeImageTasks(imagePlanTasks || imagePlanState?.tasks, imagePlanState?.review_decisions);
+    const persistableTasks = () => tasks.map((task) => {
+        const value = { ...task };
+        delete value.review_decision;
+        return value;
+    });
     const showExistingProduction = config === undefined || Boolean(config.productionRoot);
     const progress = imageProgress(tasks);
     const allApproved = tasks.length > 0 && tasks.every((task) => (
@@ -42,12 +47,12 @@ export function GenerationPreparationPanel({
             el('div', { className: 'mt-3 flex flex-wrap gap-2' }, [
                 actionButton('프롬프트 저장', {
                     disabled: busy || !tasks.length,
-                    onClick: () => onSaveImagePlan?.(tasks),
+                    onClick: () => onSaveImagePlan?.(persistableTasks()),
                 }),
                 actionButton('DST 작업 준비', {
                     variant: 'muted',
                     disabled: busy || !tasks.length,
-                    onClick: () => onPrepareImagePlan?.(tasks),
+                    onClick: () => onPrepareImagePlan?.(persistableTasks()),
                 }),
                 needsResultReview && typeof onOpenImageResultReview === 'function'
                     ? actionButton('결과 검토로', { variant: 'muted', onClick: onOpenImageResultReview })

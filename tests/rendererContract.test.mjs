@@ -4718,6 +4718,7 @@ test('PipelineStudio saves, prepares, connects, and retries image tasks with exa
     await flushRenderer();
     const savePayload = calls.find(([method]) => method === 'save')[1];
     assert.equal(savePayload.tasks[0].prompt, '직접 수정한 프롬프트');
+    assert.equal(Object.hasOwn(savePayload.tasks[0], 'review_decision'), false);
     assert.equal(savePayload.expected_design_revision_sha256, designRevision);
     assert.equal(savePayload.expected_image_plan_revision_sha256, '1'.repeat(64));
 
@@ -4867,6 +4868,7 @@ test('PipelineStudio saves, prepares, connects, and retries video tasks with exa
     const saved = calls.find(([method]) => method === 'saveVideo')[1];
     assert.equal(saved.tasks[0].prompt, '직접 수정한 영상 프롬프트');
     assert.equal(saved.tasks[0].provider, 'bytedance');
+    assert.equal(Object.hasOwn(saved.tasks[0], 'review_decision'), false);
     assert.equal(saved.expected_design_revision_sha256, designRevision);
     assert.equal(saved.expected_image_plan_revision_sha256, imageRevision);
     assert.equal(saved.expected_video_plan_revision_sha256, '1'.repeat(64));
