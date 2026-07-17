@@ -13,6 +13,7 @@ const VALID_KINDS = new Set(['character_sheet', 'location_sheet', 'scene_image',
 const VALID_PROVIDERS = new Set(['dst', 'flow', 'grok', 'replicate', 'bytedance', 'seedance']);
 const VALID_ASPECTS = new Set(['9:16', '16:9', '3:4', '1:1', '3:2', '2:3']);
 const DST_ASPECTS = new Set(['9:16', '16:9', '3:4', '1:1']);
+const DST_PROFILE = 'kjessie003';
 const FLOW_ASPECTS = new Set(['9:16', '16:9']);
 const MAX_PROMPT_LENGTH = 12000;
 const MAX_QUEUE_ITEMS = 100;
@@ -122,7 +123,7 @@ function resolveReferences(root, referenceIds, attemptsById) {
 function dstPlan(record, prompt, references) {
     const blockers = [...references.blockers];
     const aspect = DST_ASPECTS.has(record.aspect_ratio) ? record.aspect_ratio : '';
-    const args = ['-m', 'dst', 'image', prompt, '-p', 'goldpure369'];
+    const args = ['-m', 'dst', 'image', prompt, '-p', DST_PROFILE];
     if (aspect) args.push('-a', aspect);
     references.paths.forEach((referencePath) => args.push('--attach', referencePath));
     const previewReady = blockers.length === 0 && references.paths.length === references.requestedCount;

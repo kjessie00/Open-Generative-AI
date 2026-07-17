@@ -569,7 +569,7 @@ test('provider execution previews build exact private DST, Flow, and Grok comman
     assert.equal(sheet.command_spec.command, dstPython);
     assert.deepEqual(sheet.command_spec.args, [
         '-m', 'dst', 'image', task.prompt,
-        '-p', 'goldpure369', '--count', '1', '--set-count', '1', '--aspect', '9:16',
+        '-p', 'kjessie003', '--count', '1', '--set-count', '1', '--aspect', '9:16',
     ]);
     assert.equal(sheet.command_spec.cwd, runtimeRoot);
     assert.equal(sheet.command_spec.shell, false);

@@ -3740,6 +3740,16 @@ test('new project design board stays compact while supporting direct full-board 
     const node = NewProjectDesignBoard({
         designState: { status: 'restored', board, collaboration: { recent_requests: [] } },
         boardValue: board,
+        imagePlanTasks: [
+            { kind: 'character_sheet', source_id: 'character_01', result_token: 'character-result' },
+            { kind: 'location_sheet', source_id: 'location_01', result_token: 'location-result' },
+            { kind: 'scene_image', source_id: 'scene_01', result_token: 'scene-result' },
+        ],
+        imageResultPreviews: {
+            'character-result': { preview: { mime_type: 'image/png', base64: 'AA==' } },
+            'location-result': { preview: { mime_type: 'image/png', base64: 'AQ==' } },
+            'scene-result': { preview: { mime_type: 'image/png', base64: 'Ag==' } },
+        },
         onBoardChange: (value) => changes.push(structuredClone(value)),
         onSave: (value) => saves.push(structuredClone(value)),
         onEnqueue: (value) => requests.push(structuredClone(value)),
@@ -3753,6 +3763,10 @@ test('new project design board stays compact while supporting direct full-board 
     assert.ok(byText(node, 'button', '장면').className.includes('min-h-11'));
     assert.ok(descendants(node).some((item) => item.className.includes('md:grid-cols-2')));
     assert.ok(descendants(node).some((item) => item.className.includes('xl:grid-cols-3')));
+    assert.deepEqual(findAll(node, 'img').map((image) => image.attributes.get('alt')), [
+        '지아 결과', '상담실 결과', '문 앞의 지아 결과',
+    ]);
+    assert.equal(findAll(node, 'img').every((image) => image.attributes.get('src').startsWith('data:image/png;base64,')), true);
 
     const name = byAttribute(node, 'input', 'id', 'design-character-1-name');
     name.value = '지아 수정';
@@ -3781,6 +3795,8 @@ test('new project design board stays compact while supporting direct full-board 
     assert.ok(byAttribute(empty, 'input', 'id', 'design-character-1-name'));
     assert.ok(byAttribute(empty, 'input', 'id', 'design-location-1-name'));
     assert.ok(byAttribute(empty, 'input', 'id', 'design-scene-1-title'));
+    assert.equal(findAll(empty, 'img').length, 0);
+    assert.equal(findAll(empty, 'div').filter((item) => item.attributes.get('role') === 'img').length, 3);
 
     const limitedBoard = {
         characters: Array.from({ length: 12 }, (_, index) => ({ id: `character_${String(index + 1).padStart(2, '0')}`, name: `인물 ${index + 1}`, role: '', appearance: '', wardrobe: '', continuity: '' })),

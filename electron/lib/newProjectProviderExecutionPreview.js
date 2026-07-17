@@ -114,7 +114,7 @@ function dstPreview(task, runtime) {
     }
     const args = [
         '-m', 'dst', 'image', task.prompt,
-        '-p', 'goldpure369', '--count', '1', '--set-count', '1',
+        '-p', 'kjessie003', '--count', '1', '--set-count', '1',
         '--aspect', task.aspect_ratio,
     ];
     task.reference_files.forEach((reference) => args.push('--attach', reference.path));

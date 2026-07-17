@@ -206,6 +206,8 @@ export function StoryboardPanel({
                 onRun: onRunDesignAgentRequest,
                 onRefresh: onRefreshNewProjectDesign,
                 onDecide: onDecideDesignAgentSuggestion,
+                imagePlanTasks,
+                imageResultPreviews,
             }),
             NewProjectMediaReviewBoard({
                 designBoard: newProjectDesignBoard,

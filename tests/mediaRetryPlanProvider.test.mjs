@@ -89,7 +89,7 @@ test('real temp production builds provider previews in saved queue order without
     assert.equal(dstItem.readiness, 'preview_ready');
     assert.equal(dstItem.command_spec.command, '/Users/jessiek/.pyenv/versions/3.11.7/bin/python');
     assert.deepEqual(dstItem.command_spec.args.slice(0, 5), ['-m', 'dst', 'image', dst.prompt, '-p']);
-    assert.ok(dstItem.command_spec.args.includes('goldpure369'));
+    assert.ok(dstItem.command_spec.args.includes('kjessie003'));
     assert.ok(dstItem.command_spec.args.includes('-a'));
     assert.ok(dstItem.command_spec.args.includes('--attach'));
     assert.ok(dstItem.command_spec.args.includes(path.join(root, 'media', 'reference.png')));

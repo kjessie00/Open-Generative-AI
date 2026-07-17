@@ -238,6 +238,19 @@ test('real local workspace returns only opaque bounded completed single-image bu
     assert.deepEqual(forged.blockers, ['DST_IMPORT_PREVIEW_REQUEST_INVALID']);
 });
 
+test('workspace accepts bundles from the current kjessie003 profile', (t) => {
+    const fx = fixture(t);
+    fs.rmSync(fx.bundle.bundleRoot, { recursive: true, force: true });
+    writeBundle(fx.dstRoot, {
+        manifest: { profile: 'kjessie003' },
+        metadata: { profile: 'kjessie003' },
+    });
+
+    const workspace = provider.getDstBundleImportWorkspace(fx.context);
+    assert.equal(workspace.candidates.length, 1);
+    assert.equal(workspace.rejected_count, 0);
+});
+
 test('workspace hard-caps newest valid inventory candidates at twelve', (t) => {
     const fx = fixture(t);
     for (let index = 0; index < 13; index += 1) {

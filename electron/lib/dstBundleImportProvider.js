@@ -17,6 +17,7 @@ const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_LEDGER_BYTES = 2 * 1024 * 1024;
 const MAX_TARGET_LABEL_BYTES = 512;
 const MAX_TARGET_LABEL_CHARACTERS = 160;
+const ALLOWED_DST_PROFILES = new Set(['kjessie003', 'goldpure369']);
 const DEFAULT_PLAN_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAN_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_STALE_LOCK_MS = 30 * 1000;
@@ -200,8 +201,8 @@ function inspectBundle(imagesRoot, inventoryRootFingerprint, bundleName, context
     const bundleId = safeId(manifest.id, 'DST_IMPORT_BUNDLE_ID_INVALID');
     const query = boundedText(manifest.query, 12000, 'DST_IMPORT_PROMPT_INVALID');
     if (manifest.type !== 'image_generation' || manifest.status !== 'complete'
-        || manifest.profile !== 'goldpure369' || manifest.files?.images !== 'images/'
-        || metadata.status !== 'complete' || metadata.profile !== 'goldpure369'
+        || !ALLOWED_DST_PROFILES.has(manifest.profile) || manifest.files?.images !== 'images/'
+        || metadata.status !== 'complete' || metadata.profile !== manifest.profile
         || !Number.isSafeInteger(metadata.image_count) || metadata.image_count < 1
         || metadata.image_count > MAX_IMAGES_PER_BUNDLE || metadata.query !== query) {
         throw failure('DST_IMPORT_BUNDLE_CONTRACT_INVALID');

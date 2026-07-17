@@ -1,4 +1,5 @@
 import { actionButton, card, el } from './ui.js';
+import { safePreviewSource } from './imagePreparationUi.js';
 
 const EMPTY = Object.freeze({ characters: [], locations: [], scenes: [] });
 const safeText = (value) => typeof value === 'string' ? value : '';
@@ -70,6 +71,13 @@ function placeholder(label) {
     }, [el('span', { text: '이미지 없음' })]);
 }
 
+function connectedImage(label, source) {
+    return source ? el('img', {
+        className: 'aspect-[4/5] w-full rounded-md bg-black/20 object-contain',
+        attrs: { src: source, alt: `${label} 결과` },
+    }) : placeholder(label);
+}
+
 function heading(number, title, subtitle, id) {
     return el('header', { className: 'flex flex-col gap-1' }, [
         el('h4', { text: `${number}. ${title}`, className: 'text-base font-bold text-white', attrs: { id } }),
@@ -77,7 +85,7 @@ function heading(number, title, subtitle, id) {
     ]);
 }
 
-function sheetCard(item, index, kind, descriptors, board, update, rerender) {
+function sheetCard(item, index, kind, descriptors, board, update, rerender, previewSource = '') {
     const prefix = `design-${kind}-${index + 1}`;
     const group = kind === 'character' ? 'characters' : 'locations';
     const details = el('details', {
@@ -98,15 +106,16 @@ function sheetCard(item, index, kind, descriptors, board, update, rerender) {
             }),
         ]),
     ]);
+    const label = item.name || `${kind === 'character' ? '인물' : '장소'} ${index + 1}`;
     return card([
-        placeholder(item.name || `${kind === 'character' ? '인물' : '장소'} ${index + 1}`),
+        connectedImage(label, previewSource),
         el('h5', { text: item.name || `${kind === 'character' ? '새 인물' : '새 장소'}`, className: 'text-sm font-bold text-white' }),
         el('p', { text: item[kind === 'character' ? 'role' : 'space'] || '내용을 입력하세요.', className: 'line-clamp-1 text-xs text-secondary' }),
         details,
     ], 'flex min-w-0 flex-col gap-3');
 }
 
-function sceneCard(scene, index, board, update, rerender) {
+function sceneCard(scene, index, board, update, rerender, previewSource = '') {
     const prefix = `design-scene-${index + 1}`;
     const patch = (key, value) => update('scenes', index, key, value);
     const choices = el('fieldset', { className: 'flex min-w-0 flex-col gap-2' }, [
@@ -150,27 +159,33 @@ function sceneCard(scene, index, board, update, rerender) {
             ]),
         ]),
     ]);
+    const label = scene.title || `장면 ${index + 1}`;
     return card([
-        placeholder(scene.title || `장면 ${index + 1}`),
+        connectedImage(label, previewSource),
         el('h5', { text: scene.title || '새 장면', className: 'text-sm font-bold text-white' }),
         el('p', { text: scene.dramatic_beat || '핵심 장면을 입력하세요.', className: 'line-clamp-1 text-xs text-secondary' }),
         details,
     ], 'flex min-w-0 flex-col gap-3');
 }
 
-export function editableDesignSections(board, update, rerender) {
+export function editableDesignSections(board, update, rerender, { imagePlanTasks = [], imageResultPreviews = {} } = {}) {
+    const connectedPreviews = new Map((Array.isArray(imagePlanTasks) ? imagePlanTasks : []).map((task) => [
+        `${task?.kind || ''}:${task?.source_id || ''}`,
+        safePreviewSource(imageResultPreviews[task?.result_token]),
+    ]));
+    const previewFor = (kind, sourceId) => connectedPreviews.get(`${kind}:${sourceId}`) || '';
     const characters = board.characters.map((item, index) => sheetCard(item, index, 'character', [
         ['name', '이름'], ['role', '역할'], ['appearance', '외형', 2], ['wardrobe', '의상', 2], ['continuity', '연속성', 2],
-    ], board, update, rerender));
+    ], board, update, rerender, previewFor('character_sheet', item.id)));
     const locations = board.locations.map((item, index) => sheetCard(item, index, 'location', [
         ['name', '이름'], ['space', '공간', 2], ['lighting', '조명', 2], ['props', '소품', 2], ['continuity', '연속성', 2],
-    ], board, update, rerender));
+    ], board, update, rerender, previewFor('location_sheet', item.id)));
     const section = (id, head, cards, gridClass, addLabel, limit, onAdd) => el('section', {
         className: 'flex min-w-0 flex-col gap-3', attrs: { id, 'aria-labelledby': `${id}-title` },
     }, [head, el('div', { className: `grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 ${gridClass}` }, cards), actionButton(addLabel, { variant: 'muted', disabled: cards.length >= limit, onClick: onAdd })]);
     return el('div', { className: 'flex min-w-0 flex-col gap-6' }, [
         section('design-characters', heading(1, '인물 시트', '인물의 역할과 외형·의상 기준을 정합니다.', 'design-characters-title'), characters, '', '인물 추가', 12, () => { board.characters.push({ id: nextId(board.characters, 'character'), name: '', role: '', appearance: '', wardrobe: '', continuity: '' }); rerender(); }),
         section('design-locations', heading(2, '장소 시트', '공간과 조명·소품 기준을 장면보다 먼저 정합니다.', 'design-locations-title'), locations, '', '장소 추가', 12, () => { board.locations.push({ id: nextId(board.locations, 'location'), name: '', space: '', lighting: '', props: '', continuity: '' }); rerender(); }),
-        section('design-scenes', heading(3, '장면 카드', '장면 순서와 첫 화면·행동·카메라·소리를 정합니다.', 'design-scenes-title'), board.scenes.map((item, index) => sceneCard(item, index, board, update, rerender)), 'xl:grid-cols-3', '장면 추가', 20, () => { board.scenes.push({ id: nextId(board.scenes, 'scene'), title: '', dramatic_beat: '', characters: [], location_id: '', duration: 5, first_frame: '', action: '', camera: '', lighting: '', audio_sfx_dialogue: '' }); rerender(); }),
+        section('design-scenes', heading(3, '장면 카드', '장면 순서와 첫 화면·행동·카메라·소리를 정합니다.', 'design-scenes-title'), board.scenes.map((item, index) => sceneCard(item, index, board, update, rerender, previewFor('scene_image', item.id))), 'xl:grid-cols-3', '장면 추가', 20, () => { board.scenes.push({ id: nextId(board.scenes, 'scene'), title: '', dramatic_beat: '', characters: [], location_id: '', duration: 5, first_frame: '', action: '', camera: '', lighting: '', audio_sfx_dialogue: '' }); rerender(); }),
     ]);
 }

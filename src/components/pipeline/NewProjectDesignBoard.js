@@ -8,7 +8,7 @@ import {
 
 export function NewProjectDesignBoard({
     designState, boardValue, dirty = false, notice = '', onBoardChange, onSave,
-    onEnqueue, onRun, onRefresh, onDecide,
+    onEnqueue, onRun, onRefresh, onDecide, imagePlanTasks = [], imageResultPreviews = {},
 }) {
     let board = normalizeDesignBoard(boardValue || designState?.board);
     let localDirty = dirty;
@@ -68,7 +68,7 @@ export function NewProjectDesignBoard({
         const currentBoard = editableDesignSections(board, update, () => {
             emit();
             render();
-        });
+        }, { imagePlanTasks, imageResultPreviews });
         const status = el('p', {
             text: notice || (localDirty ? '저장하지 않은 변경이 있습니다' : '설계를 직접 수정하거나 에이전트에게 요청할 수 있습니다.'),
             className: 'text-xs leading-5 text-secondary',
