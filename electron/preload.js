@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     stageNewProjectExecutionHandoff: (payload) => ipcRenderer.invoke('film-pipeline:stage-new-project-execution-handoff', payload),
     copyNewProjectBuildCommand: () => ipcRenderer.invoke('film-pipeline:copy-new-project-build-command'),
     selectProductionRoot: (request) => ipcRenderer.invoke('film-pipeline:select-production-root', request),
+    selectExternalMediaRoot: (request) => ipcRenderer.invoke('film-pipeline:select-external-media-root', request),
     listProductionChildren: () => ipcRenderer.invoke('film-pipeline:list-production-children'),
     readProductionState: () => ipcRenderer.invoke('film-pipeline:read-production-state'),
     getMediaRetryPlan: () => ipcRenderer.invoke('film-pipeline:get-media-retry-plan'),

@@ -49,6 +49,7 @@ Architecture:
 - Electron main process owns file reads/writes, command preview, safe non-consuming commands, and future execution hooks.
 - UI state must be reconstructable from local files: production/, docs/short_drama_pipeline_runs/, JSONL ledgers, markdown reports, and dashboard data.
 - Store secrets nowhere. Never copy cookies, browser profiles, auth bundles, API keys, or private session zips into the repo.
+- On another local machine, never edit provider source paths to find generated media. Use the main-owned result-folder selectors described in `docs/ui_integration/83_external_media_root_contract.md`; the external Codex agent performs setup and generation, while the UI remains a review workspace without an embedded agent chat.
 
 Safety state machine:
 - Planning complete is not generation submitted.

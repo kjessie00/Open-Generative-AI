@@ -280,6 +280,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'saveNewProjectVideoPlan',
         'saveNewProjectVideoRetrySelection',
         'saveNewProjectVideoReviewDecision',
+        'selectExternalMediaRoot',
         'selectProductionRoot',
         'stageNewProjectExecutionHandoff',
         'stageNewProjectFinalStitch',
@@ -287,6 +288,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     ]);
 
     await bridge.getConfig();
+    await bridge.selectExternalMediaRoot({ provider: 'dst' });
     await bridge.getHarnessContractStatus();
     await bridge.getMediaRetryPlan();
     await bridge.getDstBundleImportWorkspace();
@@ -365,6 +367,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         invocations.map(([channel]) => channel),
         [
             'film-pipeline:get-config',
+            'film-pipeline:select-external-media-root',
             'film-pipeline:get-harness-contract-status',
             'film-pipeline:get-media-retry-plan',
             'film-pipeline:get-dst-bundle-import-workspace',

@@ -48,6 +48,9 @@ function createIpcHarness(initialConfig, options = {}) {
             },
         },
         mainWindow: null,
+        ...(options.runProcessFn ? { runProcessFn: options.runProcessFn } : {}),
+        ...(options.userDataPath ? { userDataPath: options.userDataPath } : {}),
+        ...(Object.hasOwn(options, 'env') ? { env: options.env } : {}),
         readProductionFolderFn: options.readProductionFolderFn || ((rootPath) => ({ rootPath })),
     };
     register(ipcApi, dependencies);
@@ -125,6 +128,139 @@ test('native production and parent modes reject injected paths and persist only 
     assert.equal(selectedParent.config.productionParentRoot, nativeParent);
     assert.equal(selectedParent.config.productionRoot, nativeRoot, 'parent selection must not overwrite production root');
     assert.equal(harness.dialogCalls.length, 2);
+});
+
+test('external media roots accept only a provider enum and persist native non-symlink selections', async (t) => {
+    const base = fixture(t);
+    const selected = mkdir(path.join(base, 'dst-images'));
+    const outside = mkdir(path.join(base, 'outside'));
+    const linked = path.join(base, 'linked-results');
+    fs.symlinkSync(outside, linked, 'dir');
+    const harness = createIpcHarness({
+        productionRoot: '',
+        productionParentRoot: '',
+        recentProductionRoots: [],
+        pathProvenanceVersion: 1,
+        externalMediaRoots: { dst: '', flow: '', grok: '', replicate: '', bytedance: '' },
+        externalMediaRootProvenanceVersion: 1,
+    }, {
+        dialogResults: [
+            { canceled: false, filePaths: [selected] },
+            { canceled: false, filePaths: [linked] },
+        ],
+    });
+
+    await assert.rejects(
+        harness.invoke('film-pipeline:select-external-media-root', { provider: 'dst', rootPath: outside }),
+        (error) => error.code === 'EXTERNAL_MEDIA_ROOT_SELECTION_INVALID',
+    );
+    await assert.rejects(
+        harness.invoke('film-pipeline:select-external-media-root', { provider: 'unknown' }),
+        (error) => error.code === 'EXTERNAL_MEDIA_ROOT_SELECTION_INVALID',
+    );
+    assert.equal(harness.dialogCalls.length, 0, 'invalid renderer requests never open a native dialog');
+
+    const accepted = await harness.invoke('film-pipeline:select-external-media-root', { provider: 'dst' });
+    assert.equal(accepted.ok, true);
+    assert.equal(accepted.provider, 'dst');
+    assert.equal(harness.getConfig().externalMediaRoots.dst, selected);
+    assert.equal(harness.getConfig().externalMediaRoots.flow, '');
+    assert.equal(harness.getConfig().externalMediaRootProvenanceVersion, 1);
+    assert.equal(harness.dialogCalls[0].dialogOptions.title, '결과 폴더 선택');
+    assert.deepEqual(harness.dialogCalls[0].dialogOptions.properties, ['openDirectory']);
+
+    await assert.rejects(
+        harness.invoke('film-pipeline:select-external-media-root', { provider: 'flow' }),
+        (error) => error.code === 'EXTERNAL_MEDIA_ROOT_SELECTION_INVALID',
+    );
+    assert.equal(harness.getConfig().externalMediaRoots.flow, '');
+});
+
+test('external media root provenance is independently invalidated from production provenance', () => {
+    const migrated = sanitizeConfig({
+        productionRoot: '/main-owned/production',
+        productionParentRoot: '/main-owned',
+        recentProductionRoots: ['/main-owned/production'],
+        pathProvenanceVersion: 1,
+        externalMediaRoots: { dst: '/renderer/dst', flow: '/renderer/flow', grok: '', replicate: '', bytedance: '' },
+    });
+    assert.equal(migrated.productionRoot, '/main-owned/production');
+    assert.deepEqual(migrated.externalMediaRoots, { dst: '', flow: '', grok: '', replicate: '', bytedance: '' });
+    assert.equal(migrated.externalMediaRootProvenanceVersion, 1);
+});
+
+test('configured roots discover portable DST and all video provider results after relaunch', async (t) => {
+    const base = fs.realpathSync.native(fixture(t));
+    const roots = Object.fromEntries(['dst', 'flow', 'grok', 'replicate', 'bytedance']
+        .map((providerName) => [providerName, mkdir(path.join(base, providerName))]));
+    const png = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        Buffer.from('portable-dst-image'),
+    ]);
+    const bundleRoot = mkdir(path.join(roots.dst, '20260717_portable_bundle'));
+    mkdir(path.join(bundleRoot, 'images'));
+    fs.writeFileSync(path.join(bundleRoot, 'manifest.json'), JSON.stringify({
+        id: 'portable_bundle_20260717',
+        type: 'image_generation',
+        status: 'complete',
+        profile: 'goldpure369',
+        query: 'Portable image result',
+        files: { images: 'images/' },
+        created_at: '2026-07-17T03:00:00.000Z',
+    }));
+    fs.writeFileSync(path.join(bundleRoot, 'metadata.json'), JSON.stringify({
+        status: 'complete', profile: 'goldpure369', image_count: 1, query: 'Portable image result',
+    }));
+    fs.writeFileSync(path.join(bundleRoot, 'images', 'image_01.png'), png);
+
+    const mp4 = Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]), Buffer.from('ftypisom', 'ascii'),
+        Buffer.from([0x00, 0x00, 0x02, 0x00]), Buffer.from('isomiso2', 'ascii'), Buffer.alloc(128, 0x5a),
+    ]);
+    const flowRoot = mkdir(path.join(roots.flow, 'portable_flow'));
+    fs.writeFileSync(path.join(flowRoot, 'result_1.mp4'), mp4);
+    fs.writeFileSync(path.join(roots.grok, 'portable_grok.mp4'), mp4);
+    for (const providerName of ['replicate', 'bytedance']) {
+        const resultId = `portable_${providerName}`;
+        const resultRoot = mkdir(path.join(roots[providerName], resultId));
+        fs.writeFileSync(path.join(resultRoot, 'result.mp4'), mp4);
+        fs.writeFileSync(path.join(resultRoot, 'receipt.json'), JSON.stringify({
+            schema_version: 'film_pipeline.external_video_result.v1',
+            provider: providerName,
+            result_id: resultId,
+            status: 'succeeded',
+            output_file: 'result.mp4',
+            output_sha256: sha256(path.join(resultRoot, 'result.mp4')),
+            output_size_bytes: mp4.length,
+            completed_at: '2026-07-17T03:00:00.000Z',
+        }));
+    }
+
+    const harness = createIpcHarness({
+        externalMediaRoots: roots,
+        externalMediaRootProvenanceVersion: 1,
+    }, {
+        env: {},
+        userDataPath: mkdir(path.join(base, 'user-data')),
+        runProcessFn: () => ({
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({
+                format: { format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '6' },
+                streams: [{ codec_type: 'video', width: 1080, height: 1920 }],
+            }),
+            stderr: '',
+        }),
+    });
+    const restored = sanitizeConfig(harness.getConfig());
+    assert.deepEqual(restored.externalMediaRoots, roots, 'main-owned roots survive config reload');
+
+    const dstWorkspace = await harness.invoke('film-pipeline:get-dst-bundle-import-workspace');
+    assert.equal(dstWorkspace.ready, true, JSON.stringify(dstWorkspace));
+    assert.equal(dstWorkspace.candidates.length, 1);
+    const videoWorkspace = await harness.invoke('film-pipeline:get-video-result-import-workspace');
+    assert.deepEqual(new Set(videoWorkspace.candidates.map((candidate) => candidate.provider)),
+        new Set(['flow', 'grok', 'replicate', 'bytedance']));
 });
 
 test('configured immediate real child is the only renderer-addressable production and binds write/read IPC', async (t) => {

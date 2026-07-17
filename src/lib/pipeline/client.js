@@ -5,6 +5,8 @@ const mockConfig = Object.freeze({
     productionParentRoot: '',
     recentProductionRoots: [samplePipelineState.project.root_path],
     pathProvenanceVersion: 1,
+    externalMediaRoots: { dst: '', flow: '', grok: '', replicate: '', bytedance: '' },
+    externalMediaRootProvenanceVersion: 1,
     dryRunMode: true,
     allowSafeCommandExecution: false,
     updatedAt: null,
@@ -503,6 +505,12 @@ export async function selectProductionRoot(request) {
     return { ...unavailable('selectProductionRoot'), canceled: true, rootPath: '', config: mockConfig };
 }
 
+export async function selectExternalMediaRoot(request) {
+    const bridge = getBridge();
+    if (typeof bridge?.selectExternalMediaRoot === 'function') return bridge.selectExternalMediaRoot(request);
+    return { ...unavailable('selectExternalMediaRoot'), canceled: true, provider: '', config: mockConfig };
+}
+
 export async function listProductionChildren() {
     const bridge = getBridge();
     if (bridge) return bridge.listProductionChildren();
@@ -863,6 +871,7 @@ export const pipelineClient = Object.freeze({
     stageNewProjectExecutionHandoff,
     copyNewProjectBuildCommand,
     selectProductionRoot,
+    selectExternalMediaRoot,
     listProductionChildren,
     readProductionState,
     getMediaRetryPlan,

@@ -14,14 +14,24 @@ function statusRow(label, value) {
     ]);
 }
 
-export function PipelineSettingsPanel({ state, config, harnessStatus, onPickParent, onRefresh }) {
+const MEDIA_ROOTS = Object.freeze([
+    { provider: 'dst', label: '이미지 결과' },
+    { provider: 'flow', label: 'Flow 영상' },
+    { provider: 'grok', label: 'Grok 영상' },
+    { provider: 'replicate', label: 'Replicate 영상' },
+    { provider: 'bytedance', label: 'ByteDance 영상' },
+]);
+
+export function PipelineSettingsPanel({ state, config, harnessStatus, onPickParent, onPickMediaRoot, onRefresh }) {
     const settings = state.settings || {};
     const productionRoot = config?.productionRoot || '';
     const productionParentRoot = config?.productionParentRoot || '';
+    const externalMediaRoots = config?.externalMediaRoots || {};
     const harnessReadiness = harnessStatus?.readiness || 'blocked';
     const advancedRows = [
         ['현재 제작 폴더', productionRoot],
         ['제작 상위 폴더', productionParentRoot],
+        ...MEDIA_ROOTS.map(({ provider, label }) => [`${label} 폴더`, externalMediaRoots[provider] || '']),
         ['Shorts 문서', settings.harnessDocs?.shorts || 'docs/harness/shorts-SKILL.md'],
         ['Seedance 문서', settings.harnessDocs?.seedance || 'docs/harness/Seedance2-SKILL.md'],
         ['로컬 하네스', harnessStatus?.rootPath || ''],
@@ -52,6 +62,29 @@ export function PipelineSettingsPanel({ state, config, harnessStatus, onPickPare
                     }),
                 ]),
             ]),
+        ]),
+        card([
+            el('h3', { text: '결과 폴더', className: 'text-base font-bold text-white' }),
+            el('p', {
+                text: '다른 컴퓨터에서는 실제 생성 결과가 저장되는 폴더만 한 번 연결하세요.',
+                className: 'mt-1 text-sm leading-6 text-secondary',
+            }),
+            el('div', { className: 'mt-3 divide-y divide-white/10' }, MEDIA_ROOTS.map(({ provider, label }) => (
+                el('div', { className: 'flex min-h-14 items-center justify-between gap-3 py-2' }, [
+                    el('div', { className: 'min-w-0' }, [
+                        el('p', { text: label, className: 'text-sm font-semibold text-white' }),
+                        el('p', {
+                            text: externalMediaRoots[provider] ? '연결됨' : '선택 필요',
+                            className: 'mt-0.5 text-xs text-secondary',
+                        }),
+                    ]),
+                    el('button', {
+                        text: '선택', onClick: () => onPickMediaRoot?.(provider),
+                        className: 'ui-action-button min-h-11 shrink-0 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-secondary hover:bg-white/[0.07] hover:text-white',
+                        attrs: { type: 'button', 'aria-label': `${label} 폴더 선택` },
+                    }),
+                ])
+            ))),
         ]),
         card([
             el('h3', { text: '연결 상태', className: 'text-base font-bold text-white' }),

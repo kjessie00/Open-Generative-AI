@@ -776,6 +776,40 @@ export function PipelineStudio() {
             }
         };
 
+        const pickExternalMediaRoot = async (provider) => {
+            try {
+                const selected = await pipelineClient.selectExternalMediaRoot({ provider });
+                if (!selected?.ok || selected.canceled) return;
+                config = {
+                    ...config,
+                    ...(selected.config || {}),
+                    dryRunMode: true,
+                    allowSafeCommandExecution: false,
+                };
+                if (provider === 'dst') {
+                    const [dstState] = await Promise.all([
+                        readDstBundleImportState().catch(() => null),
+                        refreshNewProjectImageResults(),
+                    ]);
+                    if (dstState) {
+                        dstBundleImportWorkspace = dstState.workspace;
+                        dstBundleImportPreview = dstState.preview;
+                    }
+                    dstBundleImportPlan = emptyDstBundleImportPlan();
+                } else {
+                    const [workspace] = await Promise.all([
+                        pipelineClient.getVideoResultImportWorkspace().catch(() => null),
+                        refreshNewProjectVideoResults(),
+                    ]);
+                    if (workspace) videoResultImportWorkspace = workspace;
+                    videoResultImportPlan = emptyVideoResultImportPlan();
+                }
+                render();
+            } catch {
+                showPathSelectionBlocked();
+            }
+        };
+
         const selectProduction = async (path) => {
             if (!path) return;
             try {
@@ -1994,6 +2028,7 @@ export function PipelineStudio() {
                 },
                 onPreviewCommand: (commandSpec) => pipelineClient.previewCommand(commandSpec),
                 onPickParent: pickParentFolder,
+                onPickMediaRoot: pickExternalMediaRoot,
                 onRefresh: refreshProductions,
                 g3Workspace,
                 g3PromotionPlan,

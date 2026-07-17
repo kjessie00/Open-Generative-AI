@@ -28,6 +28,8 @@ const MAX_PLANNING_FILE_BYTES = 1024 * 1024;
 const MAX_PLANNING_FILE_ID_LENGTH = 128;
 const PLANNING_TEMP_PREFIX = '.film-pipeline-planning-';
 const PATH_PROVENANCE_VERSION = 1;
+const EXTERNAL_MEDIA_ROOT_PROVENANCE_VERSION = 1;
+const EXTERNAL_MEDIA_PROVIDERS = new Set(['dst', 'flow', 'grok', 'replicate', 'bytedance']);
 const HAPPY_VIDEO_FACTORY_ROOT = '/Users/jessiek/StudioProjects/happyVideoFactory';
 const MAX_HARNESS_CONTRACT_FILE_BYTES = 2 * 1024 * 1024;
 const HARNESS_CONTRACT_ALLOWLIST = Object.freeze([
@@ -172,6 +174,10 @@ function defaultConfig() {
         productionParentRoot: '',
         recentProductionRoots: [],
         pathProvenanceVersion: PATH_PROVENANCE_VERSION,
+        externalMediaRoots: {
+            dst: '', flow: '', grok: '', replicate: '', bytedance: '',
+        },
+        externalMediaRootProvenanceVersion: EXTERNAL_MEDIA_ROOT_PROVENANCE_VERSION,
         dryRunMode: true,
         allowSafeCommandExecution: false,
         updatedAt: null,
@@ -194,9 +200,20 @@ function readJsonIfExists(filePath, fallback) {
 function sanitizeConfig(config = {}) {
     const base = defaultConfig();
     const hasMainOwnedPathProvenance = config.pathProvenanceVersion === PATH_PROVENANCE_VERSION;
+    const hasMainOwnedExternalMediaProvenance = config.externalMediaRootProvenanceVersion
+        === EXTERNAL_MEDIA_ROOT_PROVENANCE_VERSION;
     const recent = hasMainOwnedPathProvenance && Array.isArray(config.recentProductionRoots)
         ? config.recentProductionRoots.filter((item) => typeof item === 'string').slice(0, 10)
         : base.recentProductionRoots;
+    const externalMediaRoots = hasMainOwnedExternalMediaProvenance
+        && config.externalMediaRoots && typeof config.externalMediaRoots === 'object'
+        && !Array.isArray(config.externalMediaRoots)
+        ? Object.fromEntries([...EXTERNAL_MEDIA_PROVIDERS].map((provider) => [
+            provider,
+            typeof config.externalMediaRoots[provider] === 'string'
+                ? config.externalMediaRoots[provider] : '',
+        ]))
+        : base.externalMediaRoots;
 
     return {
         ...base,
@@ -209,6 +226,8 @@ function sanitizeConfig(config = {}) {
             : base.productionParentRoot,
         recentProductionRoots: recent,
         pathProvenanceVersion: PATH_PROVENANCE_VERSION,
+        externalMediaRoots,
+        externalMediaRootProvenanceVersion: EXTERNAL_MEDIA_ROOT_PROVENANCE_VERSION,
         dryRunMode: config.dryRunMode !== false,
         allowSafeCommandExecution: false,
         updatedAt: new Date().toISOString(),
@@ -529,8 +548,25 @@ function readKnownJson(root, names) {
 }
 
 function getConfig(options = {}) {
-    const readConfigFn = options.readConfigFn || readConfig;
-    return sanitizeConfig(readConfigFn());
+    if (typeof options.readConfigFn === 'function') return sanitizeConfig(options.readConfigFn());
+    if (typeof options.userDataPath === 'string' && options.userDataPath) {
+        const configPath = path.join(options.userDataPath, 'film-pipeline', CONFIG_FILE);
+        return sanitizeConfig(readJsonIfExists(configPath, defaultConfig()));
+    }
+    return sanitizeConfig(readConfig());
+}
+
+function getContextConfig(options = {}) {
+    if (!options.config || typeof options.config !== 'object' || Array.isArray(options.config)) {
+        return getConfig(options);
+    }
+    return {
+        ...options.config,
+        externalMediaRoots: {
+            ...defaultConfig().externalMediaRoots,
+            ...(options.config.externalMediaRoots || {}),
+        },
+    };
 }
 
 function resolveProductionDialogDefaultPath(config = {}, isDirectory = (candidate) => {
@@ -598,6 +634,15 @@ function assertSelectionRequest(request) {
     return mode;
 }
 
+function assertExternalMediaRootSelectionRequest(request) {
+    if (!request || typeof request !== 'object' || Array.isArray(request)
+        || Object.keys(request).sort().join(',') !== 'provider'
+        || !EXTERNAL_MEDIA_PROVIDERS.has(request.provider)) {
+        throw pathProvenanceError('EXTERNAL_MEDIA_ROOT_SELECTION_INVALID', 'External media root selection request is invalid');
+    }
+    return request.provider;
+}
+
 function assertConfiguredChild(rootPath, config) {
     const parent = assertTrustedDirectory(
         config.productionParentRoot,
@@ -655,6 +700,32 @@ async function selectProductionRoot(request, options = {}) {
         pathProvenanceVersion: PATH_PROVENANCE_VERSION,
     });
     return { ok: true, canceled: false, mode, rootPath: selectedPath, config: nextConfig };
+}
+
+async function selectExternalMediaRoot(request, options = {}) {
+    const provider = assertExternalMediaRootSelectionRequest(request);
+    const readConfigFn = options.readConfigFn || readConfig;
+    const writeConfigFn = options.writeConfigFn || writeConfig;
+    const dialogApi = options.dialogApi || dialog;
+    const mainWindow = options.mainWindow === undefined ? getMainWindow() : options.mainWindow;
+    const config = sanitizeConfig(readConfigFn());
+    const result = await dialogApi.showOpenDialog(mainWindow, {
+        title: '결과 폴더 선택',
+        properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths?.[0]) {
+        return { ok: false, canceled: true, provider, config };
+    }
+    const selected = assertTrustedDirectory(result.filePaths[0], 'EXTERNAL_MEDIA_ROOT_SELECTION_INVALID');
+    const nextConfig = writeConfigFn({
+        ...config,
+        externalMediaRoots: {
+            ...config.externalMediaRoots,
+            [provider]: selected.path,
+        },
+        externalMediaRootProvenanceVersion: EXTERNAL_MEDIA_ROOT_PROVENANCE_VERSION,
+    });
+    return { ok: true, canceled: false, provider, config: nextConfig };
 }
 
 function readProductionState(rootPath, options = {}) {
@@ -1078,9 +1149,14 @@ function decideDesignAgentSuggestion(payload, options = {}) {
 }
 
 function newProjectImagePlanContext(options = {}) {
+    const config = getContextConfig(options);
+    const env = options.env || process.env;
     return {
         ...options,
+        config,
         userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        dstImagesRoot: options.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT
+            || config.externalMediaRoots.dst,
     };
 }
 
@@ -1186,17 +1262,23 @@ function saveNewProjectImageRetrySelection(payload, options = {}) {
 
 function newProjectVideoPlanContext(options = {}) {
     const env = options.env || process.env;
+    const config = getContextConfig(options);
     return {
         ...options,
-        config: getConfig(options),
+        config,
         userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
-        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT,
-        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT,
-        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT,
+        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.flow,
+        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.grok,
+        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.replicate,
         replicateReceiptResultsRoot: options.replicateReceiptResultsRoot
-            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT,
+            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT
+            || config.externalMediaRoots.replicate,
         bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
-            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
+            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT
+            || config.externalMediaRoots.bytedance,
         ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
     };
 }
@@ -1358,17 +1440,25 @@ async function saveNewProjectFinalReviewDecision(payload, options = {}) {
 
 function newProjectExecutionContext(options = {}) {
     const env = options.env || process.env;
+    const config = getContextConfig(options);
     return {
         ...options,
+        config,
         userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
-        dstImagesRoot: options.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT,
-        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT,
-        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT,
-        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT,
+        dstImagesRoot: options.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT
+            || config.externalMediaRoots.dst,
+        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.flow,
+        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.grok,
+        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.replicate,
         replicateReceiptResultsRoot: options.replicateReceiptResultsRoot
-            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT,
+            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT
+            || config.externalMediaRoots.replicate,
         bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
-            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
+            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT
+            || config.externalMediaRoots.bytedance,
         ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
     };
 }
@@ -1546,10 +1636,14 @@ function getMediaRetryPlan(options = {}) {
 }
 
 function dstBundleImportContext(options = {}) {
+    const config = getContextConfig(options);
+    const env = options.env || process.env;
     return {
         ...options,
-        config: getConfig(options),
+        config,
         userDataPath: options.userDataPath || app.getPath('userData'),
+        dstImagesRoot: options.dstImagesRoot || env.OPEN_GENERATIVE_AI_DST_IMAGES_ROOT
+            || config.externalMediaRoots.dst,
     };
 }
 
@@ -1571,17 +1665,23 @@ function confirmDstBundleImport(payload, options = {}) {
 
 function videoResultImportContext(options = {}) {
     const env = options.env || process.env;
+    const config = getContextConfig(options);
     return {
         ...options,
-        config: getConfig(options),
+        config,
         userDataPath: options.userDataPath || app.getPath('userData'),
-        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT,
-        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT,
-        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT,
+        flowResultsRoot: options.flowResultsRoot || env.OPEN_GENERATIVE_AI_FLOW_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.flow,
+        grokResultsRoot: options.grokResultsRoot || env.OPEN_GENERATIVE_AI_GROK_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.grok,
+        replicateResultsRoot: options.replicateResultsRoot || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RESULTS_ROOT
+            || config.externalMediaRoots.replicate,
         replicateReceiptResultsRoot: options.replicateReceiptResultsRoot
-            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT,
+            || env.OPEN_GENERATIVE_AI_REPLICATE_VIDEO_RECEIPT_RESULTS_ROOT
+            || config.externalMediaRoots.replicate,
         bytedanceReceiptResultsRoot: options.bytedanceReceiptResultsRoot
-            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT,
+            || env.OPEN_GENERATIVE_AI_BYTEDANCE_VIDEO_RECEIPT_RESULTS_ROOT
+            || config.externalMediaRoots.bytedance,
         ffprobePath: options.ffprobePath || env.OPEN_GENERATIVE_AI_FFPROBE_PATH,
     };
 }
@@ -1941,6 +2041,7 @@ function register(ipcApi = ipcMain, options = {}) {
         return copyNewProjectBuildCommand(options);
     });
     ipcApi.handle('film-pipeline:select-production-root', (_, request) => selectProductionRoot(request, options));
+    ipcApi.handle('film-pipeline:select-external-media-root', (_, request) => selectExternalMediaRoot(request, options));
     ipcApi.handle('film-pipeline:read-production-state', (_, pathArgument) => {
         assertNoRendererPathArgument(pathArgument);
         return readConfiguredProductionState(options);
@@ -2003,6 +2104,7 @@ module.exports = {
     register,
     sanitizeConfig,
     selectProductionRoot,
+    selectExternalMediaRoot,
     writePlanningFile,
     writeConfiguredPlanningFile,
     sideEffectClassifier,

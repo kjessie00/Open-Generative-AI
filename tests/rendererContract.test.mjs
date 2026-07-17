@@ -2979,23 +2979,32 @@ test('new-project collaboration hides raw provider blockers behind one short Kor
 });
 
 test('settings renders partial and blocked fixed-root harness readiness in Korean', async (t) => {
+    const picked = [];
     const { restore } = installDeterministicDom({});
     t.after(restore);
     const { default: samplePipelineState } = await import('../src/lib/pipeline/mockData.js');
     const { PipelineSettingsPanel } = await import('../src/components/pipeline/PipelineSettingsPanel.js');
-    const config = { productionRoot: '/tmp/production', productionParentRoot: '' };
+    const config = {
+        productionRoot: '/tmp/production', productionParentRoot: '',
+        externalMediaRoots: { dst: '/tmp/dst-images' },
+    };
 
     for (const [readiness, expected] of [['partial', '일부만 준비됨'], ['blocked', '연결 확인 필요']]) {
         const panel = PipelineSettingsPanel({
             state: samplePipelineState,
             config,
             harnessStatus: { readiness, rootPath: '/fixed/happyVideoFactory' },
+            onPickMediaRoot: (provider) => picked.push(provider),
         });
         assert.match(panel.textContent, new RegExp(`로컬 하네스${expected}`));
         assert.match(panel.textContent, /외부 이미지·영상 생성꺼짐/);
         assert.match(panel.textContent, /외부 업로드꺼짐/);
         assert.match(panel.textContent, /고급: 로컬 경로/);
+        assert.match(panel.textContent, /결과 폴더.*이미지 결과연결됨.*Flow 영상선택 필요/s);
+        assert.equal(byAttribute(panel, 'button', 'aria-label', 'Grok 영상 폴더 선택').textContent, '선택');
+        await byAttribute(panel, 'button', 'aria-label', 'Grok 영상 폴더 선택').dispatchEvent({ type: 'click' });
     }
+    assert.deepEqual(picked, ['grok', 'grok']);
 });
 
 test('PipelineStudio preserves native parent and sidebar child UX without renderer config mutation', async (t) => {
@@ -3033,6 +3042,17 @@ test('PipelineStudio preserves native parent and sidebar child UX without render
                 return { ok: true, mode: 'child', rootPath: request.rootPath, config: structuredClone(config) };
             }
             throw new Error('UNEXPECTED_MODE');
+        },
+        async selectExternalMediaRoot(request) {
+            calls.push(['selectExternalMediaRoot', structuredClone(request)]);
+            config = {
+                ...config,
+                externalMediaRoots: { ...(config.externalMediaRoots || {}), [request.provider]: '/tmp/grok-results' },
+            };
+            return {
+                ok: true, canceled: false, provider: request.provider,
+                rootPath: '/tmp/grok-results', config: structuredClone(config),
+            };
         },
         async listProductionChildren(...args) {
             calls.push(['listProductionChildren', args]);
@@ -3073,6 +3093,9 @@ test('PipelineStudio preserves native parent and sidebar child UX without render
     const projectTitles = [];
     window.addEventListener('pipeline:project-title', (event) => projectTitles.push(event.detail?.title));
     await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'settings' } });
+    await byAttribute(studio, 'button', 'aria-label', 'Grok 영상 폴더 선택').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.find(([method]) => method === 'selectExternalMediaRoot')[1], { provider: 'grok' });
     await byText(studio, 'button', '상위 폴더 선택').dispatchEvent({ type: 'click' });
     await flushRenderer();
     assert.deepEqual(calls.find(([, request]) => request?.mode === 'parent')[1], { mode: 'parent' });
