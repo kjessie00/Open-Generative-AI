@@ -153,3 +153,21 @@ test('five stages retain every existing work panel and exclude settings', () => 
     ]);
     assert.equal(WORKFLOW_STAGES[2].tabs.find((tab) => tab.id === 'queue').hidden, true);
 });
+
+test('cinematic companion never changes workflow completion metrics or active stage', () => {
+    const base = newProjectFixture({
+        newProjectDraftState: {
+            status: 'saved',
+            draft: { production_id: 'cinematic-film', brief: '기획', script: '대본' },
+        },
+    });
+    const cinematic = {
+        ...base,
+        newProjectCinematicTemplateState: {
+            status: 'saved', mode: 'cinematic', director_intent: '연출 의도',
+            visual_thesis: '화면 핵심', must_preserve: '지킬 점', must_avoid: '피할 점',
+        },
+    };
+    assert.deepEqual(deriveWorkflowMetrics(cinematic), deriveWorkflowMetrics(base));
+    assert.equal(deriveWorkflowGuide(cinematic).activeStageId, deriveWorkflowGuide(base).activeStageId);
+});

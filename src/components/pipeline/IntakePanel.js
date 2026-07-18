@@ -60,6 +60,8 @@ export function IntakePanel({
     onRunPlanningAgentRequest,
     onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
     onCopyNewProjectBuildCommand, onSavePlanningFile, productionOnly = false,
+    cinematicTemplateState, cinematicTemplateValue, cinematicTemplateNotice,
+    cinematicTemplateDirty, onCinematicTemplateChange, onSaveCinematicTemplate,
 }) {
     return panelShell(
         '기획·대본',
@@ -79,6 +81,12 @@ export function IntakePanel({
                 onDecidePlanningAgentSuggestion,
                 onCopyNewProjectBuildCommand,
                 draftDirty: newProjectDraftDirty,
+                cinematicTemplateState,
+                cinematicTemplateValue,
+                cinematicTemplateNotice,
+                cinematicTemplateDirty,
+                onCinematicTemplateChange,
+                onSaveCinematicTemplate,
             }),
             existingProductionAudit({ state, onSavePlanningFile }),
         ].filter(Boolean),

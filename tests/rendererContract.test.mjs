@@ -4960,3 +4960,125 @@ test('PipelineStudio saves, prepares, connects, and retries video tasks with exa
     assert.equal(byText(studio, 'button', '다시 만들기').attributes.get('aria-pressed'), 'true');
     assert.equal(findAll(studio, 'article').some((card) => card.textContent.includes('첫 장면')), false);
 });
+
+test('cinematic template stays optional, saves exact fields, restores, and follows stages 1 through 5', async (t) => {
+    const calls = [];
+    let saved = {
+        ok: true,
+        status: 'empty',
+        template: {
+            mode: 'basic', director_intent: '', visual_thesis: '', must_preserve: '', must_avoid: '',
+        },
+        revision_sha256: '',
+        blockers: [],
+        executed: false,
+    };
+    const bridge = {
+        async getConfig() {
+            return { config: { productionRoot: '', productionParentRoot: '', dryRunMode: true } };
+        },
+        async getHarnessContractStatus() {
+            return { ok: true, ready: true, readiness: 'available', entries: [] };
+        },
+        async getNewProjectCinematicTemplateState() {
+            calls.push(['get']);
+            return structuredClone(saved);
+        },
+        async saveNewProjectCinematicTemplate(payload) {
+            calls.push(['save', structuredClone(payload)]);
+            saved = {
+                ok: true,
+                status: 'saved',
+                template: {
+                    mode: payload.mode,
+                    director_intent: payload.mode === 'cinematic' ? payload.director_intent : '',
+                    visual_thesis: payload.mode === 'cinematic' ? payload.visual_thesis : '',
+                    must_preserve: payload.mode === 'cinematic' ? payload.must_preserve : '',
+                    must_avoid: payload.mode === 'cinematic' ? payload.must_avoid : '',
+                },
+                revision_sha256: 'c'.repeat(64),
+                blockers: [],
+                executed: false,
+            };
+            return structuredClone(saved);
+        },
+    };
+    const { restore } = installDeterministicDom(bridge);
+    t.after(restore);
+    const { PipelineStudio } = await import('../src/components/pipeline/PipelineStudio.js');
+    const studio = PipelineStudio();
+    await flushRenderer();
+    await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'intake' } });
+
+    assert.ok(byText(studio, 'legend', '제작 방식'));
+    assert.ok(byText(studio, 'span', '기본 영상'));
+    assert.ok(byText(studio, 'span', '시네마틱 제작'));
+    assert.equal(byAttribute(studio, 'textarea', 'id', 'cinematic-template-director_intent'), null);
+    assert.equal(byAttribute(studio, 'details', 'data-cinematic-stage', 'start'), null);
+
+    const cinematicMode = byAttribute(studio, 'input', 'value', 'cinematic');
+    cinematicMode.checked = true;
+    await cinematicMode.dispatchEvent({ type: 'change' });
+    const values = {
+        director_intent: '고요한 선택이 남기는 긴장',
+        visual_thesis: '차가운 밤과 따뜻한 얼굴의 대비',
+        must_preserve: '주인공의 붉은 스카프와 느린 호흡',
+        must_avoid: '과장된 표정과 빠른 카메라 회전',
+    };
+    for (const [field, value] of Object.entries(values)) {
+        const input = byAttribute(studio, 'textarea', 'id', `cinematic-template-${field}`);
+        assert.ok(input, `${field} must be editable only in cinematic mode`);
+        input.value = value;
+        await input.dispatchEvent({ type: 'input' });
+    }
+    await byText(studio, 'button', '제작 방식 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+
+    assert.deepEqual(calls.find(([method]) => method === 'save')[1], {
+        mode: 'cinematic',
+        ...values,
+        expected_revision_sha256: '',
+    });
+    assert.match(studio.textContent, /시네마틱 기준을 저장했습니다/);
+
+    for (const [tab, stage] of [
+        ['storyboard', 'design'],
+        ['assets', 'prepare'],
+        ['qa', 'select'],
+        ['final', 'finish'],
+    ]) {
+        await studio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab } });
+        const summary = byAttribute(studio, 'details', 'data-cinematic-stage', stage);
+        assert.ok(summary, `${stage} must show the saved cinematic criteria`);
+        assert.match(summary.textContent, /시네마틱 기준/);
+        assert.match(summary.textContent, /고요한 선택이 남기는 긴장/);
+        assert.equal(findAll(summary, 'span').some((node) => node.className.includes('text-[11px]')), false);
+    }
+
+    document.body.replaceChildren();
+    const restoredStudio = PipelineStudio();
+    await flushRenderer();
+    await restoredStudio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'intake' } });
+    assert.equal(byAttribute(restoredStudio, 'input', 'value', 'cinematic').checked, true);
+    assert.equal(
+        byAttribute(restoredStudio, 'textarea', 'id', 'cinematic-template-director_intent').value,
+        values.director_intent,
+    );
+
+    const basicMode = byAttribute(restoredStudio, 'input', 'value', 'basic');
+    basicMode.checked = true;
+    await basicMode.dispatchEvent({ type: 'change' });
+    assert.equal(byAttribute(restoredStudio, 'textarea', 'id', 'cinematic-template-director_intent'), null);
+    await byText(restoredStudio, 'button', '제작 방식 저장').dispatchEvent({ type: 'click' });
+    await flushRenderer();
+    assert.deepEqual(calls.filter(([method]) => method === 'save').at(-1)[1], {
+        mode: 'basic',
+        director_intent: '',
+        visual_thesis: '',
+        must_preserve: '',
+        must_avoid: '',
+        expected_revision_sha256: 'c'.repeat(64),
+    });
+    await restoredStudio.dispatchEvent({ type: 'pipeline:navigate', detail: { tab: 'final' } });
+    assert.equal(byAttribute(restoredStudio, 'details', 'data-cinematic-stage', 'finish'), null);
+});

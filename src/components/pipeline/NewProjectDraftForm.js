@@ -55,6 +55,78 @@ function numberControl({ id, name, value, min, max, disabled, onDraftChange }) {
     return fieldShell(p(name), id, control);
 }
 
+const CINEMATIC_FIELDS = Object.freeze([
+    Object.freeze({ name: 'director_intent', label: '연출 의도', help: '이 영상이 관객에게 남겨야 할 감정과 관점을 적으세요.' }),
+    Object.freeze({ name: 'visual_thesis', label: '화면 핵심', help: '빛, 색, 구도처럼 모든 장면을 묶는 시각 원칙을 적으세요.' }),
+    Object.freeze({ name: 'must_preserve', label: '꼭 지킬 점', help: '수정과 재생성 뒤에도 변하면 안 되는 요소를 적으세요.' }),
+    Object.freeze({ name: 'must_avoid', label: '피할 점', help: '원하지 않는 표현, 분위기, 구도를 적으세요.' }),
+]);
+
+function templateModeOption({ value, current, label, description, disabled, onChange }) {
+    const input = el('input', {
+        disabled,
+        attrs: { type: 'radio', name: 'cinematic-template-mode', value },
+    });
+    input.checked = current === value;
+    input.addEventListener('change', () => onChange?.('mode', value));
+    return el('label', {
+        className: 'flex min-h-16 cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-black/20 p-3 has-[:checked]:border-cyan-300/40 has-[:checked]:bg-cyan-400/[0.06]',
+    }, [
+        input,
+        el('span', { className: 'min-w-0' }, [
+            el('span', { text: label, className: 'block text-sm font-semibold text-white' }),
+            el('span', { text: description, className: 'mt-1 block text-xs leading-5 text-secondary' }),
+        ]),
+    ]);
+}
+
+function cinematicTemplateEditor({ state, value, notice, dirty, onChange, onSave }) {
+    const loading = state?.status === 'loading' || state?.status === 'saving';
+    const cinematic = value?.mode === 'cinematic';
+    const status = notice || (dirty ? '저장하지 않은 기준이 있습니다.' : '');
+    return el('fieldset', { className: 'min-w-0 rounded-lg border border-white/10 bg-white/[0.02] p-4' }, [
+        el('legend', { text: '제작 방식', className: 'px-1 text-sm font-semibold text-white' }),
+        el('p', {
+            text: '기본 흐름은 그대로 두고, 시네마틱 제작에서는 모든 단계에 같은 연출 기준을 표시합니다.',
+            className: 'mb-3 text-xs leading-5 text-secondary',
+        }),
+        el('div', { className: 'grid grid-cols-1 gap-3 sm:grid-cols-2' }, [
+            templateModeOption({
+                value: 'basic', current: value?.mode, label: '기본 영상',
+                description: '지금까지의 작업 방식과 화면을 그대로 사용합니다.', disabled: loading, onChange,
+            }),
+            templateModeOption({
+                value: 'cinematic', current: value?.mode, label: '시네마틱 제작',
+                description: '연출 기준을 저장하고 설계부터 최종 검토까지 이어서 봅니다.', disabled: loading, onChange,
+            }),
+        ]),
+        cinematic ? el('div', {
+            className: 'mt-4 grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2',
+        }, CINEMATIC_FIELDS.map((field) => {
+            const id = `cinematic-template-${field.name}`;
+            const control = el('textarea', {
+                value: value?.[field.name] || '',
+                disabled: loading,
+                className: 'min-h-24 w-full resize-y rounded-md border border-white/10 bg-black/25 px-3 py-2 text-sm leading-6 text-white outline-none focus:border-cyan-300/50',
+                attrs: {
+                    id, name: field.name, maxlength: 4096,
+                    'aria-describedby': `${id}-help`,
+                },
+            });
+            control.addEventListener('input', (event) => onChange?.(field.name, event.target.value));
+            return fieldShell(field.label, id, control, field.help);
+        })) : null,
+        el('div', { className: 'mt-4 flex flex-wrap items-center gap-3' }, [
+            actionButton('제작 방식 저장', { disabled: loading || !dirty, onClick: () => onSave?.() }),
+            status ? el('p', {
+                text: status,
+                className: `text-xs leading-5 ${state?.status === 'error' ? 'text-red-100' : 'text-secondary'}`,
+                attrs: { role: state?.status === 'error' ? 'alert' : 'status', 'aria-live': 'polite' },
+            }) : null,
+        ].filter(Boolean)),
+    ].filter(Boolean));
+}
+
 function statusText(status) {
     if (status === 'restored') return '저장한 내용을 불러왔습니다.';
     if (status === 'saved') return '직접 저장됨';
@@ -164,7 +236,9 @@ function collaborationSection({
 export function NewProjectDraftForm({
     draftState, draftValue, notice = '', onDraftChange, onSaveNewProjectDraft,
     onEnqueuePlanningAgentRequest, onRunPlanningAgentRequest, onRefreshNewProjectDraft, onDecidePlanningAgentSuggestion,
-    onCopyNewProjectBuildCommand, draftDirty = false,
+    onCopyNewProjectBuildCommand, draftDirty = false, cinematicTemplateState, cinematicTemplateValue,
+    cinematicTemplateNotice = '', cinematicTemplateDirty = false, onCinematicTemplateChange,
+    onSaveCinematicTemplate,
 }) {
     const loading = ['loading', 'saving', 'requesting', 'copying'].includes(draftState?.status);
     const readyToCopy = draftState?.preview?.copyAllowed === true;
@@ -229,6 +303,14 @@ export function NewProjectDraftForm({
                     }),
                 ]),
             ]),
+            cinematicTemplateEditor({
+                state: cinematicTemplateState,
+                value: cinematicTemplateValue,
+                notice: cinematicTemplateNotice,
+                dirty: cinematicTemplateDirty,
+                onChange: onCinematicTemplateChange,
+                onSave: onSaveCinematicTemplate,
+            }),
             collaborationSection({
                 number: 1, title: '기획', stage: 'brief', createDraftControl: createBriefControl, draftValue,
                 disabled: loading, draftDirty, collaboration: draftState?.collaboration, onSave: onSaveNewProjectDraft,

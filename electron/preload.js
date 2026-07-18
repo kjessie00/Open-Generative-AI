@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('filmPipeline', {
     getHarnessContractStatus: () => ipcRenderer.invoke('film-pipeline:get-harness-contract-status'),
     getNewProjectDraftState: () => ipcRenderer.invoke('film-pipeline:get-new-project-draft-state'),
     saveNewProjectDraft: (draft) => ipcRenderer.invoke('film-pipeline:save-new-project-draft', draft),
+    getNewProjectCinematicTemplateState: () => ipcRenderer.invoke('film-pipeline:get-new-project-cinematic-template-state'),
+    saveNewProjectCinematicTemplate: (payload) => ipcRenderer.invoke('film-pipeline:save-new-project-cinematic-template', payload),
     enqueuePlanningAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:enqueue-planning-agent-request', payload),
     runPlanningAgentRequest: (payload) => ipcRenderer.invoke('film-pipeline:run-planning-agent-request', payload),
     decidePlanningAgentSuggestion: (payload) => ipcRenderer.invoke('film-pipeline:decide-planning-agent-suggestion', payload),

@@ -233,6 +233,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'getG3ReviewWorkspace',
         'getHarnessContractStatus',
         'getMediaRetryPlan',
+        'getNewProjectCinematicTemplateState',
         'getNewProjectClipSelection',
         'getNewProjectDesignState',
         'getNewProjectDraftState',
@@ -270,6 +271,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'runSafeCommand',
         'runVideoPromptAgentRequest',
         'saveG3ReviewDraft',
+        'saveNewProjectCinematicTemplate',
         'saveNewProjectClipSelection',
         'saveNewProjectDesignBoard',
         'saveNewProjectDraft',
@@ -301,6 +303,15 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     await bridge.confirmVideoResultImport({ planToken: 'video-plan', confirmed: true });
     await bridge.getNewProjectDraftState();
     await bridge.saveNewProjectDraft({ production_id: 'test-project' });
+    await bridge.getNewProjectCinematicTemplateState();
+    await bridge.saveNewProjectCinematicTemplate({
+        mode: 'cinematic',
+        director_intent: '정적인 시선',
+        visual_thesis: '온도 대비',
+        must_preserve: '붉은 우산',
+        must_avoid: '과도한 회전',
+        expected_revision_sha256: '',
+    });
     await bridge.enqueuePlanningAgentRequest({
         stage: 'brief', instruction: '기획을 검토해 주세요.', expected_revision_sha256: 'a'.repeat(64),
     });
@@ -380,6 +391,8 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
             'film-pipeline:confirm-video-result-import',
             'film-pipeline:get-new-project-draft-state',
             'film-pipeline:save-new-project-draft',
+            'film-pipeline:get-new-project-cinematic-template-state',
+            'film-pipeline:save-new-project-cinematic-template',
             'film-pipeline:enqueue-planning-agent-request',
             'film-pipeline:run-planning-agent-request',
             'film-pipeline:decide-planning-agent-suggestion',
@@ -445,6 +458,7 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
         'film-pipeline:get-dst-bundle-import-workspace',
         'film-pipeline:get-video-result-import-workspace',
         'film-pipeline:get-new-project-draft-state',
+        'film-pipeline:get-new-project-cinematic-template-state',
         'film-pipeline:get-new-project-design-state',
         'film-pipeline:get-new-project-image-plan',
         'film-pipeline:get-new-project-image-result-workspace',
@@ -474,6 +488,17 @@ test('preload behavior presents the exact filmPipeline bridge without invoking I
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:save-new-project-draft')[1],
         [{ production_id: 'test-project' }],
+    );
+    assert.deepEqual(
+        invocations.find(([channel]) => channel === 'film-pipeline:save-new-project-cinematic-template')[1],
+        [{
+            mode: 'cinematic',
+            director_intent: '정적인 시선',
+            visual_thesis: '온도 대비',
+            must_preserve: '붉은 우산',
+            must_avoid: '과도한 회전',
+            expected_revision_sha256: '',
+        }],
     );
     assert.deepEqual(
         invocations.find(([channel]) => channel === 'film-pipeline:load-g3-candidate-preview')[1],

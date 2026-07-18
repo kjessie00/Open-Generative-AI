@@ -135,6 +135,39 @@ export async function saveNewProjectDraft(draft) {
     return { ...await getNewProjectDraftState(), ...unavailable('saveNewProjectDraft') };
 }
 
+function unavailableCinematicTemplateState(method) {
+    return {
+        ...unavailable(method),
+        status: 'empty',
+        template: {
+            mode: 'basic',
+            director_intent: '',
+            visual_thesis: '',
+            must_preserve: '',
+            must_avoid: '',
+        },
+        savedAt: '',
+        revision_sha256: '',
+        blockers: ['FILM_PIPELINE_BRIDGE_UNAVAILABLE'],
+    };
+}
+
+export async function getNewProjectCinematicTemplateState() {
+    const bridge = getBridge();
+    if (typeof bridge?.getNewProjectCinematicTemplateState === 'function') {
+        return bridge.getNewProjectCinematicTemplateState();
+    }
+    return unavailableCinematicTemplateState('getNewProjectCinematicTemplateState');
+}
+
+export async function saveNewProjectCinematicTemplate(payload) {
+    const bridge = getBridge();
+    if (typeof bridge?.saveNewProjectCinematicTemplate === 'function') {
+        return bridge.saveNewProjectCinematicTemplate(payload);
+    }
+    return unavailableCinematicTemplateState('saveNewProjectCinematicTemplate');
+}
+
 export async function enqueuePlanningAgentRequest(payload) {
     const bridge = getBridge();
     if (typeof bridge?.enqueuePlanningAgentRequest === 'function') return bridge.enqueuePlanningAgentRequest(payload);
@@ -828,6 +861,8 @@ export const pipelineClient = Object.freeze({
     getHarnessContractStatus,
     getNewProjectDraftState,
     saveNewProjectDraft,
+    getNewProjectCinematicTemplateState,
+    saveNewProjectCinematicTemplate,
     enqueuePlanningAgentRequest,
     runPlanningAgentRequest,
     decidePlanningAgentSuggestion,

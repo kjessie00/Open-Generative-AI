@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { readProductionFolder } = require('./productionReader');
 const newProjectDraftProvider = require('./newProjectDraftProvider');
+const cinematicTemplateProvider = require('./cinematicTemplateProvider');
 const newProjectDesignProvider = require('./newProjectDesignProvider');
 const newProjectImagePlanProvider = require('./newProjectImagePlanProvider');
 const newProjectVideoPlanProvider = require('./newProjectVideoPlanProvider');
@@ -1048,6 +1049,34 @@ function getNewProjectDraftState(options = {}) {
     return newProjectDraftProvider.getNewProjectDraftState(newProjectContext(options));
 }
 
+function cinematicTemplateContext(options = {}) {
+    return {
+        userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
+        renameFile: options.renameFile,
+        randomBytes: options.randomBytes,
+    };
+}
+
+function getNewProjectCinematicTemplateState(options = {}) {
+    return cinematicTemplateProvider.getNewProjectCinematicTemplateState(cinematicTemplateContext(options));
+}
+
+function saveNewProjectCinematicTemplate(payload, options = {}) {
+    const result = cinematicTemplateProvider.saveNewProjectCinematicTemplate(
+        payload,
+        cinematicTemplateContext(options),
+    );
+    sendProgress({
+        phase: 'new-project-cinematic-template-saved',
+        status: result.status,
+        mode: result.template.mode,
+        executed: false,
+        modelCalled: false,
+        generationExecuted: false,
+    });
+    return result;
+}
+
 function newProjectDesignContext(options = {}) {
     return {
         userDataPath: options.userDataPath === undefined ? app.getPath('userData') : options.userDataPath,
@@ -1955,6 +1984,13 @@ function register(ipcApi = ipcMain, options = {}) {
         return getNewProjectDraftState(options);
     });
     ipcApi.handle('film-pipeline:save-new-project-draft', (_, payload) => saveNewProjectDraft(payload, options));
+    ipcApi.handle('film-pipeline:get-new-project-cinematic-template-state', (_, pathArgument) => {
+        assertNoRendererPathArgument(pathArgument);
+        return getNewProjectCinematicTemplateState(options);
+    });
+    ipcApi.handle('film-pipeline:save-new-project-cinematic-template', (_, payload) => (
+        saveNewProjectCinematicTemplate(payload, options)
+    ));
     ipcApi.handle('film-pipeline:enqueue-planning-agent-request', (_, payload) => enqueuePlanningAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:run-planning-agent-request', (_, payload) => runPlanningAgentRequest(payload, options));
     ipcApi.handle('film-pipeline:decide-planning-agent-suggestion', (_, payload) => decidePlanningAgentSuggestion(payload, options));
@@ -2129,6 +2165,8 @@ module.exports = {
     getHarnessContractStatus,
     getNewProjectDraftState,
     saveNewProjectDraft,
+    getNewProjectCinematicTemplateState,
+    saveNewProjectCinematicTemplate,
     enqueuePlanningAgentRequest,
     runPlanningAgentRequest,
     decidePlanningAgentSuggestion,

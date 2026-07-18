@@ -30,6 +30,7 @@ import { VideoPreparationPanel } from './VideoPreparationPanel.js';
 import { NewProjectExecutionPanel } from './NewProjectExecutionPanel.js';
 import { PromptPackPanel } from './PromptPackPanel.js';
 import { ReviewGatesPanel } from './ReviewGatesPanel.js';
+import { CinematicTemplateSummary } from './CinematicTemplateSummary.js';
 import { QueuePanel } from './QueuePanel.js';
 import { QAPanel } from './QAPanel.js';
 import { FinalReportPanel } from './FinalReportPanel.js';
@@ -75,6 +76,7 @@ const PANEL_IDS = new Set([
 
 const NEW_PROJECT_PANEL_STATE_PROPS = Object.freeze([
     'newProjectDraftState', 'newProjectDraftValue', 'newProjectNotice', 'newProjectDraftDirty',
+    'cinematicTemplateState', 'cinematicTemplateValue', 'cinematicTemplateNotice', 'cinematicTemplateDirty',
     'newProjectDesignState', 'newProjectDesignBoard', 'newProjectDesignDirty', 'newProjectDesignNotice',
     'imagePlanState', 'imagePlanTasks', 'imageReviewDecisions', 'imagePlanDirty', 'imagePlanNotice',
     'imageResultWorkspace', 'imageResultPreviews',
@@ -318,6 +320,16 @@ export function PipelineStudio() {
     let newProjectDraftValue = { ...newProjectDraftState.draft };
     let newProjectDraftDirty = { brief: false, script: false, settings: false };
     let newProjectNotice = '';
+    let cinematicTemplateState = {
+        ok: true, status: 'loading',
+        template: { mode: 'basic', director_intent: '', visual_thesis: '', must_preserve: '', must_avoid: '' },
+        revision_sha256: '', blockers: [], executed: false,
+    };
+    let cinematicTemplateValue = {
+        mode: 'basic', director_intent: '', visual_thesis: '', must_preserve: '', must_avoid: '',
+    };
+    let cinematicTemplateNotice = '';
+    let cinematicTemplateDirty = false;
     let newProjectDesignState = emptyNewProjectDesignState('loading');
     let newProjectDesignBoard = { characters: [], locations: [], scenes: [] };
     let newProjectDesignDirty = false;
@@ -351,6 +363,7 @@ export function PipelineStudio() {
     let newProjectExecutionRefreshing = false;
     const newProjectStateEpochs = {
         draft: 0,
+        cinematic: 0,
         design: 0,
         image: 0,
         video: 0,
@@ -880,8 +893,7 @@ export function PipelineStudio() {
         // this scroll container neutral so assistive tech does not announce a
         // duplicate region with the same panel title.
         const panelHost = el('div', { className: 'pipeline-panel-host' });
-        const panelContent = el('div', { className: 'pipeline-panel-content' }, [
-            activeTab === 'overview'
+        const currentPanel = activeTab === 'overview'
                 ? WorkflowOverview({ state: workflowState, onNavigate: switchTab })
                 : renderPanel(activeTab, state, workspaceMode === 'new-project'
                     ? { ...config, productionRoot: '' }
@@ -891,6 +903,10 @@ export function PipelineStudio() {
                 newProjectDraftValue,
                 newProjectNotice,
                 newProjectDraftDirty,
+                cinematicTemplateState,
+                cinematicTemplateValue,
+                cinematicTemplateNotice,
+                cinematicTemplateDirty,
                 newProjectDesignState,
                 newProjectDesignBoard,
                 newProjectDesignDirty,
@@ -922,6 +938,46 @@ export function PipelineStudio() {
                 newProjectFinalRenderPreviewSource: newProjectFinalRenderPreview.source,
                 newProjectMediaReviewFilter,
                 mediaReviewRetryNotice: newProjectMediaReviewRetryNotice,
+                onCinematicTemplateChange: (field, value) => {
+                    bumpNewProjectStateEpoch('cinematic');
+                    cinematicTemplateValue = field === 'mode' && value === 'basic'
+                        ? { mode: 'basic', director_intent: '', visual_thesis: '', must_preserve: '', must_avoid: '' }
+                        : { ...cinematicTemplateValue, [field]: value };
+                    cinematicTemplateDirty = true;
+                    cinematicTemplateNotice = '저장하지 않은 기준이 있습니다.';
+                    render();
+                },
+                onSaveCinematicTemplate: async () => {
+                    const requestEpoch = bumpNewProjectStateEpoch('cinematic');
+                    cinematicTemplateState = { ...cinematicTemplateState, status: 'saving' };
+                    cinematicTemplateNotice = '제작 방식을 저장하는 중…';
+                    render();
+                    try {
+                        const result = await pipelineClient.saveNewProjectCinematicTemplate({
+                            ...cinematicTemplateValue,
+                            expected_revision_sha256: cinematicTemplateState.revision_sha256 || '',
+                        });
+                        if (!result?.ok) throw new Error('CINEMATIC_TEMPLATE_SAVE_FAILED');
+                        if (!isLatestNewProjectStateEpoch('cinematic', requestEpoch)) return;
+                        cinematicTemplateState = result;
+                        cinematicTemplateValue = { ...result.template };
+                        cinematicTemplateDirty = false;
+                        cinematicTemplateNotice = result.template?.mode === 'cinematic'
+                            ? '시네마틱 기준을 저장했습니다.' : '기본 영상으로 저장했습니다.';
+                    } catch {
+                        if (!isLatestNewProjectStateEpoch('cinematic', requestEpoch)) return;
+                        try {
+                            const latest = await pipelineClient.getNewProjectCinematicTemplateState();
+                            if (!isLatestNewProjectStateEpoch('cinematic', requestEpoch)) return;
+                            cinematicTemplateState = latest?.ok
+                                ? latest : { ...cinematicTemplateState, status: 'error' };
+                        } catch {
+                            cinematicTemplateState = { ...cinematicTemplateState, status: 'error' };
+                        }
+                        cinematicTemplateNotice = '제작 방식을 저장하지 못했습니다. 입력을 확인하고 다시 저장하세요.';
+                    }
+                    render();
+                },
                 onNewProjectMediaReviewFilterChange: (value) => { newProjectMediaReviewFilter = value; },
                 executionState: newProjectExecutionState,
                 executionNotice: newProjectExecutionNotice,
@@ -2171,8 +2227,14 @@ export function PipelineStudio() {
                     }
                     render();
                 },
-                }, workspaceMode),
-        ]);
+                }, workspaceMode);
+        const cinematicSummary = workspaceMode === 'new-project' && activeTab !== 'intake'
+            ? CinematicTemplateSummary({ stageId: activeStageId, template: cinematicTemplateValue })
+            : null;
+        const panelContent = el('div', { className: 'pipeline-panel-content' }, [
+            cinematicSummary,
+            currentPanel,
+        ].filter(Boolean));
 
         panelHost.appendChild(panelContent);
         body.appendChild(PipelineSidebar({
@@ -2212,10 +2274,11 @@ export function PipelineStudio() {
         const initialFinalRenderRequestEpoch = beginNewProjectFinalRenderRequest();
         const finalRenderResultPromise = pipelineClient.getNewProjectFinalRender()
             .then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
-        const [configResult, harnessResult, newProjectResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, videoImportResult, executionResult] = await Promise.allSettled([
+        const [configResult, harnessResult, newProjectResult, cinematicResult, designResult, imagePlanResult, imageWorkspaceResult, videoPlanResult, videoWorkspaceResult, clipSelectionResult, finalStitchResult, videoImportResult, executionResult] = await Promise.allSettled([
             pipelineClient.getConfig(),
             pipelineClient.getHarnessContractStatus(),
             pipelineClient.getNewProjectDraftState(),
+            pipelineClient.getNewProjectCinematicTemplateState(),
             pipelineClient.getNewProjectDesignState(),
             pipelineClient.getNewProjectImagePlan(),
             pipelineClient.getNewProjectImageResultWorkspace(),
@@ -2244,6 +2307,20 @@ export function PipelineStudio() {
                     status: 'error',
                     blockers: ['NEW_PROJECT_DRAFT_READ_FAILED'],
                 };
+            }
+        }
+        if (isLatestNewProjectStateEpoch('cinematic', initialStateEpochs.cinematic)) {
+            if (cinematicResult.status === 'fulfilled' && cinematicResult.value?.ok) {
+                cinematicTemplateState = cinematicResult.value;
+                cinematicTemplateValue = { ...cinematicResult.value.template };
+                cinematicTemplateDirty = false;
+            } else {
+                cinematicTemplateState = {
+                    ...cinematicTemplateState,
+                    status: 'error',
+                    blockers: ['CINEMATIC_TEMPLATE_READ_FAILED'],
+                };
+                cinematicTemplateNotice = '제작 방식을 불러오지 못했습니다. 기본 영상으로 표시합니다.';
             }
         }
         if (isLatestNewProjectStateEpoch('design', initialStateEpochs.design)) {
