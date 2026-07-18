@@ -2,7 +2,7 @@
 
 ## 한 줄 결론
 
-새 격리 Electron userData에서 시네마틱 입력과 설계를 실제 저장하고, 사전 Gemini 검토를 통과한 Flow 요청을 한 번 실제 제출해 새 10초 영상을 받았다. 그 영상을 OpenGA에 연결해 결과 사용 결정, `0–5초` 클립 선택, 로컬 최종 렌더, 전체 Quit/relaunch, 최종 재생까지 완료했으며 결과는 `TECHNICAL_PASS`, `ACTUAL_PROVIDER_PASS`, `ACTUAL_ELECTRON_PASS`다.
+새 격리 Electron userData에서 시네마틱 입력과 설계를 실제 저장하고, 사전 Gemini 검토를 통과한 Flow 요청을 한 번 실제 제출해 새 10초 영상을 받았다. 그 영상을 OpenGA에 연결해 결과 사용 결정, `0–5초` 클립 선택, 로컬 최종 렌더, 전체 Quit/relaunch, 최종 재생까지 완료했으며 결과는 `TECHNICAL_PASS`, `ACTUAL_PROVIDER_PASS`, `ACTUAL_ELECTRON_PASS`다. 이후 Jessie가 최종 5초 영상의 `이 영상 사용`을 직접 선택했고 앱 저장 상태를 다시 확인했다.
 
 ## 기준과 격리 범위
 
@@ -48,7 +48,7 @@ OpenGA 자체는 Flow submit을 수행하지 않는다. 실제 생성은 외부 
 | 실제 최종 렌더 | OpenGA `검토용 영상 만들기`, fresh probe와 receipt 생성 | PASS |
 | 최종 재생 | Electron에서 5초 검토용 영상을 `5.01333`초 끝까지 실제 재생 | PASS |
 | 전체 재실행 | 전체 Quit/relaunch 뒤 cinematic, clip, final receipt/output 복원과 재생 끝까지 확인 | PASS |
-| 최종 화면 | `5 마무리 → 최종 편집`, `확인 필요`, `이 영상 사용` 미선택 상태로 열어 둠 | PASS |
+| 최종 화면 | 기술 E2E 완료 시점에는 `확인 필요`로 열어 두었고, 이후 Jessie가 `이 영상 사용`을 직접 선택해 저장 상태를 확인함 | PASS |
 
 ## 연결 영상 초기 접근성 문구 조사
 
@@ -88,6 +88,14 @@ computer-use로 재생을 눌렀고 scrubber가 `10.0053`초까지 진행했다.
 - audio stream은 존재하며 mean `-41.3 dB`, max `-12.4 dB`다.
 - 요청한 forward camera push는 sampled frame에서 미묘해 강한 motion match로 채점하지 않았다. audio의 창의적 품질도 청취 평가하지 않았다.
 - 이 평가는 Codex evidence review이며 Jessie의 품질 승인으로 기록하지 않았다.
+
+## 후속 Jessie 승인
+
+기술 E2E 보고서와 `result.json`을 기록한 뒤 Jessie가 같은 최종 편집 화면에서 `이 영상 사용`을 직접 선택했다. UI에서 `사용하기로 확인함`과 저장 완료 문구를 다시 읽어 승인 상태가 보존된 것을 확인했다.
+
+- 후속 상태: `OUTPUT_QUALITY_JESSIE_APPROVED`
+- 후속 상태: `JESSIE_APPROVAL_RECORDED`
+- 기존 `result.json`은 기술 E2E 완료 시점의 변경 불가 증거 스냅샷이므로 수정하지 않았다.
 
 ## 자동 검증
 
@@ -140,5 +148,5 @@ computer-use로 재생을 눌렀고 scrubber가 `10.0053`초까지 진행했다.
 - `ACTUAL_ELECTRON_PASS`: 새 격리 OpenGA 입력·설계·실제 media 연결·review·0–5초 clip·실제 local render·Quit/relaunch·최종 재생 PASS
 - `PICKER_NOT_REPEATED_IN_LIVE_OUTPUT_RUN`: 이전 doc 86의 `PRODUCTION_PICKER_PASS`와 별도
 - `OUTPUT_QUALITY_PARTIAL_PASS`: visual coherence와 media integrity PASS, camera-push 강도와 audio 창의 품질은 미채점
-- `JESSIE_APPROVAL_NOT_RECORDED`: 앱의 최종 `이 영상 사용`을 선택하지 않았고 현재 `확인 필요`
+- `JESSIE_APPROVAL_RECORDED`: 기술 E2E 뒤 Jessie가 앱에서 최종 `이 영상 사용`을 직접 선택했고 저장 상태를 확인함
 - upload, production/HVF mutation, 새 결제, 새 로그인: `0`
