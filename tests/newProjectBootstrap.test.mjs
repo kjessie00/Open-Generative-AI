@@ -6,11 +6,13 @@ import test from 'node:test';
 
 import provider from '../electron/lib/filmPipelineProvider.js';
 import draftProvider from '../electron/lib/newProjectDraftProvider.js';
+import cinematicTemplateProvider from '../electron/lib/cinematicTemplateProvider.js';
 
 const { getHarnessContractStatus, HARNESS_CONTRACT_ALLOWLIST, register } = provider;
 const {
     exactDraftPaths, getNewProjectDraftState, saveNewProjectDraft, validateNewProjectDraft,
 } = draftProvider;
+const { saveNewProjectCinematicTemplate } = cinematicTemplateProvider;
 
 const markerContent = Object.freeze({
     pack_builder: '#!/usr/bin/env python3\n--brief --script --production-id --output-root --target-generator\n',
@@ -148,6 +150,37 @@ test('registered bootstrap saves a private restorable draft and copies only the 
     assert.equal(ipc.getClipboard(), restored.preview.shellSafeCommand);
     assert.equal(ipc.getClipboardWrites(), 1);
     assert.equal(copied.sha256, restored.preview.sha256);
+});
+
+test('cinematic companion-only draft root stays empty while partial canonical drafts fail closed', (t) => {
+    const companionOnly = fixture(t);
+    saveNewProjectCinematicTemplate({
+        mode: 'cinematic',
+        director_intent: '인물의 선택을 정적인 프레임으로 따라간다.',
+        visual_thesis: '따뜻한 실내와 차가운 바깥의 대비',
+        must_preserve: '마지막 시선과 붉은 우산',
+        must_avoid: '과도한 카메라 회전과 네온 색감',
+        expected_revision_sha256: '',
+    }, companionOnly);
+    const companionState = getNewProjectDraftState(directContext(companionOnly));
+
+    assert.equal(companionState.ok, true);
+    assert.equal(companionState.status, 'empty');
+    assert.deepEqual(companionState.blockers, ['NEW_PROJECT_DRAFT_EMPTY']);
+
+    for (const remainingFile of ['metadataPath', 'briefPath', 'scriptPath']) {
+        const partial = fixture(t);
+        saveNewProjectDraft(validDraft(), directContext(partial));
+        const paths = exactDraftPaths(partial.userDataPath);
+        for (const filePath of [paths.metadataPath, paths.briefPath, paths.scriptPath]) {
+            if (filePath !== paths[remainingFile]) fs.rmSync(filePath);
+        }
+        const state = getNewProjectDraftState(directContext(partial));
+
+        assert.equal(state.ok, false, `${remainingFile} alone must not restore a draft`);
+        assert.equal(state.status, 'error');
+        assert.deepEqual(state.blockers, ['NEW_PROJECT_DRAFT_INCOMPLETE']);
+    }
 });
 
 test('draft validation rejects path injection, malformed text, oversized content, and invalid bounded fields before writing', (t) => {

@@ -1084,6 +1084,18 @@ function readSavedDraft(paths) {
     return { draft, savedAt: metadata.saved_at };
 }
 
+function hasCanonicalDraftFile(paths) {
+    for (const filePath of [paths.metadataPath, paths.briefPath, paths.scriptPath]) {
+        try {
+            fs.lstatSync(filePath);
+            return true;
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+    }
+    return false;
+}
+
 function loadDraft(context) {
     let paths;
     try {
@@ -1113,6 +1125,9 @@ function loadDraft(context) {
         return { status: 'error', draft: defaultDraft(), savedAt: '', paths: null, errorCode: error.code || 'NEW_PROJECT_DRAFT_DIRECTORY_UNSAFE' };
     }
     try {
+        if (!hasCanonicalDraftFile(paths)) {
+            return { status: 'empty', draft: defaultDraft(), savedAt: '', paths, errorCode: '' };
+        }
         const saved = readSavedDraft(paths);
         return { status: 'restored', ...saved, paths, errorCode: '' };
     } catch (error) {
